@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BB53B9942DA6701600DECCF3 /* APIkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9932DA6701600DECCF3 /* APIkeys.swift */; };
+		BB53B9962DA6710300DECCF3 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = BB53B9952DA6710300DECCF3 /* .gitignore */; };
+		BB53B9982DA6759100DECCF3 /* Prompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9972DA6759100DECCF3 /* Prompts.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BB17446A2DA5355D00738173 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +33,9 @@
 		BB1744592DA5355D00738173 /* HandsOffLLM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HandsOffLLM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB1744692DA5355D00738173 /* HandsOffLLMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HandsOffLLMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB1744732DA5355D00738173 /* HandsOffLLMUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HandsOffLLMUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB53B9932DA6701600DECCF3 /* APIkeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIkeys.swift; sourceTree = "<group>"; };
+		BB53B9952DA6710300DECCF3 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		BB53B9972DA6759100DECCF3 /* Prompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prompts.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -88,10 +97,13 @@
 		BB1744502DA5355D00738173 = {
 			isa = PBXGroup;
 			children = (
+				BB53B9932DA6701600DECCF3 /* APIkeys.swift */,
+				BB53B9952DA6710300DECCF3 /* .gitignore */,
 				BB17445B2DA5355D00738173 /* HandsOffLLM */,
 				BB17446C2DA5355D00738173 /* HandsOffLLMTests */,
 				BB1744762DA5355D00738173 /* HandsOffLLMUITests */,
 				BB17445A2DA5355D00738173 /* Products */,
+				BB53B9972DA6759100DECCF3 /* Prompts.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -225,6 +237,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB53B9962DA6710300DECCF3 /* .gitignore in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -249,6 +262,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB53B9982DA6759100DECCF3 /* Prompts.swift in Sources */,
+				BB53B9942DA6701600DECCF3 /* APIkeys.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -409,6 +424,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"HandsOffLLM/Preview Content\"";
+				DEVELOPMENT_TEAM = GKGX8285R3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = HandsOffLLM/Info.plist;
@@ -441,6 +457,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"HandsOffLLM/Preview Content\"";
+				DEVELOPMENT_TEAM = GKGX8285R3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = HandsOffLLM/Info.plist;

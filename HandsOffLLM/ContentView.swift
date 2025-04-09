@@ -8,20 +8,21 @@
 import SwiftUI
 import AVFoundation
 import Speech
-import OSLog // For better logging
+import OSLog
 
-// Placeholder for messages (still needed for logic, not UI)
+
 struct ChatMessage: Identifiable {
     let id = UUID()
     let role: String // e.g., "user", "assistant"
     let content: String
 }
 
-// MARK: - LLM Data Structures
 
-// --- Claude ---
+
+
 struct ClaudeRequest: Codable {
     let model: String
+    let system: String?
     let messages: [MessageParam]
     let stream: Bool
     let max_tokens: Int
@@ -33,22 +34,18 @@ struct MessageParam: Codable {
     let content: String
 }
 
-// Structures to decode Claude SSE stream events
 struct ClaudeStreamEvent: Decodable {
     let type: String
-    // We only care about message_delta and content_block_delta for streaming text
     let delta: Delta?
     let message: ClaudeResponseMessage? // For message_stop event
 }
 struct Delta: Decodable {
-    let type: String? // e.g., "text_delta", "input_tokens"
+    let type: String?
     let text: String?
 }
-// Structure for the final message in message_stop event
 struct ClaudeResponseMessage: Decodable {
     let id: String
     let role: String
-    // content might be more complex, but we only stored text so far
     let usage: UsageData?
 }
 struct UsageData: Decodable {
@@ -57,15 +54,21 @@ struct UsageData: Decodable {
 }
 
 
-// --- Gemini ---
+struct OpenAITTSRequest: Codable {
+    let model: String
+    let input: String
+    let voice: String
+    let response_format: String
+    let speed: Float
+}
+
+
 struct GeminiRequest: Codable {
     let contents: [GeminiContent]
-    // Add generationConfig if needed (temperature, topP, etc.)
-    // let generationConfig: GenerationConfig?
 }
 
 struct GeminiContent: Codable {
-    let role: String // "user" or "model"
+    let role: String
     let parts: [GeminiPart]
 }
 
@@ -73,993 +76,1046 @@ struct GeminiPart: Codable {
     let text: String
 }
 
-// Structure to decode Gemini stream chunks
 struct GeminiResponseChunk: Decodable {
     let candidates: [GeminiCandidate]?
 }
 struct GeminiCandidate: Decodable {
     let content: GeminiContent?
-    // Add finishReason, safetyRatings if needed
 }
 
-// MARK: - ViewModel
+
 
 @MainActor
-class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDelegate {
-
-    // Add a logger for better debugging
+class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAudioPlayerDelegate {
+    
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatViewModel")
+    
+    enum LLMProvider { case gemini, claude }
 
     @Published var messages: [ChatMessage] = []
     @Published var isListening: Bool = false
     @Published var isProcessing: Bool = false // Thinking/Waiting for LLM
-    @Published var isSpeaking: Bool = false   // TTS playback
-    @Published var ttsRate: Float = AVSpeechUtteranceDefaultSpeechRate
-    private var llmTask: Task<Void, Never>? = nil // <-- ADD THIS
+    @Published var isSpeaking: Bool = false   // TTS playback is active
+    @Published var ttsRate: Float = AVSpeechUtteranceDefaultSpeechRate {
+        didSet {
+            Task { @MainActor [weak self] in
+                guard let self = self, let player = self.currentAudioPlayer else { return }
+                if player.enableRate {
+                    player.rate = self.ttsDisplayMultiplier
+                } else {
+                }
+            }
+        }
+    }
+    @Published var listeningAudioLevel: Float = -50.0 // Audio level dBFS (-50 silence, 0 max)
+    @Published var ttsOutputLevel: Float = 0.0      // Normalized TTS output level (0-1)
+    @Published var selectedProvider: LLMProvider = .claude // LLM Provider
 
+    // --- Internal State ---
+    private var llmTask: Task<Void, Never>? = nil
+    private var ttsFetchTask: Task<Void, Never>? = nil
+    private var isLLMFinished: Bool = false
+    private var llmResponseBuffer: String = ""
+    private var processedTextIndex: Int = 0
+    private var nextAudioData: Data? = nil
+    private var currentSpokenText: String = ""
+    private var isFetchingTTS: Bool = false
+    private var hasUserStartedSpeakingThisTurn: Bool = false
+    private var hasReceivedFirstLLMChunk: Bool = false
+
+    // --- Audio Components ---
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
+    private var currentAudioPlayer: AVAudioPlayer?
+    private var ttsLevelTimer: Timer?
+
+    // --- Configuration & Timers ---
     private var silenceTimer: Timer?
     private let silenceThreshold: TimeInterval = 1.5
-
-    // --- LLM ---
-    enum LLMProvider { case gemini, claude }
-    @Published var selectedProvider: LLMProvider = .claude // Default to Claude
-    private var anthropicAPIKey: String?
-    private var geminiAPIKey: String?
-    // Define models
-    private let claudeModel = "claude-3-7-sonnet-20250219" // Or another Claude model
-    private let geminiModel = "gemini-2.0-flash" // Or another Gemini model
-
-
-    // --- TTS ---
-    private let speechSynthesizer = AVSpeechSynthesizer()
-    private var ttsQueue = [String]() // Queue of chunks TO BE spoken
-    private var llmResponseBuffer: String = "" // Buffer for incoming LLM text
-    private var currentSpokenText: String = "" // Store latest transcript for silence detection
-
-    // --- URLSession ---
+    private let audioLevelUpdateRate: TimeInterval = 0.1
+    private var audioLevelTimer: Timer?
+    private let ttsLevelUpdateRate: TimeInterval = 0.05
+    private let claudeModel = "claude-3-7-sonnet-20250219"
+    private let geminiModel = "gemini-2.0-flash"
+    private let openAITTSModel = "gpt-4o-mini-tts"
+    private let openAITTSVoice = "nova"
+    private let openAITTSFormat = "wav"
+    private let maxTTSChunkLength = 4000
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.default
-        // Configure timeouts, caching etc. if needed
         return URLSession(configuration: config)
     }()
 
+    // --- API Keys & Prompt ---
+    private var anthropicAPIKey: String?
+    private var geminiAPIKey: String?
+    private var openaiAPIKey: String?
+    private var systemPrompt: String?
+    private var lastMeasuredAudioLevel: Float = -50.0
 
     override init() {
         super.init()
         speechRecognizer.delegate = self
-        speechSynthesizer.delegate = self
-
-        // Load API Keys from Environment Variables
-        anthropicAPIKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
-        geminiAPIKey = ProcessInfo.processInfo.environment["GEMINI_API_KEY"]
-
-        if anthropicAPIKey == nil {
-            logger.warning("ANTHROPIC_API_KEY environment variable not set.")
-            // Handle missing key - maybe disable Claude option?
+        
+        self.anthropicAPIKey = APIKeys.anthropic
+        self.geminiAPIKey = APIKeys.gemini
+        self.openaiAPIKey = APIKeys.openai
+        
+        if anthropicAPIKey == nil || anthropicAPIKey!.isEmpty || anthropicAPIKey == "YOUR_ANTHROPIC_API_KEY" {
+             logger.warning("Anthropic API Key is not set in APIKeys.swift.")
+         }
+         if geminiAPIKey == nil || geminiAPIKey!.isEmpty || geminiAPIKey == "YOUR_GEMINI_API_KEY" {
+             logger.warning("Gemini API Key is not set in APIKeys.swift.")
+         }
+         if openaiAPIKey == nil || openaiAPIKey!.isEmpty || openaiAPIKey == "YOUR_OPENAI_API_KEY" {
+             logger.warning("OpenAI API Key is not set in APIKeys.swift.")
+         }
+        
+        self.systemPrompt = Prompts.chatPrompt
+        if systemPrompt == nil || systemPrompt!.isEmpty {
+        } else if systemPrompt == "You are a helpful voice assistant. Keep your responses concise and conversational." {
+            logger.warning("Using the default placeholder system prompt. Edit Prompts.swift to customize.")
+        } else {
         }
-        if geminiAPIKey == nil {
-            logger.warning("GEMINI_API_KEY environment variable not set.")
-            // Handle missing key - maybe disable Gemini option?
-        }
-
+        
         requestPermissions()
     }
-
-    // --- Permission Handling ---
+    
+    // --- Permission Request ---
     func requestPermissions() {
         SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
-             Task { @MainActor [weak self] in
-                 guard let self = self else { return }
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 if authStatus != .authorized {
                     self.logger.error("Speech recognition authorization denied.")
-                    // Handle denial (e.g., show an alert)
-                } else {
-                    self.logger.info("Speech recognition authorized.")
                 }
             }
         }
-
+        
         AVAudioApplication.requestRecordPermission { [weak self] granted in
-             Task { @MainActor [weak self] in
-                 guard let self = self else { return }
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 if !granted {
                     self.logger.error("Microphone permission denied.")
-                    // Handle denial
-                } else {
-                     self.logger.notice("Microphone permission granted.")
                 }
             }
         }
     }
-
-    // --- Core Logic ---
+    
+    // --- State Control ---
     func cycleState() {
-         Task { @MainActor in
-             if !isListening && !isProcessing && !isSpeaking {
-                 logger.notice("CycleState: Requesting startListening()")
-                 startListening()
-             } else if isListening {
-                 logger.notice("CycleState: Requesting stopListeningAndProcess()")
-                 stopListeningAndProcess() // This implicitly stops listening first
-             } else if isProcessing || isSpeaking { // <-- MODIFIED CONDITION
-                 logger.notice("CycleState: Requesting cancelProcessingAndSpeaking()")
-                 cancelProcessingAndSpeaking() // <-- CALL NEW FUNCTION
-             }
-             // Removed redundant checks for isProcessing/isSpeaking here
-         }
-     }
-
-    // NEW FUNCTION TO HANDLE CANCELLATION
+        Task { @MainActor in
+            if !isListening && !isProcessing && !isSpeaking {
+                startListening()
+            } else if isListening {
+                stopListeningAndProcess()
+            } else if isProcessing || isSpeaking {
+                cancelProcessingAndSpeaking()
+            }
+        }
+    }
+    
     func cancelProcessingAndSpeaking() {
-        logger.notice("⚡️ Cancellation requested. Current State: isProcessing=\(self.isProcessing), isSpeaking=\(self.isSpeaking)")
-
-        logger.notice("⚡️ Calling stopSpeaking() from cancelProcessingAndSpeaking.")
-        stopSpeaking()
-        logger.notice("⚡️ Returned from stopSpeaking(). Current State: isProcessing=\(self.isProcessing), isSpeaking=\(self.isSpeaking)")
-
+        logger.notice("⏹️ Cancel requested by user.")
+        
         if let task = llmTask {
-            logger.notice("⚡️ Cancelling LLM Task.")
             task.cancel()
             llmTask = nil
-        } else {
-             logger.warning("⚡️ Cancellation requested, but no active LLM task found (might have completed normally).")
         }
-
+        
+        stopSpeaking()
+        
         if self.isProcessing {
             isProcessing = false
-            logger.notice("Set isProcessing = false (Cancellation)")
-        } else {
-            logger.notice("isProcessing was already false during cancellation.")
         }
-
-        logger.notice("⚡️ Cancellation finished. Final State: isProcessing=\(self.isProcessing), isSpeaking=\(self.isSpeaking)")
+        self.llmResponseBuffer = ""
+        self.processedTextIndex = 0
+        self.isLLMFinished = false
     }
-
-    // --- Speech Recognition Functions ---
+    
+    // --- Speech Recognition (Listening) ---
     func startListening() {
-        guard !audioEngine.isRunning else {
-            logger.warning("Audio engine already running. Ignoring startListening request.")
-            return
-        }
-        logger.notice("Attempting to start listening process...")
-
+        guard !audioEngine.isRunning else { return }
+        
         isListening = true
         isProcessing = false
         isSpeaking = false
         currentSpokenText = ""
-        logger.notice("Set isListening = true")
-
+        hasUserStartedSpeakingThisTurn = false
+        listeningAudioLevel = -50.0
+        logger.notice("🎙️ Listening started...")
+        
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            logger.info("Audio session activated.")
         } catch {
             logger.error("🚨 Audio session setup error: \(error.localizedDescription)")
-             // Add explicit permission status logging on error
-             logger.error("Speech Auth Status: \(SFSpeechRecognizer.authorizationStatus().rawValue), Mic Auth Status: \(AVAudioApplication.shared.recordPermission.rawValue)")
             isListening = false
             return
         }
-
+        
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
-             logger.critical("Unable to create SFSpeechAudioBufferRecognitionRequest object")
-             isListening = false
-             return
+            logger.critical("Unable to create SFSpeechAudioBufferRecognitionRequest object")
+            isListening = false
+            return
         }
         recognitionRequest.shouldReportPartialResults = true
-
+        
         let inputNode = audioEngine.inputNode
-
-        // Check speech recognizer availability *before* creating the task
+        
         guard speechRecognizer.isAvailable else {
-             logger.error("🚨 Speech recognizer is not available right now.")
-             isListening = false
-             // Optionally deactivate audio session here if needed
-             return
+            logger.error("🚨 Speech recognizer is not available right now.")
+            isListening = false
+            return
         }
-
-
-        // --- Recognition Task ---
+        
         recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            // This handler runs on a background queue initially.
-
-            // Need to capture result and error *before* jumping to MainActor
-            let currentResult = result
-            let currentError = error
-
             Task { @MainActor [weak self] in
-                // This block runs on the MainActor
-                guard let self = self else { return } // 'self' IS used here
+                guard let self = self else { return }
+                guard self.recognitionTask != nil else { return }
+                
+                var isFinal = false
+                
+                if let result = result {
+                    self.currentSpokenText = result.bestTranscription.formattedString
+                    isFinal = result.isFinal
+                    
+                    if !self.currentSpokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !self.hasUserStartedSpeakingThisTurn {
+                        self.logger.info("🎤 User started speaking. Starting silence timer.")
+                        self.hasUserStartedSpeakingThisTurn = true
+                        self.startSilenceTimer()
+                    } else if self.hasUserStartedSpeakingThisTurn {
+                        self.resetSilenceTimer()
+                    }
 
-                var isFinal = false // Declare inside Task scope
-                var transcribedText: String? = nil // Declare inside Task scope
-
-                if let recognizedResult = currentResult { // Use the captured result
-                    transcribedText = recognizedResult.bestTranscription.formattedString
-                    isFinal = recognizedResult.isFinal
-                    // logger.info("Transcript update: \(transcribedText ?? "N/A")") // Keep info or debug
-                     // Use transcribedText here:
-                    self.currentSpokenText = transcribedText ?? ""
-                    self.resetSilenceTimer() // Okay on MainActor
-                     // logger.info("Updated currentSpokenText and reset silence timer.") // Keep info/debug
-                }
-
-                // Check error or final state (use captured error and calculated isFinal)
-                if currentError != nil || isFinal {
-                    // Log elevated here since it's an important transition
-                    self.logger.notice("Recognition task finished or error: \(currentError?.localizedDescription ?? "Final Result")")
-
-                    // These modify state and must be on MainActor
-                    self.stopAudioEngine()
-                    self.recognitionRequest = nil
-                    self.recognitionTask = nil
-
-                    // Process if we were still listening (use isFinal here)
-                    if self.isListening {
-                        self.logger.notice("Recognition ended while listening: Processing final transcription.") // Elevate
-                        // Pass the most recently captured text
-                        self.stopListeningAndProcess(transcription: self.currentSpokenText) // Calls another MainActor func
-                    } else {
-                         self.logger.notice("Recognition task finished, but processing likely already triggered.") // Elevate
+                    if isFinal {
+                        self.logger.info("✅ Final transcription received: '\(self.currentSpokenText)'")
+                        self.invalidateSilenceTimer()
+                        self.stopListeningAndProcess(transcription: self.currentSpokenText)
+                        return
                     }
                 }
-
-                // Specific error check for permissions (use captured error)
-                 if let nsError = currentError as NSError?, nsError.domain == "kLSRErrorDomain", nsError.code == 203 {
-                     self.logger.error("🚨 Speech recognition failed - likely permission denied.")
-                 } else if currentError != nil && !isFinal { // Don't log finalization as an error unless it IS an error
-                     self.logger.error("🚨 Recognition task error (not final): \(currentError!.localizedDescription)")
-                 }
-            } // End Task @MainActor
-        } // End recognitionTask closure
-
-
-        // --- Audio Tap ---
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-         guard recordingFormat.sampleRate > 0 else {
-             logger.error("🚨 Invalid recording format sample rate: \(recordingFormat.sampleRate)")
-             stopListeningCleanup()
-             return
-         }
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { (buffer, time) in
-            self.recognitionRequest?.append(buffer)
-        }
-
-        // --- Start Audio Engine ---
-        audioEngine.prepare()
-        do {
-            // This call *might* trigger the Microphone permission prompt if status is .notDetermined
-            try audioEngine.start()
-            logger.notice("🎙️ Audio engine started")
-            startSilenceTimer() // Start timer
-        } catch {
-            logger.error("🚨 Audio engine start error: \(error.localizedDescription)")
-             // Log permission status if engine fails to start
-             logger.error("Mic Auth Status on engine start fail: \(AVAudioApplication.shared.recordPermission.rawValue)")
-            stopListeningCleanup()
-        }
-    } // End startListening
-
-    // Make sure stopAudioEngine can be called from MainActor context
-     func stopAudioEngine() {
-        guard audioEngine.isRunning else { return }
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0) // Important to remove the tap
-        logger.info("⏹️ Audio engine stopped")
-
-        // Deactivate audio session when completely done with audio (listening AND speaking)
-        // Consider moving this to *after* TTS finishes if startListening isn't called immediately.
-        /*
-        Task { // Deactivation can take time, do it async
-            do {
-                try AVAudioSession.sharedInstance().setActive(false)
-                logger.info("Audio session deactivated.")
-            } catch {
-                logger.error("🚨 Audio session deactivation error: \(error.localizedDescription)")
+                
+                if let error = error {
+                     let nsError = error as NSError
+                     if !(nsError.domain == "kAFAssistantErrorDomain" && (nsError.code == 1110 || nsError.code == 1107)) {
+                         self.logger.warning("🚨 Recognition task error: \(error.localizedDescription)")
+                     }
+                    self.invalidateSilenceTimer()
+                    if !isFinal {
+                        self.stopListeningCleanup()
+                    }
+                }
             }
         }
-        */
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputNode.outputFormat(forBus: 0)) { [weak self] (buffer, time) in
+            guard let self = self else { return }
+            if !self.isSpeaking { self.recognitionRequest?.append(buffer) }
+            self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
+        }
+        
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            startAudioLevelTimer()
+        } catch {
+            logger.error("🚨 Audio engine start error: \(error.localizedDescription)")
+            recognitionTask?.cancel()
+            recognitionTask = nil
+            stopListeningCleanup()
+        }
     }
-
-    // Ensure cleanup runs on MainActor
-     func stopListeningCleanup() {
-        logger.notice("🧹 Performing stopListeningCleanup...")
+    
+    private func calculatePowerLevel(buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData?[0] else { return -50.0 }
+        let channelDataValue = UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength))
+        var rms: Float = 0.0
+        for sample in channelDataValue { rms += sample * sample }
+        rms = sqrt(rms / Float(buffer.frameLength))
+        let dbValue = (rms > 0) ? (20 * log10(rms)) : -160.0
+        let minDb: Float = -50.0
+        let maxDb: Float = 0.0
+        return max(minDb, min(dbValue, maxDb))
+    }
+    
+    func startAudioLevelTimer() {
+        invalidateAudioLevelTimer()
+        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: audioLevelUpdateRate, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.isListening else {
+                    self?.invalidateAudioLevelTimer(); return
+                }
+                self.listeningAudioLevel = self.lastMeasuredAudioLevel
+            }
+        }
+    }
+    
+    func invalidateAudioLevelTimer() {
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
+    }
+    
+    
+    func stopAudioEngine() {
+        guard audioEngine.isRunning else { return }
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        invalidateAudioLevelTimer()
+    }
+    
+    func stopListeningCleanup() {
         stopAudioEngine()
+        recognitionRequest?.endAudio()
         recognitionTask?.cancel()
-        recognitionRequest = nil
         recognitionTask = nil
+        recognitionRequest = nil
         invalidateSilenceTimer()
         if isListening {
             isListening = false
-            logger.notice("👂 Set isListening = false")
-        } else {
-             logger.warning("🧹 stopListeningCleanup called but isListening was already false.")
+            listeningAudioLevel = -50.0
+            logger.notice("🎙️ Listening stopped.")
         }
     }
-
-    // This function initiates processing, potentially from background threads (timer, recognition task)
-    // or main thread (cycleState). It needs to manage its context.
+    
     func stopListeningAndProcess(transcription: String? = nil) {
          Task { @MainActor [weak self] in
              guard let self = self else { return }
-             self.logger.notice("➡️ Entered stopListeningAndProcess.")
-
-             guard self.isListening else {
-                  self.logger.warning("⚠️ stopListeningAndProcess called but not in listening state. Ignoring.")
-                  return
-             }
-
+             guard self.isListening else { return }
+             
+             self.isProcessing = true
              let textToProcess = transcription ?? self.currentSpokenText
-             self.logger.info("👂 Stopping listening via stopListeningAndProcess, processing text: '\(textToProcess)'")
-             self.stopListeningCleanup() // Perform cleanup (sets isListening = false)
-
-             // Rest of the processing logic...
+             
+             self.stopListeningCleanup()
+             
              if !textToProcess.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                 // ... set isProcessing = true, append message ...
-                 self.isProcessing = true // Explicitly set *after* cleanup confirms listening stopped
+                 logger.info("⚙️ Processing transcription: '\(textToProcess)'")
                  let userMessage = ChatMessage(role: "user", content: textToProcess)
-                 self.messages.append(userMessage)
-                 self.logger.info("User said: \(textToProcess)")
-
-                 // Store the LLM Task handle
-                 self.llmTask = Task { // <-- STORE THE TASK
-                      await self.fetchLLMResponse(prompt: textToProcess)
-                      // Clear the task handle *only* on normal completion
-                      await MainActor.run { [weak self] in // Ensure MainActor for property access
-                          self?.llmTask = nil
-                           self?.logger.info("LLM Task completed normally, handle cleared.")
-                      }
+                 if self.messages.last?.role != "user" || self.messages.last?.content != userMessage.content {
+                     self.messages.append(userMessage)
+                 }
+                 
+                 self.llmTask = Task {
+                     await self.fetchLLMResponse(prompt: textToProcess)
                  }
              } else {
-                  // ... handle no text ...
-                 self.logger.info("No text detected to process.")
+                 logger.info("⚙️ No text detected to process.")
                  self.isProcessing = false
-                 // isListening is already false from stopListeningCleanup()
-                 self.isSpeaking = false
+                 self.startListening()
              }
          }
+     }
+
+    // --- Silence Detection ---
+    func resetSilenceTimer() {
+        if let timer = silenceTimer {
+             timer.fireDate = Date(timeIntervalSinceNow: silenceThreshold)
+         }
     }
-
-
-    // --- Silence Detection (Timer runs on RunLoop, ensure handler is on MainActor) ---
-     func startSilenceTimer() {
+    
+    func startSilenceTimer() {
         invalidateSilenceTimer()
-        logger.notice("⏱️ Starting silence timer (\(self.silenceThreshold)s)")
         silenceTimer = Timer.scheduledTimer(withTimeInterval: self.silenceThreshold, repeats: false) { [weak self] _ in
-             self?.logger.notice("⏱️ Silence timer fired!")
-             Task { @MainActor [weak self] in
-                  guard let self = self, self.isListening else {
-                       self?.logger.warning("⏱️ Silence timer fired, but self is nil or not listening anymore.")
-                       return
-                  }
-                  self.logger.notice("⏳ Silence detected by timer. Processing...")
-                  self.stopListeningAndProcess(transcription: self.currentSpokenText)
-             }
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                 guard self.isListening else { return }
+                self.logger.notice("⏳ Silence detected by timer. Processing...")
+                self.stopListeningAndProcess(transcription: self.currentSpokenText)
+            }
         }
     }
-
-     func resetSilenceTimer() {
-        // logger.debug("⏱️ Resetting silence timer.") // Noisy
-        silenceTimer?.fireDate = Date(timeIntervalSinceNow: silenceThreshold)
-    }
-
-     func invalidateSilenceTimer() {
+    
+    func invalidateSilenceTimer() {
         if silenceTimer != nil {
-            // logger.debug("⏱️ Invalidating silence timer.") // Noisy
             silenceTimer?.invalidate()
             silenceTimer = nil
         }
     }
-
+    
     // --- LLM Interaction ---
     func fetchLLMResponse(prompt: String) async {
-        let providerString = String(describing: selectedProvider)
-        logger.notice("🤖 Fetching LLM Response (\(providerString))...")
-
-        await MainActor.run { [weak self] in
-             guard let self = self else { return }
-             self.isProcessing = true
-             self.llmResponseBuffer = "" // Clear buffer at start of new request
-             self.logger.notice("Set isProcessing = true (LLM fetch started), cleared buffer.")
-         }
-
-        var fullResponseAccumulator = "" // Still accumulate for logging/history
-        var llmError: Error? = nil
-
-        do {
-            try Task.checkCancellation()
-            logger.info("🤖 LLM Task not cancelled, proceeding.")
-
-            switch selectedProvider {
-            case .gemini:
-                guard let apiKey = geminiAPIKey else { throw LlmError.apiKeyMissing(provider: "Gemini") }
-                let stream = try await fetchGeminiResponse(apiKey: apiKey, prompt: prompt)
-                for try await chunk in stream {
-                     try Task.checkCancellation()
-                     fullResponseAccumulator += chunk
-                     await self.bufferAndTrySpeak(text: chunk) // Buffer and potentially speak
-                }
-            case .claude:
-                guard let apiKey = anthropicAPIKey else { throw LlmError.apiKeyMissing(provider: "Claude") }
-                 let stream = try await fetchClaudeResponse(apiKey: apiKey, prompt: prompt)
-                 for try await chunk in stream {
-                      try Task.checkCancellation()
-                      fullResponseAccumulator += chunk
-                       await self.bufferAndTrySpeak(text: chunk) // Buffer and potentially speak
-                 }
-            }
-             if !Task.isCancelled { logger.info("🤖 LLM Stream Finished normally.") }
-
-        } catch is CancellationError {
-             logger.notice("⚡️ LLM Task Cancelled during fetch/stream processing.")
-             llmError = CancellationError() // Mark as cancelled for final processing
-        } catch {
-             if !(error is CancellationError) {
-                 logger.error("🚨 LLM Error: \(error.localizedDescription)")
-                 llmError = error
-                 // Add error message directly to buffer to be spoken
-                 await self.bufferAndTrySpeak(text: "Sorry, I had trouble processing that.")
-             }
-        }
-
-        // --- Final Processing after Stream Ends/Errors/Cancels ---
-        let finalAccumulatedResponse = fullResponseAccumulator // Capture final value
-
         await MainActor.run { [weak self] in
             guard let self = self else { return }
-
-            // Always try to speak any remaining buffered text, regardless of error/cancel
-            // unless it was a cancellation AND we didn't get any response
-            if !(llmError is CancellationError && finalAccumulatedResponse.isEmpty) {
-                self.logger.notice("🤖 LLM Task finished/cancelled/errored. Flushing remaining buffer...")
-                self.trySpeakBufferedChunks(flushAll: true) // Force speaking remaining buffer
-            } else {
-                 self.logger.notice("🤖 LLM Task cancelled with no response, not flushing buffer.")
+            self.llmResponseBuffer = ""
+            self.processedTextIndex = 0
+            self.isLLMFinished = false
+            self.nextAudioData = nil
+            self.isFetchingTTS = false
+            self.ttsFetchTask?.cancel()
+            self.ttsFetchTask = nil
+            self.hasReceivedFirstLLMChunk = false
+        }
+        
+        var fullResponseAccumulator = ""
+        var llmError: Error? = nil
+        
+        do {
+            try Task.checkCancellation()
+            
+            let stream: AsyncThrowingStream<String, Error>
+            let providerString = String(describing: selectedProvider)
+            switch selectedProvider {
+            case .gemini:
+                guard let apiKey = self.geminiAPIKey else { throw LlmError.apiKeyMissing(provider: "Gemini") }
+                stream = try await fetchGeminiResponse(apiKey: apiKey, prompt: prompt)
+            case .claude:
+                guard let apiKey = self.anthropicAPIKey else { throw LlmError.apiKeyMissing(provider: "Claude") }
+                stream = try await fetchClaudeResponse(apiKey: apiKey, prompt: prompt)
+            }
+            
+            for try await chunk in stream {
+                try Task.checkCancellation()
+                fullResponseAccumulator += chunk
+                await MainActor.run { [weak self] in
+                    guard let self = self else { return }
+                    if !self.hasReceivedFirstLLMChunk {
+                         logger.info("🤖 Received first LLM chunk (\(providerString)).")
+                         self.hasReceivedFirstLLMChunk = true
+                    }
+                    self.llmResponseBuffer.append(chunk)
+                    self.manageTTSPlayback()
+                }
+            }
+            
+        } catch is CancellationError {
+            logger.notice("⏹️ LLM Task Cancelled.")
+            llmError = CancellationError()
+            await MainActor.run { [weak self] in self?.stopSpeaking() }
+        } catch {
+            if !(error is CancellationError) {
+                 logger.error("🚨 LLM Error during stream: \(error.localizedDescription)")
+                 llmError = error
+                 await MainActor.run { [weak self] in self?.stopSpeaking() }
+             }
+        }
+        
+        await MainActor.run { [weak self] in
+            guard let self = self else { return }
+            
+            self.isLLMFinished = true
+            
+            self.manageTTSPlayback()
+            
+            if llmError == nil || !(llmError is CancellationError) {
+                 logger.info("🤖 LLM full response received (\(fullResponseAccumulator.count) chars).")
+                 print("--- LLM FINAL RESPONSE ---")
+                 print(fullResponseAccumulator)
+                 print("--------------------------")
             }
 
-
-            // Log the full accumulated message (useful for debugging)
-            print("--- LLM FINAL ACCUMULATED RESPONSE ---")
-            print(finalAccumulatedResponse)
-            print("---------------------------------------")
-
-            // Add to message history (only if not cancelled or if partially successful)
-             if !finalAccumulatedResponse.isEmpty {
-                let messageRole: String
-                if llmError == nil {
-                    messageRole = "assistant"
-                    self.logger.info("🤖 LLM Full Response logged to history.")
-                } else if !(llmError is CancellationError) {
-                     messageRole = "assistant_error"
-                     self.logger.info("🤖 LLM Partial Response logged to history (due to error).")
-                } else {
-                    messageRole = "assistant_partial"
-                     self.logger.info("🤖 LLM Partial Response logged to history (due to cancellation).")
-                }
-                 let assistantMessage = ChatMessage(role: messageRole, content: finalAccumulatedResponse)
-                 self.messages.append(assistantMessage)
-             }
-
-
-             // Reset processing state (speaking state is handled by TTS delegates/buffer logic)
-             if self.isProcessing {
-                  self.isProcessing = false
-                  self.logger.notice("Set isProcessing = false (LLM fetch processing complete/error/cancelled)")
-             }
-
-             // TTS state check (isSpeaking) should now primarily be driven by
-             // speakNextChunk starting and didFinish completing the queue.
-             // We don't necessarily set isSpeaking = false here anymore.
-              if !self.speechSynthesizer.isSpeaking && self.ttsQueue.isEmpty {
-                   if self.isSpeaking {
-                       self.isSpeaking = false
-                       self.logger.notice("Set isSpeaking = false (Synthesizer idle and queue empty after LLM completion)")
-                   }
-              } else {
-                   self.logger.notice("Synthesizer or TTS queue still active after LLM completion. isSpeaking remains \(self.isSpeaking)")
-              }
-         }
+            if !fullResponseAccumulator.isEmpty {
+                let messageRole = (llmError == nil) ? "assistant" : ((llmError is CancellationError) ? "assistant_partial" : "assistant_error")
+                let assistantMessage = ChatMessage(role: messageRole, content: fullResponseAccumulator)
+                if self.messages.last?.role != messageRole || self.messages.last?.content != assistantMessage.content {
+                     self.messages.append(assistantMessage)
+                 }
+            } else if llmError != nil && !(llmError is CancellationError) {
+                let errorMessage = ChatMessage(role: "assistant_error", content: "Sorry, an error occurred.")
+                self.messages.append(errorMessage)
+            }
+            
+            self.llmTask = nil
+        }
     }
-
-    // Error enum for LLM issues
+    
     enum LlmError: Error, LocalizedError {
         case apiKeyMissing(provider: String)
         case invalidURL
         case requestEncodingError(Error)
         case networkError(Error)
-        case invalidResponse(statusCode: Int)
+        case invalidResponse(statusCode: Int, body: String?)
         case responseDecodingError(Error)
         case streamingError(String)
-
+        
         var errorDescription: String? {
             switch self {
             case .apiKeyMissing(let provider): return "\(provider) API Key is missing."
             case .invalidURL: return "Invalid API endpoint URL."
             case .requestEncodingError(let error): return "Failed to encode request: \(error.localizedDescription)"
             case .networkError(let error): return "Network error: \(error.localizedDescription)"
-            case .invalidResponse(let statusCode): return "Invalid response from server: Status \(statusCode)"
+            case .invalidResponse(let statusCode, let body): return "Invalid response from server: Status \(statusCode). Body: \(body ?? "N/A")"
             case .responseDecodingError(let error): return "Failed to decode response: \(error.localizedDescription)"
             case .streamingError(let message): return "Streaming error: \(message)"
             }
         }
     }
-
-    // --- Gemini API Call ---
+    
     func fetchGeminiResponse(apiKey: String, prompt: String) async throws -> AsyncThrowingStream<String, Error> {
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(geminiModel):streamGenerateContent?key=\(apiKey)&alt=sse") else {
             throw LlmError.invalidURL
         }
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        // Construct messages
-         let history = messages.map { GeminiContent(role: $0.role == "user" ? "user" : "model", parts: [GeminiPart(text: $0.content)]) }
-         let currentMessage = GeminiContent(role: "user", parts: [GeminiPart(text: prompt)])
-         let payload = GeminiRequest(contents: history + [currentMessage])
-
+        
+        var conversationHistory: [GeminiContent] = []
+        if let sysPrompt = self.systemPrompt, !sysPrompt.isEmpty {
+            
+            conversationHistory.append(GeminiContent(role: "user", parts: [GeminiPart(text: sysPrompt)]))
+            conversationHistory.append(GeminiContent(role: "model", parts: [GeminiPart(text: "OK.")]))
+        }
+        let history = messages.map { GeminiContent(role: $0.role == "user" ? "user" : "model", parts: [GeminiPart(text: $0.content)]) }
+        conversationHistory.append(contentsOf: history)
+        let payload = GeminiRequest(contents: conversationHistory)
+        
         do {
             request.httpBody = try JSONEncoder().encode(payload)
         } catch {
             throw LlmError.requestEncodingError(error)
         }
-
-        logger.info("Gemini Request: Sending to \(url)")
+        
         let (bytes, response): (URLSession.AsyncBytes, URLResponse) = try await urlSession.bytes(for: request)
-
+        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LlmError.networkError(URLError(.badServerResponse))
         }
-
-        logger.info("Gemini Response Status: \(httpResponse.statusCode)")
+        
         guard (200...299).contains(httpResponse.statusCode) else {
-             var errorBody = ""
-             for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
-             logger.error("Gemini Error Body: \(errorBody)")
-            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode)
+            var errorBody = ""
+            for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
+            logger.error("Gemini Error Body: \(errorBody)")
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorBody)
         }
-
+        
         return AsyncThrowingStream { continuation in
             Task {
-                var streamError: Error? = nil // Variable to hold error within the task scope
+                var streamError: Error? = nil
                 do {
-                     // Process Server-Sent Events (SSE) style response from Gemini (?alt=sse)
                     for try await line in bytes.lines {
-                         // logger.debug("Gemini Raw Line: \(line)")
                         if line.hasPrefix("data: ") {
-                            let jsonData = Data(line.dropFirst(6).utf8) // Remove "data: "
+                            let jsonData = Data(line.dropFirst(6).utf8)
+                            if jsonData.isEmpty { continue }
                             do {
                                 let chunk = try JSONDecoder().decode(GeminiResponseChunk.self, from: jsonData)
                                 if let text = chunk.candidates?.first?.content?.parts.first?.text {
-                                     // logger.debug("Gemini Yielding Chunk: \(text)")
                                     continuation.yield(text)
                                 }
                             } catch {
-                                logger.error("🚨 Gemini JSON decoding error: \(error.localizedDescription) for line: \(line)")
-                                // Decide if this is fatal or ignorable
                             }
-                        } else if line.isEmpty {
-                             // Empty line might signify end of an event block in SSE, ignore here
                         }
                     }
-                     continuation.finish() // Indicate stream completion
-                     logger.info("Gemini Stream processing finished normally.") // Log normal finish
-                } catch {
-                    // Capture the error but finish the stream
-                    streamError = error
-                    if error is CancellationError {
-                         logger.notice("⚡️ Gemini stream processing cancelled.")
-                    } else {
-                         logger.error("🚨 Gemini stream processing error: \(error.localizedDescription)")
-                    }
-                }
-                // Finish the stream, throwing the captured error if one occurred (or nil)
+                } catch { streamError = error }
                 continuation.finish(throwing: streamError)
             }
         }
     }
-
-
-    // --- Claude API Call ---
+    
     func fetchClaudeResponse(apiKey: String, prompt: String) async throws -> AsyncThrowingStream<String, Error> {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
             throw LlmError.invalidURL
         }
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.addValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-        // Construct messages, including history
-         let history = messages.map { MessageParam(role: $0.role, content: $0.content) }
-         let currentMessage = MessageParam(role: "user", content: prompt)
-         let payload = ClaudeRequest(model: claudeModel, messages: history + [currentMessage], stream: true, max_tokens: 8000, temperature: 1.0)
-
+        
+        let history = messages.map { MessageParam(role: $0.role, content: $0.content) }
+        let systemPromptToUse: String?
+        if let sysPrompt = self.systemPrompt, !sysPrompt.isEmpty {
+            systemPromptToUse = sysPrompt
+        } else {
+            systemPromptToUse = nil
+        }
+        let payload = ClaudeRequest(
+            model: claudeModel,
+            system: systemPromptToUse,
+            messages: history,
+            stream: true,
+            max_tokens: 8000,
+            temperature: 1.0
+        )
+        
         do {
             request.httpBody = try JSONEncoder().encode(payload)
         } catch {
             throw LlmError.requestEncodingError(error)
         }
-
-        logger.info("Claude Request: Sending to \(url)")
+        
         let (bytes, response): (URLSession.AsyncBytes, URLResponse) = try await urlSession.bytes(for: request)
-
+        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LlmError.networkError(URLError(.badServerResponse))
         }
-
-        logger.info("Claude Response Status: \(httpResponse.statusCode)")
+        
         guard (200...299).contains(httpResponse.statusCode) else {
-             var errorBody = ""
-             for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
-             logger.error("Claude Error Body: \(errorBody)")
-             throw LlmError.invalidResponse(statusCode: httpResponse.statusCode)
+            var errorBody = ""
+            for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
+            logger.error("Claude Error Body: \(errorBody)")
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorBody)
         }
-
+        
         return AsyncThrowingStream { continuation in
-             Task {
-                 var streamError: Error? = nil // Variable to hold error within the task scope
-                 do {
-                     // Process Server-Sent Events (SSE)
-                     for try await line in bytes.lines {
-                         // logger.debug("Claude Raw Line: \(line)")
-                         if line.hasPrefix("data:") {
-                             let jsonData = Data(line.dropFirst(5).trimmingCharacters(in: .whitespaces).utf8)
-                             if jsonData.isEmpty { continue } // Skip empty data lines if they occur
-
-                             do {
-                                 let event = try JSONDecoder().decode(ClaudeStreamEvent.self, from: jsonData)
-                                 if event.type == "content_block_delta" || event.type == "message_delta" { // Handle both types just in case
-                                     if let text = event.delta?.text {
-                                         // logger.debug("Claude Yielding Chunk: \(text)")
-                                         continuation.yield(text)
-                                     }
-                                 } else if event.type == "message_stop" {
-                                      logger.info("Claude message_stop event received.")
-                                      // Log usage if needed: event.message?.usage
-                                      break // Stop processing on message_stop
-                                 }
-                             } catch {
-                                 logger.error("🚨 Claude JSON decoding error: \(error) for line: \(line)")
-                                 // Decide whether to continue or fail
-                             }
-                         }
-                     }
-                     logger.info("Claude Stream processing finished normally.") // Log normal finish
-                 } catch {
-                     // Capture the error but finish the stream
-                     streamError = error
-                     if error is CancellationError {
-                          logger.notice("⚡️ Claude stream processing cancelled.")
-                     } else {
-                          logger.error("🚨 Claude stream processing error: \(error.localizedDescription)")
-                     }
-                 }
-                 // Finish the stream, throwing the captured error if one occurred (or nil)
-                 continuation.finish(throwing: streamError)
-             }
-         }
-    }
-
-    // --- TTS Functions ---
-
-    // New function to handle buffering and triggering speech
-    private func bufferAndTrySpeak(text: String) async {
-        guard !text.isEmpty else { return }
-
-        await MainActor.run { [weak self] in
-            guard let self = self else { return }
-            self.llmResponseBuffer.append(text)
-            // logger.debug("Appended to buffer. New size: \(self.llmResponseBuffer.count)")
-            self.trySpeakBufferedChunks() // Try to speak if possible
-        }
-    }
-
-    // New function to process the buffer and speak if idle
-    private func trySpeakBufferedChunks(flushAll: Bool = false) {
-        guard Thread.isMainThread else {
-            logger.warning("trySpeakBufferedChunks called off main thread, dispatching.")
-            Task { @MainActor [weak self] in self?.trySpeakBufferedChunks(flushAll: flushAll) }
-            return
-        }
-
-        logger.debug("➡️ [trySpeakBufferedChunks] Entered. flushAll=\(flushAll), State: isSpeaking=\(self.isSpeaking), synthSpeaking=\(self.speechSynthesizer.isSpeaking), bufferEmpty=\(self.llmResponseBuffer.isEmpty), queueEmpty=\(self.ttsQueue.isEmpty)")
-
-        // Speak only if the synthesizer is NOT currently speaking AND
-        // (we are flushing OR the buffer has content ready)
-        if !self.speechSynthesizer.isSpeaking, !self.llmResponseBuffer.isEmpty {
-            let textToSpeak = self.llmResponseBuffer
-            self.llmResponseBuffer = "" // Clear the buffer
-
-            logger.notice("🗣️ [trySpeakBufferedChunks] Synthesizer idle, moving buffer (\(textToSpeak.count) chars) to TTS queue.")
-            self.ttsQueue.append(textToSpeak)
-            self.speakNextChunk() // Start speaking the newly added chunk
-        } else if flushAll && !self.llmResponseBuffer.isEmpty && self.speechSynthesizer.isSpeaking {
-             // If flushing, synthesizer is busy, but buffer has content, queue it anyway.
-             // It will be picked up by didFinish -> speakNextChunk later.
-             let textToSpeak = self.llmResponseBuffer
-             self.llmResponseBuffer = "" // Clear the buffer
-             logger.notice("🗣️ [trySpeakBufferedChunks] Flushing buffer while synthesizer busy. Adding (\(textToSpeak.count) chars) to queue.")
-             self.ttsQueue.append(textToSpeak)
-        } else if flushAll && !self.llmResponseBuffer.isEmpty && !self.speechSynthesizer.isSpeaking {
-             // Edge case: Flushing, synth idle, buffer has content (should have been caught above, but safe)
-             let textToSpeak = self.llmResponseBuffer
-             self.llmResponseBuffer = ""
-             logger.notice("🗣️ [trySpeakBufferedChunks] Flushing buffer (edge case). Moving (\(textToSpeak.count) chars) to TTS queue.")
-             self.ttsQueue.append(textToSpeak)
-             self.speakNextChunk()
-        }
-         logger.debug("⬅️ [trySpeakBufferedChunks] Exiting. State: isSpeaking=\(self.isSpeaking), synthSpeaking=\(self.speechSynthesizer.isSpeaking), bufferEmpty=\(self.llmResponseBuffer.isEmpty), queueEmpty=\(self.ttsQueue.isEmpty)")
-
-    }
-
-
-    // This must be called on the MainActor because it interacts with AVSpeechSynthesizer
-     func speakNextChunk() {
-        guard Thread.isMainThread else {
-            logger.warning("speakNextChunk called off main thread, dispatching.")
-            Task { @MainActor [weak self] in self?.speakNextChunk() }
-            return
-        }
-
-        logger.debug("➡️ [speakNextChunk] Entered. State Before Guard: isSpeaking=\(self.isSpeaking), synthSpeaking=\(self.speechSynthesizer.isSpeaking), queueEmpty=\(self.ttsQueue.isEmpty)")
-
-        // Speak if synthesizer is idle AND the queue has items
-        guard !self.speechSynthesizer.isSpeaking, !self.ttsQueue.isEmpty else {
-             logger.warning("speakNextChunk: Condition failed. isSpeaking=\(self.isSpeaking), synthSpeaking=\(self.speechSynthesizer.isSpeaking), queueEmpty=\(self.ttsQueue.isEmpty). Returning.")
-            return
-        }
-
-        let textToSpeak = self.ttsQueue.removeFirst()
-        logger.debug("speakNextChunk: Dequeued chunk. Queue count now: \(self.ttsQueue.count)")
-        let utterance = AVSpeechUtterance(string: textToSpeak)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-
-        // --- Calculate Actual Synthesizer Rate ---
-        // Log the system-defined min/max rates
-        logger.debug("System Rates: Min=\(AVSpeechUtteranceMinimumSpeechRate), Max=\(AVSpeechUtteranceMaximumSpeechRate), Default=\(AVSpeechUtteranceDefaultSpeechRate)")
-
-        let rateSliderValue = self.ttsRate // Value from slider [0.0, 1.0]
-        let defaultSynthRate = AVSpeechUtteranceDefaultSpeechRate // 0.5 (target for slider min, should be ~1x perceived)
-        let maxSynthRate = AVSpeechUtteranceMaximumSpeechRate     // 1.0 (target for slider max, sounds like >2x for user)
-
-        // Map slider [0.0, 1.0] -> synthesizer rate [0.5, 1.0]
-        // Formula: synthRate = defaultSynthRate + sliderValue * (maxSynthRate - defaultSynthRate)
-        let calculatedSynthRate = defaultSynthRate + rateSliderValue * (maxSynthRate - defaultSynthRate)
-
-        // Clamp just to be safe, although the formula ensures it's within [0.5, 1.0]
-        // Clamping might be redundant now but harmless.
-        let clampedSynthRate = max(defaultSynthRate, min(calculatedSynthRate, maxSynthRate))
-
-        utterance.rate = clampedSynthRate // Use the calculated synthesizer rate within the documented range [0.5, 1.0]
-
-        // Log slider value, calculated synth rate, and display multiplier for comparison
-        logger.debug("Slider Value: \(rateSliderValue, format: .fixed(precision: 2)), Calculated Synth Rate: \(clampedSynthRate, format: .fixed(precision: 2)), Display Multiplier: \(self.ttsDisplayMultiplier, format: .fixed(precision: 1))x")
-        // --- End Rate Calculation ---
-
-
-        if utterance.voice == nil {
-             logger.warning("TTS voice for en-US not available, using default.")
-             utterance.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
-        }
-
-        // Set speaking state *before* calling speak
-        if !self.isSpeaking {
-            logger.notice("🗣️ [speakNextChunk] Setting isSpeaking = true before calling speak.")
-            self.isSpeaking = true // Set state based on starting speech
-        }
-        // isProcessing is managed by LLM fetch start/end
-
-
-        let shortUtteranceToSpeak = String(textToSpeak.prefix(80)) + (textToSpeak.count > 80 ? "..." : "")
-        logger.notice("🗣️ [speakNextChunk] Attempting to speak chunk: \"\(shortUtteranceToSpeak)\"")
-        self.speechSynthesizer.speak(utterance)
-        logger.debug("⬅️ [speakNextChunk] Exiting after calling speak.")
-    }
-
-    // Needs to run on MainActor
-     func stopSpeaking() {
-        guard Thread.isMainThread else {
-            logger.warning("stopSpeaking called off main thread, dispatching.")
-            Task { @MainActor [weak self] in self?.stopSpeaking() }
-            return
-        }
-
-        logger.notice("🗣️ Entering stopSpeaking. Current State: isSpeaking=\(self.isSpeaking), synthesizer.isSpeaking=\(self.speechSynthesizer.isSpeaking), bufferCount=\(self.llmResponseBuffer.count)")
-
-        // Clear the LLM buffer as well when stopping speech explicitly
-        if !self.llmResponseBuffer.isEmpty {
-             logger.notice("🗣️ Clearing LLM response buffer during stopSpeaking.")
-             self.llmResponseBuffer = ""
-        }
-
-        if self.speechSynthesizer.isSpeaking {
-            logger.notice("🗣️ Stopping TTS requested (synthesizer was speaking). Queue count before clear: \(self.ttsQueue.count)")
-            self.speechSynthesizer.stopSpeaking(at: .immediate)
-            self.ttsQueue.removeAll()
-            logger.notice("🗣️ Synthesizer stopped, queue cleared.")
-
-            if !self.isProcessing, let task = self.llmTask {
-                 logger.notice("⚡️ TTS stopped while not processing, cancelling potentially lingering LLM task.")
-                 task.cancel()
-                 self.llmTask = nil
+            Task {
+                var streamError: Error? = nil
+                do {
+                    for try await line in bytes.lines {
+                        if line.hasPrefix("data:") {
+                            let jsonData = Data(line.dropFirst(5).trimmingCharacters(in: .whitespaces).utf8)
+                            if jsonData.isEmpty { continue }
+                            do {
+                                let event = try JSONDecoder().decode(ClaudeStreamEvent.self, from: jsonData)
+                                if event.type == "content_block_delta" || event.type == "message_delta" {
+                                    if let text = event.delta?.text {
+                                        continuation.yield(text)
+                                    }
+                                }
+                            } catch { }
+                        }
+                    }
+                } catch { streamError = error }
+                continuation.finish(throwing: streamError)
             }
+        }
+    }
+    
+    // --- New TTS Playback Logic ---
+
+    @MainActor
+    private func manageTTSPlayback() {
+        guard !isFetchingTTS else { return }
+
+        if currentAudioPlayer == nil {
+            if let dataToPlay = nextAudioData {
+                self.nextAudioData = nil
+                playAudioData(dataToPlay)
+                return
+            }
+        }
+
+        let unprocessedText = llmResponseBuffer.suffix(from: llmResponseBuffer.index(llmResponseBuffer.startIndex, offsetBy: processedTextIndex))
+
+        let shouldFetchInitial = currentAudioPlayer == nil && !unprocessedText.isEmpty && (isLLMFinished || unprocessedText.count > 5)
+        let shouldFetchNext = currentAudioPlayer != nil && !unprocessedText.isEmpty
+
+        if shouldFetchInitial || shouldFetchNext {
+             guard nextAudioData == nil else { return }
+
+            let (chunk, nextIndex) = findNextTTSChunk(text: llmResponseBuffer, startIndex: processedTextIndex, isComplete: isLLMFinished)
+
+            if chunk.isEmpty {
+                if isLLMFinished && processedTextIndex == llmResponseBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
+                    if isProcessing {
+                        isProcessing = false
+                        logger.info("⚙️ Processing finished (TTS Idle).")
+                    }
+                    autoStartListeningAfterDelay()
+                }
+                return
+            }
+
+            logger.info("➡️ Sending chunk (\(chunk.count) chars) to TTS API...")
+            self.processedTextIndex = nextIndex
+            self.isFetchingTTS = true
+
+            guard let apiKey = self.openaiAPIKey else {
+                 logger.error("🚨 OpenAI API Key missing, cannot fetch TTS.")
+                 self.isFetchingTTS = false
+                 return
+            }
+
+            self.ttsFetchTask = Task { [weak self] in
+                do {
+                    let fetchedData = try await self?.fetchOpenAITTSAudio(apiKey: apiKey, text: chunk, speed: self?.ttsRate ?? AVSpeechUtteranceDefaultSpeechRate)
+                    try Task.checkCancellation()
+
+                    await MainActor.run { [weak self] in
+                        guard let self = self else { return }
+                        self.isFetchingTTS = false
+                        self.ttsFetchTask = nil
+
+                        guard let data = fetchedData else {
+                            logger.warning("TTS fetch returned no data for chunk.")
+                            self.manageTTSPlayback()
+                            return
+                        }
+                        
+                        logger.info("⬅️ Received TTS audio (\(data.count) bytes).")
+
+                        if self.currentAudioPlayer == nil {
+                            self.playAudioData(data)
+                        } else {
+                            self.nextAudioData = data
+                        }
+                    }
+                } catch is CancellationError {
+                    await MainActor.run { [weak self] in
+                        self?.logger.notice("⏹️ TTS Fetch task cancelled.")
+                        self?.isFetchingTTS = false
+                        self?.ttsFetchTask = nil
+                    }
+                } catch {
+                    await MainActor.run { [weak self] in
+                        self?.logger.error("🚨 TTS Fetch failed: \(error.localizedDescription)")
+                        self?.isFetchingTTS = false
+                        self?.ttsFetchTask = nil
+                         self?.manageTTSPlayback()
+                    }
+                }
+            }
+        } else if isLLMFinished && processedTextIndex == llmResponseBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
+            if isProcessing {
+                isProcessing = false
+                logger.info("⚙️ Processing finished (TTS Idle - Final Check).")
+            }
+            autoStartListeningAfterDelay()
+        }
+    }
+
+
+    private func findNextTTSChunk(text: String, startIndex: Int, isComplete: Bool) -> (String, Int) {
+        let remainingText = text.suffix(from: text.index(text.startIndex, offsetBy: startIndex))
+        if remainingText.isEmpty { return ("", startIndex) }
+
+        if isComplete {
+            let endIndex = min(remainingText.count, maxTTSChunkLength)
+            let chunk = String(remainingText.prefix(endIndex))
+            return (chunk, startIndex + chunk.count)
+        }
+
+        let potentialChunk = remainingText.prefix(maxTTSChunkLength)
+        var bestSplitIndex = potentialChunk.endIndex
+
+        if let lastSentenceEnd = potentialChunk.lastIndex(where: { ".!?".contains($0) }) {
+            let distanceToEnd = potentialChunk.distance(from: lastSentenceEnd, to: potentialChunk.endIndex)
+            if distanceToEnd < 150 || potentialChunk.count < 200 {
+                 bestSplitIndex = potentialChunk.index(after: lastSentenceEnd)
+            }
+        } else if let lastComma = potentialChunk.lastIndex(where: { ",".contains($0) }) {
+             let distanceToEnd = potentialChunk.distance(from: lastComma, to: potentialChunk.endIndex)
+             if distanceToEnd < 150 || potentialChunk.count < 200 {
+                 bestSplitIndex = potentialChunk.index(after: lastComma)
+             }
+        }
+
+        let chunkLength = potentialChunk.distance(from: potentialChunk.startIndex, to: bestSplitIndex)
+
+        let minInitialChunkLength = 80
+        let minSubsequentChunkLength = 100
+
+        if startIndex == 0 && chunkLength < minInitialChunkLength && !isComplete {
+            return ("", startIndex)
+        }
+        if startIndex > 0 && chunkLength < minSubsequentChunkLength && potentialChunk.count == remainingText.count && !isComplete {
+            return ("", startIndex)
+        }
+
+        let finalChunk = String(potentialChunk[..<bestSplitIndex])
+        return (finalChunk, startIndex + finalChunk.count)
+    }
+
+
+    @MainActor
+    private func playAudioData(_ data: Data) {
+        guard !data.isEmpty else {
+             logger.warning("Attempted to play empty audio data.")
+             self.manageTTSPlayback()
+             return
+        }
+        do {
+             let audioSession = AVAudioSession.sharedInstance()
+             // Ensure category allows playback BEFORE overriding
+             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
+
+             // --- Add Speaker Override ---
+             do {
+                 try audioSession.overrideOutputAudioPort(.speaker)
+                 logger.info("🔊 Audio output route forced to Speaker.")
+             } catch {
+                 logger.error("🚨 Failed to override audio output to speaker: \(error.localizedDescription)")
+             }
+             // --- End Speaker Override ---
+
+             try audioSession.setActive(true) // Activate session *after* setting category/override
+
+            currentAudioPlayer = try AVAudioPlayer(data: data)
+            currentAudioPlayer?.delegate = self
+            currentAudioPlayer?.enableRate = true
+            currentAudioPlayer?.isMeteringEnabled = true
+            
+            if let player = currentAudioPlayer {
+                 player.rate = self.ttsDisplayMultiplier
+            }
+
+            if currentAudioPlayer?.play() == true {
+                isSpeaking = true
+                logger.info("▶️ Playback started.") // Log playback start
+                startTTSLevelTimer()
+                manageTTSPlayback() // Trigger next fetch
+            } else {
+                logger.error("🚨 Failed to start audio playback.")
+                currentAudioPlayer = nil
+                 isSpeaking = false
+                 manageTTSPlayback()
+            }
+        } catch {
+            logger.error("🚨 Failed to initialize or play audio: \(error.localizedDescription)")
+            currentAudioPlayer = nil
+            isSpeaking = false
+            manageTTSPlayback()
+        }
+    }
+
+    // --- Speech Recognizer Delegate ---
+    nonisolated func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            if !available {
+                self.logger.error("🚨 Speech recognizer not available.")
+                self.stopListeningCleanup()
+            }
+        }
+    }
+    
+    // --- Audio Player Delegate ---
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+             guard player === self.currentAudioPlayer else { return }
+
+            logger.info("⏹️ Playback finished (Success: \(flag)).")
+            self.invalidateTTSLevelTimer()
+            self.currentAudioPlayer = nil
 
             if self.isSpeaking {
-                 isSpeaking = false
-                 logger.notice("🗣️ Set isSpeaking = false (TTS stopped)")
-            } else {
-                logger.notice("🗣️ Synthesizer stopped, but isSpeaking was already false.")
+                self.isSpeaking = false
+                if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
             }
-        } else {
-             logger.notice("🗣️ stopSpeaking called, but synthesizer was not speaking.")
-             // Still clear queue in case something was pending but hadn't started
-             if !self.ttsQueue.isEmpty {
-                 self.ttsQueue.removeAll()
-                 logger.notice("🗣️ Cleared TTS queue even though synthesizer wasn't speaking.")
-             }
-             if self.isSpeaking {
-                 isSpeaking = false
-                  logger.notice("🗣️ Synthesizer wasn't speaking, but isSpeaking was true. Set isSpeaking = false.")
-             }
+            
+            self.manageTTSPlayback()
         }
-        logger.notice("🗣️ Exiting stopSpeaking. Final State: isSpeaking=\(self.isSpeaking)")
     }
 
-    // --- AVSpeechSynthesizerDelegate Methods ---
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-         Task { @MainActor [weak self] in
-             guard let self = self else { return } // First guard unwraps optional self
-             let shortUtterance = String(utterance.speechString.prefix(80)) + (utterance.speechString.count > 80 ? "..." : "")
-             self.logger.notice("🗣️ [didFinish] Finished: \"\(shortUtterance)\". State Before Check: isSpeaking=\(self.isSpeaking), synthSpeaking=\(synthesizer.isSpeaking), queueEmpty=\(self.ttsQueue.isEmpty), bufferEmpty=\(self.llmResponseBuffer.isEmpty)")
-
-             self.logger.notice("🗣️ [didFinish] Applying tiny delay before checking queue/buffer...")
-             try? await Task.sleep(nanoseconds: 50_000_000) // 50ms delay
-
-             // Now 'self' is definitely valid here if the first guard passed.
-             self.logger.notice("🗣️ [didFinish Delay] Delay finished. Checking queue/buffer again...")
-
-             // Check queue first
-             if !self.ttsQueue.isEmpty {
-                  self.logger.notice("🗣️ [didFinish Delay] More chunks in queue (\(self.ttsQueue.count)), calling speakNextChunk...")
-                  self.speakNextChunk()
-             } else if !self.llmResponseBuffer.isEmpty {
-                 self.logger.notice("🗣️ [didFinish Delay] TTS Queue empty, but buffer has content. Calling trySpeakBufferedChunks...")
-                 self.trySpeakBufferedChunks()
-             } else {
-                 self.logger.notice("🗣️ [didFinish Delay] All TTS finished (queue and buffer empty).")
-                 if self.isSpeaking {
-                    self.isSpeaking = false
-                    self.logger.notice("🗣️ [didFinish Delay] Set isSpeaking = false.")
-                 } else {
-                     self.logger.notice("🗣️ [didFinish Delay] isSpeaking was already false.")
-                 }
-             }
-             self.logger.notice("🗣️ [didFinish Delay] Exiting delegate method task. State After: isSpeaking=\(self.isSpeaking), synthSpeaking=\(synthesizer.isSpeaking), queueEmpty=\(self.ttsQueue.isEmpty), bufferEmpty=\(self.llmResponseBuffer.isEmpty)")
-         }
-    }
-
-     // Also add log to cancel delegate
-     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
          Task { @MainActor [weak self] in
              guard let self = self else { return }
-             let shortUtterance = String(utterance.speechString.prefix(80)) + (utterance.speechString.count > 80 ? "..." : "")
-             self.logger.warning("🗣️ [didCancel] Cancelled speaking: \"\(shortUtterance)\". Current State: isSpeaking=\(self.isSpeaking)")
-              // Reset speaking state if cancellation happened externally? Should be handled by stopSpeaking.
-               if self.isSpeaking {
-                    // self.isSpeaking = false // Let stopSpeaking handle this
-                    // self.logger.warning("🗣️ [didCancel] Setting isSpeaking = false.")
-               }
+             self.logger.error("🚨 Audio player decode error: \(error?.localizedDescription ?? "Unknown error")")
+             self.invalidateTTSLevelTimer()
+              if player === self.currentAudioPlayer {
+                  self.currentAudioPlayer = nil
+                  self.isSpeaking = false
+                  self.ttsOutputLevel = 0.0
+                  self.manageTTSPlayback()
+              }
          }
      }
 
-    // --- SFSpeechRecognizerDelegate Methods ---
-    // This can be called on a background thread.
-     nonisolated func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
-         Task { @MainActor [weak self] in
-             guard let self = self else { return }
-             if !available {
-                 self.logger.error("🚨 Speech recognizer not available.")
-                 // Handle unavailability, maybe disable listening feature
-                 self.stopListeningCleanup() // Ensure cleanup on main actor
-             } else {
-                 self.logger.info("✅ Speech recognizer available.")
-             }
-         }
-    }
+    // --- Auto-Restart Listening ---
+    func autoStartListeningAfterDelay() {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            guard !self.isSpeaking && !self.isProcessing && !self.isListening else { return }
+            
+            logger.info("🎙️ TTS finished. Switching to user turn...")
+            try? await Task.sleep(nanoseconds: 200_000_000)
 
+            if !self.isListening && !self.isProcessing && !self.isSpeaking {
+                self.startListening()
+            } else {
+                 logger.warning("🎤 Aborted auto-start: State changed during brief delay.")
+            }
+        }
+    }
+    
     // --- Cleanup ---
     deinit {
-        logger.info("ViewModel deinited.")
-        // Removed calls to main actor isolated functions
-        // rely on cleanupOnDisappear instead.
-        // stopAudioEngine() // REMOVED
-        // invalidateSilenceTimer() // REMOVED
     }
-
-     func cleanupOnDisappear() {
-         logger.info("Cleaning up on disappear...")
-         stopListeningCleanup()
-         stopSpeaking()
-     }
-
-    // COMPUTED PROPERTY for display multiplier
+    func cleanupOnDisappear() {
+        stopListeningCleanup()
+        self.stopSpeaking()
+    }
+    
+    // --- TTS Speed Calculation ---
     var ttsDisplayMultiplier: Float {
-        let rate = self.ttsRate // Current slider value (0.0 to 1.0)
-
-        // Map slider range [0.0, 1.0] to display range [1.0x, 4.0x]
+        let rate = self.ttsRate
         let minDisplay: Float = 1.0
         let maxDisplay: Float = 4.0
-        // Linear interpolation: display = min + (rate - rateMin) * (displayRange / rateRange)
-        // Since rate range is [0.0, 1.0], rateRange = 1.0 and (rate - rateMin) = rate
-        // display = 1.0 + rate * (4.0 - 1.0) / (1.0 - 0.0)
-        // display = 1.0 + rate * 3.0
         return minDisplay + rate * (maxDisplay - minDisplay)
+    }
+    
+    // --- OpenAI TTS Fetch ---
+    func fetchOpenAITTSAudio(apiKey: String, text: String, speed: Float) async throws -> Data {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LlmError.streamingError("Cannot synthesize empty text")
+        }
+        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
+            throw LlmError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        
+        let minOpenAISpeed: Float = 1.0
+        let maxOpenAISpeed: Float = 4.0
+        let calculatedOpenAISpeed = minOpenAISpeed + speed * (maxOpenAISpeed - minOpenAISpeed)
+        let clampedOpenAISpeed = max(0.25, min(calculatedOpenAISpeed, 4.0))
+        
+        let payload = OpenAITTSRequest(
+            model: openAITTSModel, input: text, voice: openAITTSVoice,
+            response_format: openAITTSFormat, speed: clampedOpenAISpeed
+        )
+        
+        do { request.httpBody = try JSONEncoder().encode(payload) }
+        catch { throw LlmError.requestEncodingError(error) }
+        
+        let (data, response): (Data, URLResponse)
+        do { (data, response) = try await urlSession.data(for: request) }
+        catch { throw LlmError.networkError(error) }
+        
+        guard let httpResponse = response as? HTTPURLResponse else { throw LlmError.networkError(URLError(.badServerResponse)) }
+        
+        guard (200...299).contains(httpResponse.statusCode) else {
+            var errorDetails = ""
+            if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
+            logger.error("🚨 OpenAI TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
+        }
+        
+        guard !data.isEmpty else { throw LlmError.streamingError("Received empty audio data from OpenAI TTS API") }
+        
+        return data
+    }
+
+    // --- TTS Level Visualization Logic ---
+    func startTTSLevelTimer() {
+        invalidateTTSLevelTimer()
+        ttsLevelTimer = Timer.scheduledTimer(withTimeInterval: ttsLevelUpdateRate, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.updateTTSLevel() }
+        }
+    }
+    func invalidateTTSLevelTimer() {
+         if ttsLevelTimer != nil {
+             ttsLevelTimer?.invalidate()
+             ttsLevelTimer = nil
+             if self.currentAudioPlayer == nil && self.ttsOutputLevel != 0.0 {
+                  self.ttsOutputLevel = 0.0
+             }
+         }
+     }
+    @MainActor private func updateTTSLevel() {
+        guard let player = self.currentAudioPlayer, player.isPlaying else {
+            if self.ttsOutputLevel != 0.0 {
+                 self.ttsOutputLevel = 0.0
+            }
+            invalidateTTSLevelTimer()
+            return
+        }
+        player.updateMeters()
+        let averagePower = player.averagePower(forChannel: 0)
+
+        let minDBFS: Float = -50.0
+        let maxDBFS: Float = 0.0
+        var normalizedLevel: Float = 0.0
+
+        if averagePower > minDBFS {
+            let dbRange = maxDBFS - minDBFS
+            if dbRange > 0 {
+                let clampedPower = max(averagePower, minDBFS)
+                normalizedLevel = (clampedPower - minDBFS) / dbRange
+            }
+        }
+
+        let exponent: Float = 1.5
+        let curvedLevel = pow(normalizedLevel, exponent)
+        let finalLevel = max(0.0, min(curvedLevel, 1.0))
+
+        let smoothingFactor: Float = 0.2
+        let smoothedLevel = self.ttsOutputLevel * (1.0 - smoothingFactor) + finalLevel * smoothingFactor
+
+        if abs(self.ttsOutputLevel - smoothedLevel) > 0.01 || (smoothedLevel == 0 && self.ttsOutputLevel != 0) {
+            self.ttsOutputLevel = smoothedLevel
+        }
+    }
+
+    @MainActor
+    func stopSpeaking() {
+         let wasSpeaking = self.isSpeaking
+         
+         if let task = self.ttsFetchTask {
+             task.cancel()
+             self.ttsFetchTask = nil
+             self.isFetchingTTS = false
+         }
+
+         if let player = self.currentAudioPlayer {
+             player.stop()
+             self.currentAudioPlayer = nil
+         }
+
+         self.invalidateTTSLevelTimer()
+
+         if self.nextAudioData != nil {
+             self.nextAudioData = nil
+         }
+
+         if self.isSpeaking {
+             self.isSpeaking = false
+             if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+         }
+
+         if wasSpeaking && self.isLLMFinished && self.ttsFetchTask == nil && self.currentAudioPlayer == nil && self.nextAudioData == nil {
+             if self.isProcessing {
+                 self.isProcessing = false
+             }
+         }
+
+         logger.notice("⏹️ TTS interrupted.")
     }
 }
 
-// MARK: - ContentView
-
 struct ContentView: View {
     @StateObject private var viewModel = ChatViewModel()
-
+    
     var body: some View {
         VStack {
             Spacer()
-
+            
             VoiceIndicatorView(
                 isListening: $viewModel.isListening,
                 isProcessing: $viewModel.isProcessing,
-                isSpeaking: $viewModel.isSpeaking
+                isSpeaking: $viewModel.isSpeaking,
+                audioLevel: $viewModel.listeningAudioLevel,
+                ttsLevel: $viewModel.ttsOutputLevel
             )
             .onTapGesture {
-                // Wrap the call that initiates async work in a Task
-                Task { // Start asynchronous work here
-                    viewModel.cycleState() // Call the function within the Task
+                Task {
+                    viewModel.cycleState()
                 }
             }
-
+            
             HStack {
                 Text("Speed:")
                     .foregroundColor(.white)
-                Slider(value: $viewModel.ttsRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate, step: 0.05)
-                // Display the multiplier (Default rate 0.5 = 1.0x)
+                Slider(value: $viewModel.ttsRate, in: 0.0...1.0, step: 0.05)
                 Text(String(format: "%.1fx", viewModel.ttsDisplayMultiplier))
                     .foregroundColor(.white)
-                    .frame(width: 40, alignment: .leading) // Align text
+                    .frame(width: 40, alignment: .leading)
             }
             .padding()
-             // .disabled(viewModel.isSpeaking) // REMOVED: Allow adjustment while speaking
-
+            
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.edgesIgnoringSafeArea(.all))
         .onAppear {
-             // viewModel.logger.critical("🚨 ContentView onAppear - TESTING LOG OUTPUT 🚨") // Comment out or remove logger call
-             viewModel.logger.info("ContentView appeared.") // Keep this one for now
-            // Optional: Automatically start listening when the view appears
-            // viewModel.startListening()
+            viewModel.logger.info("ContentView appeared.")
         }
         .onDisappear {
-             viewModel.logger.info("ContentView disappeared.")
-             // Ensure cleanup when the view is no longer visible
-             viewModel.cleanupOnDisappear()
+            viewModel.logger.info("ContentView disappeared.")
+            viewModel.cleanupOnDisappear()
         }
     }
 }
 
-// --- Previews ---
+
 #Preview {
     ContentView()
 }
-
