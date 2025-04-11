@@ -94,6 +94,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatViewModel")
     
     enum LLMProvider { case gemini, claude }
+    enum TTSState { case idle, fetching, buffering, playing } // Simplified state concept
     
     // --- Published Properties ---
     @Published var messages: [ChatMessage] = []
@@ -346,7 +347,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             if !isListening && !isProcessing && !isSpeaking {
                 startListening()
             } else if isListening {
-                stopListeningAndProcess()
+                cancelListening()
             } else if isProcessing || isSpeaking {
                 cancelOngoingTasks()
             }
@@ -395,8 +396,6 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             stopAndResetTTSEngine()
         }
         
-        isPlaybackFinished = false 
-
         isListening = true
         isProcessing = false
         // isSpeaking should be false after potential stopAndResetTTSEngine
@@ -408,7 +407,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         let audioSession = AVAudioSession.sharedInstance()
         do {
             // Use playAndRecord to allow potential TTS overlap if needed later, but duck others.
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP, .defaultToSpeaker])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             logger.error("🚨 Audio session setup error: \(error.localizedDescription)")
@@ -504,6 +503,21 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             logger.error("🚨 Audio input engine start error: \(error.localizedDescription)")
             stopListeningCleanup() // Cleanup if engine fails to start
         }
+    }
+
+    // <<< ADDED: Function to cancel user listening without processing >>>
+    private func cancelListening() {
+        logger.notice("🎙️ Listening cancelled by user tap.")
+        stopListeningCleanup() // Reuse existing cleanup logic
+
+        // Ensure all states are idle explicitly, though stopListeningCleanup should handle most
+        isListening = false
+        isProcessing = false
+        isSpeaking = false
+        listeningAudioLevel = -50.0 // Reset level for UI
+
+        // No need to call processing or LLM fetch here.
+        // The UI should now reflect the idle (grey) state.
     }
 
     func stopListeningAndProcess(transcription: String? = nil) {
@@ -1170,6 +1184,12 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
 
         // Decide next action (e.g., return to listening)
         autoStartListeningAfterDelay()
+
+        // Reset the flag for the next playback session
+        Task { @MainActor [weak self] in // Delay reset slightly
+            try? await Task.sleep(for: .milliseconds(10))
+            self?.isPlaybackFinished = false
+        }
     }
 
     // Finds the next chunk of text suitable for TTS
