@@ -94,7 +94,6 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatViewModel")
     
     enum LLMProvider { case gemini, claude }
-    enum TTSState { case idle, fetching, buffering, playing } // Simplified state concept
     
     // --- Published Properties ---
     @Published var messages: [ChatMessage] = []
@@ -112,6 +111,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     private var llmTask: Task<Void, Never>? = nil
     private var ttsFetchAndBufferTask: Task<Void, Error>? = nil // Handles fetching N *and* N+1 logic now
     private var isLLMFinished: Bool = false
+    private var isPlaybackFinished: Bool = false // <<< ADDED: Guard for playbackDidFinish
     private var llmResponseBuffer: String = ""
     private var processedTextIndex: Int = 0 // Tracks end of the *last chunk sent* for TTS fetching
     private var hasUserStartedSpeakingThisTurn: Bool = false
@@ -172,11 +172,6 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         return URLSession(configuration: config)
     }()
 
-    // --- NEW State for Concurrent Fetch Strategy ---
-    private var fetchContinuation: CheckedContinuation<Void, Error>? = nil // Signals fetch completion
-    private var isFetchingNextChunk: Bool = false // Tracks if the N+1 fetch is active
-    private var fetchTriggeredByPlaybackStart = false // Ensure trigger fires only once per chunk start
-
     // --- Initialization ---
     override init() {
         super.init()
@@ -213,7 +208,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         } else {
             logger.info("Custom system prompt loaded.")
         }
-        }
+    }
         
     private func setupLifecycleObservers() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -274,10 +269,11 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     @MainActor
     private func updateTimePitchRate() {
         guard isTTSEnginePrepared || ttsAudioEngine.isRunning else { return } // Avoid updates if not ready
-        let targetRate = self.ttsDisplayMultiplier // Use calculated display multiplier
+        // Re-enable local TimePitch control for live feedback
+        let targetRate = self.ttsDisplayMultiplier // Use calculated display multiplier again
         if abs(ttsTimePitchNode.rate - targetRate) > 0.01 {
             ttsTimePitchNode.rate = targetRate
-            // logger.debug("TimePitch rate set to: \(targetRate)")
+            logger.debug("TimePitch rate set to: \(targetRate)") // Reverted log message
         }
     }
 
@@ -310,10 +306,8 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         _pendingAudioBuffers.removeAll()
         scheduledBufferCount = 0
         completedBufferCount = 0
-        fetchContinuation?.resume(throwing: CancellationError()) // Cancel any pending fetch wait
-        fetchContinuation = nil
-        isFetchingNextChunk = false
-        fetchTriggeredByPlaybackStart = false
+        ttsFetchAndBufferTask?.cancel()
+        ttsFetchAndBufferTask = nil
 
         // Stop level timer and reset level
         invalidateTTSLevelTimer()
@@ -375,9 +369,8 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             task.cancel()
             ttsFetchAndBufferTask = nil
         }
-        fetchContinuation?.resume(throwing: CancellationError()) // Cancel wait
-        fetchContinuation = nil
-        isFetchingNextChunk = false
+        isLLMFinished = true // Mark LLM as done
+        isProcessing = false // No longer waiting for LLM specifically
 
         // Stop and reset TTS audio engine and state
         stopAndResetTTSEngine() // This now handles player stop, reset, buffers, state vars
@@ -385,7 +378,6 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         // Reset LLM buffer state
         self.llmResponseBuffer = ""
         self.processedTextIndex = 0
-        self.isLLMFinished = false
         self.hasReceivedFirstLLMChunk = false
     }
     
@@ -403,6 +395,8 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             stopAndResetTTSEngine()
         }
         
+        isPlaybackFinished = false 
+
         isListening = true
         isProcessing = false
         // isSpeaking should be false after potential stopAndResetTTSEngine
@@ -914,67 +908,62 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     // Central function to manage starting/continuing the TTS stream
     @MainActor
     private func manageTTSFlow() {
-        // logger.debug("manageTTSFlow called. isSpeaking: \(isSpeaking), task active: \(ttsFetchAndBufferTask != nil), isFetchingNext: \(isFetchingNextChunk)")
+        // logger.debug("manageTTSFlow called. isSpeaking: \(isSpeaking), task active: \(ttsFetchAndBufferTask != nil)")
 
-        // Condition to start the *very first* chunk fetch
-        if !isSpeaking && ttsFetchAndBufferTask == nil {
+        // Condition to start the *very first* chunk fetch ONLY
+        if !isSpeaking && ttsFetchAndBufferTask == nil && hasReceivedFirstLLMChunk { // Ensure we have some text
             let (chunk, nextIndex) = findNextTTSChunk()
             if !chunk.isEmpty {
-                logger.info("▶️ Starting TTS fetch for initial chunk (len: \(chunk.count)).")
+                logger.info("▶️ Starting initial TTS fetch chain (Chunk len: \(chunk.count)).")
                 processedTextIndex = nextIndex
-                fetchTriggeredByPlaybackStart = false // Reset trigger flag for the new chunk
-                // Start the main task that handles fetching N and triggering N+1
+                // Start the first task in the chain. It will trigger subsequent tasks.
                 ttsFetchAndBufferTask = Task {
-                    await fetchAndBufferChunk_Managed(text: chunk, isInitialChunk: true)
+                    await fetchAndBufferChunk_Managed(text: chunk)
                 }
             }
         }
-        // If already speaking or fetching, the flow is driven by playback start triggers
-        // or the completion of the fetch task.
+        // Subsequent chunks are now triggered by fetchAndBufferChunk_Managed completion.
     }
 
-    // Task function that fetches a chunk and manages the lookahead fetch trigger
-    private func fetchAndBufferChunk_Managed(text: String, isInitialChunk: Bool) async {
+    // Task function that fetches a chunk AND triggers the next one upon completion.
+    @MainActor
+    private func fetchAndBufferChunk_Managed(text: String) async {
         do {
             // logger.debug("Task started: fetchAndBufferChunk_Managed for text len \(text.count)")
-            // The actual fetching and buffering logic
+            // Fetch and buffer the current chunk's audio
             try await fetchAndBufferOpenAITTSStream(apiKey: openaiAPIKey!, text: text, speed: ttsRate)
 
-            // --- Fetch Completion Logic ---
+            // --- Fetch Completion & Trigger Next ---
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
                  logger.debug("✅ Fetch/Buffer completed for chunk ending at index \(self.processedTextIndex)")
 
-                // If this task was the main one (not the lookahead), clear it.
-                // The lookahead logic is handled internally now.
-                 if self.ttsFetchAndBufferTask != nil { // Check if it's the currently assigned task
-                    // What happens now depends on whether the LLM is finished and buffers are empty
-                    if self.isLLMFinished && self._pendingAudioBuffers.isEmpty && !self.ttsAudioPlayerNode.isPlaying {
-                        logger.info("TTS fetch task finished, LLM done, buffer empty. Cleaning up.")
-                        self.playbackDidFinish() // Transition to final state
-                         self.ttsFetchAndBufferTask = nil // Clear task *after* cleanup check
-                    } else {
-                         // logger.debug("TTS fetch task finished, but more work pending (LLM active or buffers remain).")
-                         // Task completion doesn't immediately mean stopping everything.
-                         // Clear the task reference so a new one can potentially start if needed later.
-                         self.ttsFetchAndBufferTask = nil
-                         // Call manageTTSFlow again? Maybe not, let playback completion drive it.
-                    }
+                 // --- Trigger the NEXT fetch task ---
+                 let (nextChunk, nextIndex) = self.findNextTTSChunk()
+                 if !nextChunk.isEmpty {
+                     logger.info("➡️ Triggering next fetch after buffer completion (Chunk len: \(nextChunk.count)).")
+                     self.processedTextIndex = nextIndex
+                     // Start the next fetch task and update our reference for cancellation.
+                     self.ttsFetchAndBufferTask = Task {
+                          await self.fetchAndBufferChunk_Managed(text: nextChunk)
+                     }
+                 } else {
+                      logger.debug("➡️ No more text chunks found to fetch after completion.")
+                      // Clear the task reference as the chain is complete from the fetch side.
+                      self.ttsFetchAndBufferTask = nil
                  }
             }
 
         } catch is CancellationError {
              await MainActor.run { [weak self] in
                 self?.logger.notice("⏹️ TTS Fetch/Buffer task cancelled.")
-                 // Task cancellation should lead to full stop/reset handled by cancelOngoingTasks
-                 self?.stopAndResetTTSEngine()
+                 // Task reference is cleared by stopAndResetTTSEngine via cancelOngoingTasks
             }
         } catch {
              await MainActor.run { [weak self] in
                 self?.logger.error("🚨 TTS Fetch/Buffer task failed: \(error.localizedDescription)")
-                 // Stop TTS on error
+                // Task reference is cleared by stopAndResetTTSEngine
                  self?.stopAndResetTTSEngine()
-                // Optionally add chat message about TTS failure
             }
         }
     }
@@ -1105,122 +1094,83 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     @MainActor
     private func trySchedulingPendingBuffers() {
         guard ttsAudioEngine.isRunning && isTTSEnginePrepared else {
-            // logger.warning("Engine not ready, cannot schedule buffers.") // Too noisy
             return
         }
 
         // Schedule available buffers
         while !_pendingAudioBuffers.isEmpty {
-            // Check if player node is still attached
             guard ttsAudioPlayerNode.engine != nil else {
                 logger.warning("Player node detached, cannot schedule buffer.")
-                _pendingAudioBuffers.removeAll() // Clear queue if node is gone
-                stopAndResetTTSEngine() // Reset state if node detached unexpectedly
+                _pendingAudioBuffers.removeAll()
+                stopAndResetTTSEngine()
                 return
             }
 
             let bufferToSchedule = _pendingAudioBuffers.removeFirst()
             scheduledBufferCount += 1
-            // logger.debug("Scheduling buffer \(scheduledBufferCount)... Pending: \(_pendingAudioBuffers.count)")
 
             ttsAudioPlayerNode.scheduleBuffer(bufferToSchedule) { [weak self] in
-                // Completion handler runs on background thread
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
                     self.completedBufferCount += 1
-                    // logger.debug("Buffer \(self.completedBufferCount)/\(self.scheduledBufferCount) completed playing.")
+                    // logger.debug("Buffer \(self.completedBufferCount)/\(self.scheduledBufferCount) completed.")
 
-                    // Check if playback naturally finished
-                    self.checkPlaybackCompletion()
+                    // --- Simplified Completion Check ---
+                    // Check if this is the *last* buffer completion *after* LLM and TTS fetch finished
+                    if self.completedBufferCount >= self.scheduledBufferCount &&
+                       self.isLLMFinished &&
+                       self.ttsFetchAndBufferTask == nil
+                    {
+                        logger.info("🏁 Last buffer completed after LLM/TTS fetch finished. Finalizing playback.")
+                        self.playbackDidFinish()
+                    }
                 }
             }
         } // End while loop
 
         // --- Playback Start Logic ---
-        // Check if player should START playing (only if not already playing and threshold met)
-        if !ttsAudioPlayerNode.isPlaying && scheduledBufferCount >= preBufferCountThreshold {
-            // Double-check engine/node state right before playing
-            guard ttsAudioEngine.isRunning && ttsAudioPlayerNode.engine != nil else {
+        // Check if player should START playing
+        if !ttsAudioPlayerNode.isPlaying && scheduledBufferCount > completedBufferCount {
+             guard ttsAudioPlayerNode.engine != nil else {
                 logger.warning("Engine stopped or node detached before playback could start.")
                 return
             }
-
-            logger.info("▶️ Starting TTS playback node (scheduled \(self.scheduledBufferCount) >= threshold \(self.preBufferCountThreshold)).")
-            ttsAudioPlayerNode.play()
-            if !self.isSpeaking { self.isSpeaking = true }
-            self.startTTSLevelTimer() // Start level monitoring
-
-            // --- *** THE CRITICAL TRIGGER *** ---
-            // Trigger the fetch for the NEXT chunk precisely when playback starts
-            if !fetchTriggeredByPlaybackStart {
-                 logger.debug("Playback started, triggering lookahead fetch.")
-                 self.triggerLookaheadFetch()
-                 fetchTriggeredByPlaybackStart = true // Prevent re-triggering for this logical chunk
-            }
-        }
-    }
-
-    // Trigger the fetch for the next chunk (N+1)
-    @MainActor
-    private func triggerLookaheadFetch() {
-        guard ttsFetchAndBufferTask == nil else {
-             // This case should ideally not happen if logic is correct,
-             // means we tried to trigger N+1 while N was still fetching/buffering.
-             logger.warning("triggerLookaheadFetch called but a fetch task is already active.")
-             return
-        }
-
-        let (nextChunk, nextIndex) = findNextTTSChunk() // Find chunk *after* the one last initiated
-        if !nextChunk.isEmpty {
-            logger.info("🔭 Triggering lookahead TTS fetch (Chunk len: \(nextChunk.count)).")
-            processedTextIndex = nextIndex // Update index to mark this chunk as initiated
-            fetchTriggeredByPlaybackStart = false // Reset trigger flag for the *next* chunk start
-
-            // Start the fetch task for N+1. This task runs independently.
-            ttsFetchAndBufferTask = Task {
-                 await fetchAndBufferChunk_Managed(text: nextChunk, isInitialChunk: false)
-                        }
-                    } else {
-            // logger.debug("Lookahead fetch triggered, but no further text chunk available yet.")
-            // If LLM is finished, this is expected. If not, we wait for more text.
-        }
-    }
-
-
-    // Check if playback has fully completed
-    @MainActor
-    private func checkPlaybackCompletion() {
-        // Conditions for full completion:
-        // 1. LLM stream has finished delivering text.
-        // 2. All buffers ever scheduled have completed playback.
-        // 3. There are no more buffers waiting in the pending queue.
-        // 4. The player node is currently not playing (it stops automatically when buffer queue is empty).
-        if isLLMFinished &&
-           completedBufferCount >= scheduledBufferCount && // Ensure all scheduled are played
-           _pendingAudioBuffers.isEmpty &&
-           !ttsAudioPlayerNode.isPlaying &&
-           isSpeaking // Check isSpeaking to prevent multiple calls
-        {
-            logger.info("🏁 Playback appears to have fully completed.")
-            playbackDidFinish()
+             // Check if threshold is met *for the first time*
+             if !isSpeaking && scheduledBufferCount >= preBufferCountThreshold {
+                logger.info("▶️ Starting TTS playback node (scheduled \(self.scheduledBufferCount) >= threshold \(self.preBufferCountThreshold)).")
+                updateTimePitchRate() // <<-- ADDED: Ensure correct rate before playing
+                ttsAudioPlayerNode.play()
+                isSpeaking = true // Set speaking state
+                startTTSLevelTimer() // Start level monitoring
+             } else if isSpeaking && !ttsAudioPlayerNode.isPlaying {
+                 // If we are marked as speaking but the player stopped (e.g., between buffers briefly?)
+                 // and there are more buffers, ensure it's playing.
+                 logger.warning("Player was not playing but should be, attempting to resume.")
+                 ttsAudioPlayerNode.play() // Attempt to resume playback
+             }
         }
     }
 
     // Cleanup after all TTS playback is confirmed finished
     @MainActor
-    private func playbackDidFinish() {
+    func playbackDidFinish() {
+        guard !isPlaybackFinished else { // Prevent double execution
+            logger.debug("playbackDidFinish called again, ignoring.")
+            return
+        }
+        isPlaybackFinished = true // Mark as finished
+
         logger.debug("playbackDidFinish: Cleaning up TTS engine and state.")
         stopAndResetTTSEngine() // Full reset
 
         // Reset any related flags
-        isSpeaking = false // Explicitly set state
+        // isSpeaking is handled by stopAndResetTTSEngine
         llmResponseBuffer = "" // Clear buffer after successful playback
         processedTextIndex = 0
 
         // Decide next action (e.g., return to listening)
         autoStartListeningAfterDelay()
     }
-
 
     // Finds the next chunk of text suitable for TTS
     private func findNextTTSChunk() -> (String, Int) {
@@ -1330,7 +1280,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             guard let baseAddress = rawBufferPointer.baseAddress else {
                 logger.error("🚨 Failed to get base address of source data.")
                 // Need to handle this - maybe zero out buffer? For now, log and return potentially corrupt buffer.
-                return
+                return 
             }
             let sourcePtr = baseAddress.assumingMemoryBound(to: Int16.self)
 
