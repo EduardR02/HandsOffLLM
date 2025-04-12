@@ -109,12 +109,13 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     private var llmTask: Task<Void, Never>? = nil
     private var isLLMFinished: Bool = false
     private var llmResponseBuffer: String = ""
-    private var processedTextIndex: Int = 0
+    private var processedTextIndex: Int = 0 // Index up to which text has been *sent* for TTS fetching
     private var currentSpokenText: String = ""
     private var hasUserStartedSpeakingThisTurn: Bool = false
     private var hasReceivedFirstLLMChunk: Bool = false
-    private var currentTTSStreamTask: Task<Void, Never>? = nil
-    private var internalPlayerState: AudioPlayerState? = nil // Added internal state tracking
+    private var ttsFetchTask: Task<Void, Never>? = nil // Task for fetching the *next* audio stream
+    private var audioStreamQueue: [AsyncThrowingStream<Data, Error>] = [] // Queue for streams
+    private var internalPlayerState: AudioPlayerState? = .initial // Initialize to initial
 
     // --- Audio Components ---
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
@@ -175,7 +176,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         // Set the initial player rate based on the default ttsRate
         chunkedAudioPlayer.rate = ttsRate
         logger.debug("Initial player rate set to: \(self.ttsRate)")
-
+        
         requestPermissions()
         setupAudioPlayerSubscriptions()
     }
@@ -436,14 +437,14 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     // --- LLM Interaction ---
     func fetchLLMResponse(prompt: String) async {
         await MainActor.run { [weak self] in
+            // Reset state for a new turn
             guard let self = self else { return }
+            self.stopSpeaking() // Ensure player stopped, queue cleared, etc.
             self.llmResponseBuffer = ""
             self.processedTextIndex = 0
             self.isLLMFinished = false
-            self.currentTTSStreamTask?.cancel()
-            self.currentTTSStreamTask = nil
             self.hasReceivedFirstLLMChunk = false
-            self.stopSpeaking()
+            // self.internalPlayerState should be reset to .initial by stopSpeaking->player.stop() -> sink
         }
         
         var fullResponseAccumulator = ""
@@ -468,13 +469,14 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
                 fullResponseAccumulator += chunk
                 await MainActor.run { [weak self] in
                     guard let self = self else { return }
-                    self.llmResponseBuffer.append(chunk)
+                    self.llmResponseBuffer.append(chunk) // Add new text
 
                     if !self.hasReceivedFirstLLMChunk {
                         self.logger.info("🤖 Received first LLM chunk (\(providerString)).")
-                        self.hasReceivedFirstLLMChunk = true
-                        self.fetchAndPlayNextTTSChunk()
+                         self.hasReceivedFirstLLMChunk = true
                     }
+                    // Attempt to fetch/buffer the next chunk based on the updated buffer
+                    self.fetchAndBufferNextChunkIfNeeded()
                 }
             }
             
@@ -490,20 +492,16 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              }
         }
         
+        // --- LLM Stream Finished ---
         await MainActor.run { [weak self] in
             guard let self = self else { return }
-            
-            self.isLLMFinished = true
-            
-            self.fetchAndPlayNextTTSChunk()
-            
-            if llmError == nil || !(llmError is CancellationError) {
-                 logger.info("🤖 LLM full response received (\(fullResponseAccumulator.count) chars).")
+            self.isLLMFinished = true // Mark LLM as done
+            self.logger.info("🤖 LLM full response received (\(fullResponseAccumulator.count) chars).")
                  print("--- LLM FINAL RESPONSE ---")
                  print(fullResponseAccumulator)
                  print("--------------------------")
-            }
 
+            // Append final assistant message
             if !fullResponseAccumulator.isEmpty {
                 let messageRole = (llmError == nil) ? "assistant" : ((llmError is CancellationError) ? "assistant_partial" : "assistant_error")
                 let assistantMessage = ChatMessage(role: messageRole, content: fullResponseAccumulator)
@@ -514,12 +512,18 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
                 let errorMessage = ChatMessage(role: "assistant_error", content: "Sorry, an error occurred.")
                 self.messages.append(errorMessage)
             }
-            
             self.llmTask = nil
 
-            if (self.internalPlayerState == .initial || self.internalPlayerState == .completed) {
-                 self.checkCompletionAndContinue()
-            }
+            // Try fetching one last time in case the final text segment is ready
+            self.fetchAndBufferNextChunkIfNeeded()
+
+            // Check completion state *only* if the player is already idle.
+            // If it's still playing the last chunk, the .completed handler will call checkCompletion.
+             if (self.internalPlayerState == .initial || self.internalPlayerState == .completed) {
+                  self.checkCompletionAndTransition()
+             } else {
+                 self.logger.debug("LLM finished, but player is busy (\(String(describing: self.internalPlayerState))). Waiting for player completion to check final state.")
+             }
         }
     }
     
@@ -676,156 +680,287 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         }
     }
     
-    // --- New TTS Playback Logic using ChunkedAudioPlayer ---
+    // --- TTS Chunking, Fetching, Buffering, and Playback ---
 
     @MainActor
-    private func fetchAndPlayNextTTSChunk() {
-        let isIdleOrCompleted = internalPlayerState == .initial || internalPlayerState == .completed
-        guard isIdleOrCompleted else {
-             logger.debug("Skipping fetchAndPlayNextTTSChunk: Player not idle/completed (State: \(String(describing: self.internalPlayerState))).")
-             return
-        }
-        guard currentTTSStreamTask == nil || currentTTSStreamTask!.isCancelled else {
-            logger.debug("Skipping fetchAndPlayNextTTSChunk: TTS fetch task already active.")
-            return
-        }
-
-        let (chunk, nextIndex) = findNextTTSChunk(text: llmResponseBuffer, startIndex: processedTextIndex, isComplete: isLLMFinished)
-
-        if chunk.isEmpty {
-            logger.debug("fetchAndPlayNextTTSChunk: No chunk found.")
-            if isLLMFinished {
-                checkCompletionAndContinue()
+    private func fetchAndBufferNextChunkIfNeeded() {
+        // Don't fetch if a fetch is already running OR if the queue has enough buffered (e.g., 1 ahead)
+        guard ttsFetchTask == nil else {
+            logger.trace("Skipping fetch: A TTS fetch task is already running.")
+                return
             }
+        // Allow buffering 1 chunk ahead. Adjust '1' if more buffering is desired.
+        guard audioStreamQueue.count < 1 else {
+            logger.trace("Skipping fetch: Audio queue has \(self.audioStreamQueue.count) item(s) already buffered.")
             return
         }
 
-        logger.info("➡️ Preparing TTS stream for chunk (\(chunk.count) chars)...")
-        self.processedTextIndex = nextIndex
+        // Find the next chunk of text
+            let (chunk, nextIndex) = findNextTTSChunk(text: llmResponseBuffer, startIndex: processedTextIndex, isComplete: isLLMFinished)
 
-        guard let apiKey = self.openaiAPIKey else {
-             logger.error("🚨 OpenAI API Key missing, cannot fetch TTS.")
-             return
-        }
+            if chunk.isEmpty {
+            logger.trace("Skipping fetch: No suitable text chunk found at index \(self.processedTextIndex). LLM finished: \(self.isLLMFinished)")
+            if isLLMFinished {
+                checkCompletionAndTransition()
+                }
+                return
+            }
 
-        currentTTSStreamTask = Task { [weak self] in
+        logger.info("➡️ Found TTS chunk (\(chunk.count) chars). Starting fetch...")
+            self.processedTextIndex = nextIndex
+
+            guard let apiKey = self.openaiAPIKey else {
+                 logger.error("🚨 OpenAI API Key missing, cannot fetch TTS.")
+                 return
+            }
+
+        // Cancel previous fetch task only. Don't cancel streamers directly here.
+        ttsFetchTask?.cancel()
+
+        ttsFetchTask = Task { [weak self] in
             guard let self = self else { return }
-            var fetchedStream: AsyncThrowingStream<Data, Error>?
-            var fetchError: Error?
+
+            var streamResult: Result<AsyncThrowingStream<Data, Error>, Error>?
+            var streamerInstanceForCapture: TTSStreamer? // Hold streamer temporarily for closure capture
 
             do {
-                fetchedStream = try await self.streamOpenAITTSAudio(apiKey: apiKey, text: chunk, speed: self.ttsRate)
-                try Task.checkCancellation()
+                 // Create streamer and stream using the helper
+                 let (streamer, stream) = try self.createStreamAndStreamer(apiKey: apiKey, text: chunk)
+                 streamerInstanceForCapture = streamer // Hold for termination closure
+
+                    try Task.checkCancellation()
+                 streamResult = .success(stream)
+                 logger.info("✅ TTS stream fetched/created successfully for chunk.")
+
             } catch is CancellationError {
-                self.logger.notice("⏹️ TTS Fetch task cancelled.")
-                fetchError = CancellationError()
+                logger.notice("⏹️ TTS Fetch task initiation cancelled.")
+                streamResult = .failure(CancellationError())
+                 // Attempt to cancel the streamer if it was created before cancellation
+                 await MainActor.run { streamerInstanceForCapture?.cancel() }
             } catch {
-                self.logger.error("🚨 Failed to get TTS stream: \(error.localizedDescription)")
-                fetchError = error
+                logger.error("🚨 Failed to create TTS stream: \(error.localizedDescription)")
+                streamResult = .failure(error)
+                 // No streamer to cancel if creation failed
             }
 
-            await MainActor.run { [weak self] in
-                 guard let self = self else { return }
-                 self.currentTTSStreamTask = nil
+            // --- Handle Fetch Result ---
+                    await MainActor.run { [weak self] in
+                        guard let self = self else { return }
+                self.ttsFetchTask = nil // Mark task as finished
 
-                 if let stream = fetchedStream, fetchError == nil {
-                     do {
-                         let audioSession = AVAudioSession.sharedInstance()
+                switch streamResult {
+                case .success(let stream):
+                    // ONLY add to queue. Do NOT trigger playback or checks from here.
+                    self.audioStreamQueue.append(stream)
+                    self.logger.debug("Appended fetched stream to queue. Queue size: \(self.audioStreamQueue.count)")
+                    // If the player happens to be idle, the .initial or .completed state handler
+                    // in the sink should eventually call playBufferedStreamIfReady and find this stream.
 
-                         // Set category allowing playback and Bluetooth, ducking others
-                         try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
-
-                         // Check if Bluetooth A2DP is connected
-                         let isBluetoothConnected = audioSession.currentRoute.outputs.contains { $0.portType == .bluetoothA2DP }
-                         self.logger.info("🎧 Bluetooth A2DP Connected: \(isBluetoothConnected)")
-
-                         // Override to speaker ONLY if Bluetooth is NOT connected
-                         if !isBluetoothConnected {
-                             try audioSession.overrideOutputAudioPort(.speaker)
-                             self.logger.info("🔊 Audio output forced to Speaker.")
-                         } else {
-                             // Ensure override is off if Bluetooth is connected
-                             try audioSession.overrideOutputAudioPort(.none)
-                             self.logger.info("🎧 Audio output route left to system (Bluetooth expected).")
-                         }
-
-                         // Activate the session *after* setting category and override
-                         try audioSession.setActive(true)
-
-                         // Start playback
-                         self.logger.info("▶️ Starting ChunkedAudioPlayer (Rate will be set immediately after)...")
-                         // DO NOT set rate before start anymore here, rely on init and post-start setting
-                         // self.chunkedAudioPlayer.rate = self.ttsRate // Removed from here
-                         self.chunkedAudioPlayer.volume = 1.0
-                         self.chunkedAudioPlayer.start(stream, type: kAudioFileWAVEType)
-
-                         // --- Try setting rate AFTER starting ---
-                         // Dispatch async to allow start() to potentially initialize internals
-                         Task { @MainActor [weak self] in
-                             guard let self = self else { return }
-                             // A tiny delay might not even be needed, but dispatching ensures it's after start returns
-                             // try? await Task.sleep(nanoseconds: 1_000_000) // Optional tiny delay (1ms)
-                             self.logger.debug("Applying rate \(self.ttsRate) shortly after start.")
-                             self.chunkedAudioPlayer.rate = self.ttsRate
-                         }
-                         // --- End setting rate after start ---
-
-                     } catch {
-                         self.logger.error("🚨 Failed to configure AudioSession or start player: \(error.localizedDescription)")
-                         if self.isProcessing { self.isProcessing = false }
-                         self.checkCompletionAndContinue()
+                case .failure(let error):
+                     // Log the error. Let the player state transitions or LLM completion handle what happens next.
+                     // If the player was idle and waiting for this, it might get stuck.
+                     // We need a way to recover. Maybe checkCompletion ONLY if player is idle?
+                     if !(error is CancellationError) {
+                         self.logger.error("TTS Stream Creation Failed: \(error.localizedDescription)")
                      }
+                    // Check completion *only* if the player is currently idle and might be waiting for this failed fetch.
+                    if self.internalPlayerState == .initial || self.internalPlayerState == .completed {
+                        self.checkCompletionAndTransition()
+                    }
 
-                 } else {
-                      // Handle fetch error
-                      self.logger.error("TTS Fetch failed or was cancelled. Error: \(fetchError?.localizedDescription ?? "Unknown")")
-                      if self.isProcessing { self.isProcessing = false }
-                      if self.isLLMFinished {
-                           self.checkCompletionAndContinue()
-                      }
-                 }
-             } // End MainActor.run
+                case .none:
+                     self.logger.warning("TTS Fetch task finished with no result.")
+                     // Similar to failure, check completion only if player is idle.
+                     if self.internalPlayerState == .initial || self.internalPlayerState == .completed {
+                         self.checkCompletionAndTransition()
+                     }
+                }
+            } // End MainActor.run
         } // End Task
     }
 
-    private func findNextTTSChunk(text: String, startIndex: Int, isComplete: Bool) -> (String, Int) {
-        let remainingText = text.suffix(from: text.index(text.startIndex, offsetBy: startIndex))
-        if remainingText.isEmpty { return ("", startIndex) }
+    private func createStreamAndStreamer(apiKey: String, text: String) throws -> (TTSStreamer, AsyncThrowingStream<Data, Error>) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LlmError.streamingError("Cannot synthesize empty text")
+        }
+        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
+            throw LlmError.invalidURL
+        }
 
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let payload = OpenAITTSRequest(
+            model: openAITTSModel, input: text, voice: openAITTSVoice,
+            response_format: openAITTSFormat, stream: true, instructions: Prompts.ttsInstructions
+        )
+
+        do { request.httpBody = try JSONEncoder().encode(payload) }
+        catch { throw LlmError.requestEncodingError(error) }
+
+        // Create the streamer instance
+        let streamer = TTSStreamer(request: request, logger: logger)
+
+        // Create the stream
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            streamer.continuation = continuation
+            continuation.onTermination = { @Sendable [weak self, weak streamer] terminationReason in
+                 // Capture streamer weakly, but it should live as long as needed because
+                 // the Task retains the stream, which retains the continuation,
+                 // which retains this closure, which weakly retains the streamer.
+                 // The strong capture might happen implicitly by the system if needed.
+                 Task { @MainActor [weak self, weak streamer] in
+                     self?.logger.debug("TTS Stream terminated (\(String(describing: terminationReason))). Cancelling associated streamer.")
+                     streamer?.cancel() // Ensure streamer is cancelled on termination
+                     // REMOVED: No longer triggering fetch from here. Player state handles it.
+                     // self?.fetchAndBufferNextChunkIfNeeded()
+                 }
+            }
+            streamer.start()
+        }
+        return (streamer, stream)
+    }
+
+    @MainActor
+    private func playBufferedStreamIfReady() {
+        // Check if player is idle (initial or completed)
+        guard internalPlayerState == .initial || internalPlayerState == .completed else {
+            logger.trace("Player not ready (State: \(String(describing: self.internalPlayerState))), deferring playback.")
+            return
+        }
+        // Check if there's a stream in the queue
+        guard !audioStreamQueue.isEmpty else {
+            logger.trace("No buffered stream available in queue to play.")
+            checkCompletionAndTransition() // Check if we are actually done
+                            return
+                        }
+                        
+        // Dequeue the next stream
+        let streamToPlay = audioStreamQueue.removeFirst()
+        logger.info("▶️ Player is ready, dequeuing and playing next stream. Queue size now: \(self.audioStreamQueue.count)")
+
+        do {
+            // --- Configure Audio Session & Start Playback ---
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
+            let isBluetoothConnected = audioSession.currentRoute.outputs.contains { $0.portType == .bluetoothA2DP }
+            self.logger.info("🎧 Bluetooth A2DP Connected: \(isBluetoothConnected)")
+            if !isBluetoothConnected {
+                 try audioSession.overrideOutputAudioPort(.speaker)
+                self.logger.info("🔊 Audio output forced to Speaker.")
+                        } else {
+                try audioSession.overrideOutputAudioPort(.none)
+                self.logger.info("🎧 Audio output route left to system (Bluetooth expected).")
+            }
+            try audioSession.setActive(true)
+            // --- End Audio Session Config ---
+
+            // --- Start Playback ---
+            self.logger.debug("Setting player rate to \(self.ttsRate) before start.")
+            self.chunkedAudioPlayer.rate = self.ttsRate
+            self.chunkedAudioPlayer.volume = 1.0
+            self.chunkedAudioPlayer.start(streamToPlay, type: kAudioFileWAVEType) // Play the dequeued stream
+
+            // --- Apply Rate Post-Start ---
+            Task { @MainActor [weak self] in
+                 guard let self = self else { return }
+                 self.logger.trace("Applying rate \(self.ttsRate) shortly after start.")
+                 self.chunkedAudioPlayer.rate = self.ttsRate
+            }
+            // --- End Apply Rate Post-Start ---
+
+                } catch {
+            logger.error("🚨 Failed to configure AudioSession or start player: \(error.localizedDescription)")
+            if self.isProcessing { self.isProcessing = false }
+            audioStreamQueue.insert(streamToPlay, at: 0) // Put stream back on failure? Or discard? Let's discard for now.
+            checkCompletionAndTransition()
+        }
+    }
+
+    private func checkCompletionAndTransition() {
+        logger.trace("Checking completion/transition. LLM Finished: \(self.isLLMFinished), Processed Index: \(self.processedTextIndex)/\(self.llmResponseBuffer.count), Queue Size: \(self.audioStreamQueue.count), Player State: \(String(describing: self.internalPlayerState)), Fetch Task: \(self.ttsFetchTask != nil)")
+
+         // Condition 1: Everything truly finished
+         if isLLMFinished &&
+            processedTextIndex == llmResponseBuffer.count &&
+            (internalPlayerState == .initial || internalPlayerState == .completed) &&
+            audioStreamQueue.isEmpty && // Check queue
+            ttsFetchTask == nil
+         {
+             if self.isProcessing { self.isProcessing = false }
+             logger.info("✅ Processing finished (LLM Done, All Text Processed, Queue Empty, Player Idle).")
+             self.autoStartListeningAfterDelay()
+         }
+         // Condition 2: Player is idle, but more text OR queue might need processing
+         else if (internalPlayerState == .initial || internalPlayerState == .completed) {
+             if !audioStreamQueue.isEmpty {
+                 logger.debug("Player Idle/Completed, attempting to play next from queue.")
+                 self.playBufferedStreamIfReady() // Try playing from queue first
+             } else if processedTextIndex < llmResponseBuffer.count {
+                 logger.debug("Player Idle/Completed & Queue Empty, checking for more text to fetch.")
+                 self.fetchAndBufferNextChunkIfNeeded() // If queue empty, try fetching
+             }
+         }
+    }
+
+    private func findNextTTSChunk(text: String, startIndex: Int, isComplete: Bool) -> (String, Int) {
+        // Get the portion of the text buffer that hasn't been processed yet
+        let remainingText = text.suffix(from: text.index(text.startIndex, offsetBy: startIndex))
+        if remainingText.isEmpty { return ("", startIndex) } // No more text
+
+        // If the LLM has finished streaming, just take the rest (up to max length)
         if isComplete {
             let endIndex = min(remainingText.count, maxTTSChunkLength)
             let chunk = String(remainingText.prefix(endIndex))
+            // Return the chunk and the new index (start + length of this chunk)
             return (chunk, startIndex + chunk.count)
         }
 
+        // If LLM is ongoing, try to find a good split point within the max length
         let potentialChunk = remainingText.prefix(maxTTSChunkLength)
-        var bestSplitIndex = potentialChunk.endIndex
+        var bestSplitIndex = potentialChunk.endIndex // Default to end of potential chunk
 
+        // Prefer splitting at sentence endings if near the end or chunk is short
         if let lastSentenceEnd = potentialChunk.lastIndex(where: { ".!?".contains($0) }) {
             let distanceToEnd = potentialChunk.distance(from: lastSentenceEnd, to: potentialChunk.endIndex)
+            // Split after sentence end if it's close to max length or chunk is short
             if distanceToEnd < 150 || potentialChunk.count < 200 {
                  bestSplitIndex = potentialChunk.index(after: lastSentenceEnd)
             }
+        // Otherwise, try splitting at commas if near the end or chunk is short
         } else if let lastComma = potentialChunk.lastIndex(where: { ",".contains($0) }) {
              let distanceToEnd = potentialChunk.distance(from: lastComma, to: potentialChunk.endIndex)
              if distanceToEnd < 150 || potentialChunk.count < 200 {
                  bestSplitIndex = potentialChunk.index(after: lastComma)
              }
         }
+        // If no good split found near the end, bestSplitIndex remains potentialChunk.endIndex
 
+        // Calculate the actual length of the chunk based on the split point
         let chunkLength = potentialChunk.distance(from: potentialChunk.startIndex, to: bestSplitIndex)
 
-        let minInitialChunkLength = 80
-        let minSubsequentChunkLength = 100
+        // --- Minimum Length Checks (to avoid tiny initial chunks) ---
+        let minInitialChunkLength = 80 // Require a decent amount for the very first utterance
+        let minSubsequentChunkLength = 100 // Can be slightly larger for follow-up chunks
 
+        // If it's the very first chunk (startIndex is 0) and it's too short, wait for more text
         if startIndex == 0 && chunkLength < minInitialChunkLength && !isComplete {
-            return ("", startIndex)
+            logger.trace("findNextTTSChunk: Initial chunk too short (\(chunkLength)/\(minInitialChunkLength)), waiting.")
+            return ("", startIndex) // Return empty, indicating no suitable chunk yet
         }
+        // If it's a subsequent chunk, potentially the *last* partial chunk, and too short, wait.
+        // (Check potentialChunk.count == remainingText.count ensures it's the end of the buffer so far)
         if startIndex > 0 && chunkLength < minSubsequentChunkLength && potentialChunk.count == remainingText.count && !isComplete {
+             logger.trace("findNextTTSChunk: Subsequent partial chunk too short (\(chunkLength)/\(minSubsequentChunkLength)), waiting.")
             return ("", startIndex)
         }
+        // --- End Minimum Length Checks ---
 
+        // Extract the final chunk based on the determined split index
         let finalChunk = String(potentialChunk[..<bestSplitIndex])
+        // Return the chunk and the new index
         return (finalChunk, startIndex + finalChunk.count)
     }
 
@@ -836,10 +971,10 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             if !available {
                 self.logger.error("🚨 Speech recognizer not available.")
                 self.stopListeningCleanup()
-            }
-        }
-    }
-    
+              }
+         }
+     }
+
     // --- Auto-Restart Listening ---
     func autoStartListeningAfterDelay() {
         Task { @MainActor [weak self] in
@@ -865,58 +1000,40 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         self.stopSpeaking()
     }
     
-    // --- OpenAI TTS Streaming Fetch ---
-    func streamOpenAITTSAudio(apiKey: String, text: String, speed: Float) async throws -> AsyncThrowingStream<Data, Error> {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw LlmError.streamingError("Cannot synthesize empty text")
-        }
-        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
-            throw LlmError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
-        let payload = OpenAITTSRequest(
-            model: openAITTSModel,
-            input: text,
-            voice: openAITTSVoice,
-            response_format: openAITTSFormat,
-            stream: true,
-            instructions: Prompts.ttsInstructions
-        )
-
-        do { request.httpBody = try JSONEncoder().encode(payload) }
-        catch { throw LlmError.requestEncodingError(error) }
-
-        return AsyncThrowingStream<Data, Error> { continuation in
-            let streamer = TTSStreamer(request: request, continuation: continuation, logger: logger)
-            continuation.onTermination = { @Sendable _ in
-                 streamer.cancel()
-                 Task { @MainActor [weak self] in
-                    self?.logger.debug("TTS Stream terminated.")
-                 }
-            }
-            streamer.start()
-        }
-    }
-
     @MainActor
     func stopSpeaking() {
-         let wasSpeaking = self.isSpeaking
+         logger.notice("⏹️ stopSpeaking called.")
 
-         if let task = self.currentTTSStreamTask {
-             task.cancel()
-             self.currentTTSStreamTask = nil
-         }
-
+         // 1. Stop the audio player. This should trigger state changes (.initial) via the sink.
          chunkedAudioPlayer.stop()
+         logger.debug("Called chunkedAudioPlayer.stop(). Player state should transition to .initial.")
 
-         if wasSpeaking {
-             logger.notice("⏹️ TTS interrupted.")
+         // 2. Cancel any ongoing TTS fetch task.
+         if let task = self.ttsFetchTask {
+             task.cancel()
+             self.ttsFetchTask = nil
+             logger.debug("Cancelled ongoing TTS fetch task.")
          }
+
+         // 3. Clear the audio stream queue *after* stopping the player.
+         if !audioStreamQueue.isEmpty {
+             audioStreamQueue.removeAll()
+             logger.debug("Cleared audio stream queue.")
+         }
+
+         // 4. Update state variables *last*. The player state sink should handle transitions based on player stopping.
+         if isProcessing { isProcessing = false } // Stop processing if we were speaking/processing
+         if isSpeaking { isSpeaking = false }     // Mark as not speaking
+         if ttsOutputLevel != 0.0 { ttsOutputLevel = 0.0 }
+
+         // 5. Reset LLM state flags (consistent with cancelProcessingAndSpeaking)
+         self.llmResponseBuffer = ""
+         self.processedTextIndex = 0
+         self.isLLMFinished = false
+
+         // 6. Explicitly check completion state *after* everything is stopped/reset
+         //    This handles the case where stopSpeaking is called when nothing was playing.
+         checkCompletionAndTransition()
     }
 
     private func setupAudioPlayerSubscriptions() {
@@ -924,28 +1041,53 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              .receive(on: DispatchQueue.main)
              .sink { [weak self] state in
                  guard let self = self else { return }
-                 self.logger.debug("AudioPlayer State: \(String(describing: state))")
-                 self.internalPlayerState = state
+                 self.logger.debug("AudioPlayer State Changed: \(String(describing: state)) -> internal: \(String(describing: self.internalPlayerState))")
+                 let previousState = self.internalPlayerState
+                 self.internalPlayerState = state // Update internal state FIRST
 
                  switch state {
-                 case .initial, .completed:
+                 case .initial:
                      if self.isSpeaking { self.isSpeaking = false }
                      if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-                     if state == .completed { self.logger.info("▶️ AudioPlayer Completed.") }
-                     self.checkCompletionAndContinue()
+                     // Player stopped or reset. Always check if we should play the next or transition.
+                     self.logger.debug("Player state is .initial. Calling playBufferedStreamIfReady/checkCompletion.")
+                     self.playBufferedStreamIfReady() // Will call checkCompletion if queue empty
 
                  case .playing:
                      if !self.isSpeaking { self.isSpeaking = true }
+                     // Ensure processing is true only if LLM isn't finished yet.
+                     // If LLM is finished, we are just playing out the last chunks.
+                     if !self.isLLMFinished && !self.isProcessing {
+                         self.isProcessing = true
+                         self.logger.debug("Player started playing, ensuring isProcessing is true.")
+                     }
                      if self.ttsOutputLevel == 0.0 { self.ttsOutputLevel = 0.7 }
+                     // Proactively fetch the next chunk
+                     self.fetchAndBufferNextChunkIfNeeded()
 
                  case .paused:
+                     if self.isSpeaking { self.isSpeaking = false } // Reflect paused state
                      if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+                     // No action needed for queue/fetching on pause.
 
-                 case .failed:
-                     self.logger.error("🚨 AudioPlayer Failed: ")
+                 case .completed:
                      if self.isSpeaking { self.isSpeaking = false }
                      if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-                     if self.isProcessing { self.isProcessing = false }
+                     self.logger.info("▶️ AudioPlayer Completed Chunk.")
+                     // Chunk finished. Immediately try to play the next one or check completion.
+                     self.playBufferedStreamIfReady() // Will call checkCompletion if queue empty
+
+                 case .failed:
+                     self.logger.error("🚨 AudioPlayer Failed (See $currentError for details)")
+                     if self.isSpeaking { self.isSpeaking = false }
+                     if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+                     // Clear potentially corrupted streams from queue.
+                     if !self.audioStreamQueue.isEmpty {
+                         self.audioStreamQueue.removeAll()
+                         self.logger.debug("Cleared audio queue due to player failure.")
+                     }
+                     // Check overall state (maybe start listening again, or try fetching if LLM not done)
+                     self.checkCompletionAndTransition()
                  }
              }
              .store(in: &cancellables)
@@ -959,50 +1101,44 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              }
              .store(in: &cancellables)
     }
-
-    private func checkCompletionAndContinue() {
-         if self.isLLMFinished && self.processedTextIndex == self.llmResponseBuffer.count {
-             if self.isProcessing { self.isProcessing = false }
-             self.logger.info("⚙️ Processing finished (TTS Chain Complete).")
-             self.autoStartListeningAfterDelay()
-         }
-         else if !self.llmResponseBuffer.isEmpty && self.processedTextIndex < self.llmResponseBuffer.count {
-             self.logger.debug("Player Idle/Completed, checking for more TTS work.")
-             self.fetchAndPlayNextTTSChunk()
-         }
-         else if self.isLLMFinished {
-             if self.isProcessing { self.isProcessing = false }
-             self.autoStartListeningAfterDelay()
-         }
-    }
 }
 
+// --- TTSStreamer Modification ---
 private class TTSStreamer: NSObject, URLSessionDataDelegate {
     private let request: URLRequest
-    private let continuation: AsyncThrowingStream<Data, Error>.Continuation
     private let logger: Logger
     private var session: URLSession?
     private var response: HTTPURLResponse?
     private var accumulatedData = Data()
+    // Make continuation optional and a var so it can be assigned later
+    var continuation: AsyncThrowingStream<Data, Error>.Continuation?
 
-    init(request: URLRequest, continuation: AsyncThrowingStream<Data, Error>.Continuation, logger: Logger) {
+    // Remove continuation from init
+    init(request: URLRequest, logger: Logger) {
         self.request = request
-        self.continuation = continuation
         self.logger = logger
         super.init()
     }
 
     func start() {
+        // Only start if continuation has been set
+        guard continuation != nil else {
+            logger.warning("TTSStreamer start called without a continuation.")
+            return
+        }
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil) // Use background queue
         self.session?.dataTask(with: request).resume()
         Task { @MainActor [logger] in logger.debug("TTS URLSessionDataTask started.") }
     }
 
     func cancel() {
         session?.invalidateAndCancel()
-        Task { @MainActor [logger] in logger.debug("TTS URLSession explicitly cancelled.") }
+        // Use optional chaining to finish continuation if it exists
+        continuation?.finish(throwing: CancellationError())
+        continuation = nil // Clear it after finishing
+        Task { @MainActor [logger] in logger.debug("TTSStreamer explicitly cancelled.") }
     }
 
     // MARK: - URLSessionDataDelegate
@@ -1011,10 +1147,12 @@ private class TTSStreamer: NSObject, URLSessionDataDelegate {
         guard let httpResponse = response as? HTTPURLResponse else {
             Task { @MainActor [logger] in logger.error("🚨 TTS Error: Did not receive HTTPURLResponse.") }
             completionHandler(.cancel)
-            continuation.finish(throwing: ChatViewModel.LlmError.networkError(URLError(.badServerResponse)))
+            // Use optional chaining
+            continuation?.finish(throwing: ChatViewModel.LlmError.networkError(URLError(.badServerResponse)))
+            continuation = nil // Clear after finishing
             return
         }
-        
+
         self.response = httpResponse
         Task { @MainActor [logger, httpResponse] in logger.debug("TTS Received response headers. Status: \(httpResponse.statusCode)") }
 
@@ -1022,26 +1160,30 @@ private class TTSStreamer: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+         // Use optional chaining for continuation
          if let httpResponse = self.response, (200...299).contains(httpResponse.statusCode) {
-             continuation.yield(data)
+             continuation?.yield(data)
          } else {
              accumulatedData.append(data)
          }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+         // Use optional chaining for continuation
          if let error = error {
              Task { @MainActor [logger, error] in logger.error("🚨 TTS Network Error: \(error.localizedDescription)") }
-             continuation.finish(throwing: ChatViewModel.LlmError.networkError(error))
+             continuation?.finish(throwing: ChatViewModel.LlmError.networkError(error))
          } else if let httpResponse = self.response, !(200...299).contains(httpResponse.statusCode) {
              let errorBody = String(data: accumulatedData, encoding: .utf8) ?? "Could not decode error body"
              Task { @MainActor [logger, httpResponse, errorBody] in logger.error("🚨 TTS API Error: Status \(httpResponse.statusCode). Body: \(errorBody)") }
-             continuation.finish(throwing: ChatViewModel.LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorBody))
+             continuation?.finish(throwing: ChatViewModel.LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorBody))
          } else {
              Task { @MainActor [logger] in logger.debug("TTS Stream finished successfully.") }
-             continuation.finish()
+             continuation?.finish() // Success
          }
-        self.session?.finishTasksAndInvalidate()
+         // Invalidate session AND clear continuation after finishing
+         self.session?.finishTasksAndInvalidate()
+         continuation = nil // Ensure it's cleared
     }
 }
 
