@@ -1,0 +1,15 @@
+{
+  "originHash" : "28aa7368a3272e69d966f89b782259d8030d70ecf012f2f6879a88c8279c2868",
+  "pins" : [
+    {
+      "identity" : "swift-chunked-audio-player",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mihai8804858/swift-chunked-audio-player",
+      "state" : {
+        "revision" : "5a376a809b206e47e7f83944c638097ba08bd5e3",
+        "version" : "1.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}

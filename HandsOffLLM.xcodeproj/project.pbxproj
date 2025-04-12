@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB39AC9C2DAAE19A0038E424 /* ChunkedAudioPlayer in Frameworks */ = {isa = PBXBuildFile; productRef = BB39AC9B2DAAE19A0038E424 /* ChunkedAudioPlayer */; };
 		BB53B9942DA6701600DECCF3 /* APIkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9932DA6701600DECCF3 /* APIkeys.swift */; };
 		BB53B9962DA6710300DECCF3 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = BB53B9952DA6710300DECCF3 /* .gitignore */; };
 		BB53B9982DA6759100DECCF3 /* Prompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9972DA6759100DECCF3 /* Prompts.swift */; };
@@ -74,6 +75,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB39AC9C2DAAE19A0038E424 /* ChunkedAudioPlayer in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -104,6 +106,7 @@
 				BB1744762DA5355D00738173 /* HandsOffLLMUITests */,
 				BB17445A2DA5355D00738173 /* Products */,
 				BB53B9972DA6759100DECCF3 /* Prompts.swift */,
+				BB39AC9A2DAAE19A0038E424 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -115,6 +118,13 @@
 				BB1744732DA5355D00738173 /* HandsOffLLMUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BB39AC9A2DAAE19A0038E424 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -131,12 +141,14 @@
 			buildRules = (
 			);
 			dependencies = (
+				BB39AC992DAADAE80038E424 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				BB17445B2DA5355D00738173 /* HandsOffLLM */,
 			);
 			name = HandsOffLLM;
 			packageProductDependencies = (
+				BB39AC9B2DAAE19A0038E424 /* ChunkedAudioPlayer */,
 			);
 			productName = HandsOffLLM;
 			productReference = BB1744592DA5355D00738173 /* HandsOffLLM.app */;
@@ -220,6 +232,9 @@
 			);
 			mainGroup = BB1744502DA5355D00738173;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BB39AC972DAADAD30038E424 /* XCRemoteSwiftPackageReference "swift-chunked-audio-player" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BB17445A2DA5355D00738173 /* Products */;
 			projectDirPath = "";
@@ -293,6 +308,10 @@
 			isa = PBXTargetDependency;
 			target = BB1744582DA5355D00738173 /* HandsOffLLM */;
 			targetProxy = BB1744742DA5355D00738173 /* PBXContainerItemProxy */;
+		};
+		BB39AC992DAADAE80038E424 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = BB39AC982DAADAE80038E424 /* ChunkedAudioPlayer */;
 		};
 /* End PBXTargetDependency section */
 
@@ -590,6 +609,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BB39AC972DAADAD30038E424 /* XCRemoteSwiftPackageReference "swift-chunked-audio-player" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mihai8804858/swift-chunked-audio-player";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BB39AC982DAADAE80038E424 /* ChunkedAudioPlayer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BB39AC972DAADAD30038E424 /* XCRemoteSwiftPackageReference "swift-chunked-audio-player" */;
+			productName = ChunkedAudioPlayer;
+		};
+		BB39AC9B2DAAE19A0038E424 /* ChunkedAudioPlayer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BB39AC972DAADAD30038E424 /* XCRemoteSwiftPackageReference "swift-chunked-audio-player" */;
+			productName = ChunkedAudioPlayer;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BB1744512DA5355D00738173 /* Project object */;
 }
