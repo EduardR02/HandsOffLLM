@@ -206,31 +206,96 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     func cycleState() {
         Task { @MainActor in
             if !isListening && !isProcessing && !isSpeaking {
+                // Currently idle -> Start listening
                 startListening()
             } else if isListening {
+                // Currently listening -> Stop listening and process speech
                 stopListeningAndProcess()
             } else if isProcessing || isSpeaking {
-                cancelProcessingAndSpeaking()
+                // Currently processing or speaking -> Interrupt TTS and go back to listening
+                interruptTTSAndStartListening()
+                // cancelProcessingAndSpeaking() // Old behavior
             }
         }
     }
     
     func cancelProcessingAndSpeaking() {
-        logger.notice("⏹️ Cancel requested by user.")
-        
+        // This remains for potential other cancellation paths, but not user tap during TTS.
+        logger.notice("⏹️ Cancel requested by user (general cancel).")
+
         if let task = llmTask {
             task.cancel()
             llmTask = nil
         }
-        
-        stopSpeaking()
-        
-        if self.isProcessing {
-            isProcessing = false
-        }
+
+        stopSpeaking() // Calls the full stop/reset including isProcessing = false
+
+        // These might be redundant now depending on stopSpeaking, but ensure clean state
+        if self.isProcessing { isProcessing = false }
         self.llmResponseBuffer = ""
         self.processedTextIndex = 0
         self.isLLMFinished = false
+    }
+    
+    @MainActor
+    func interruptTTSAndStartListening() {
+        logger.notice("⏹️ User interrupted TTS. Stopping TTS and switching to listening.")
+
+        // 1. Stop audio playback immediately
+        chunkedAudioPlayer.stop()
+        logger.debug("Interrupt: Called chunkedAudioPlayer.stop().")
+
+        // 2. Cancel any ongoing/pending TTS fetch
+        if let task = ttsFetchTask {
+            task.cancel()
+            ttsFetchTask = nil
+            logger.debug("Interrupt: Cancelled TTS fetch task.")
+        }
+
+        // 3. Clear the audio queue
+        if !audioStreamQueue.isEmpty {
+            audioStreamQueue.removeAll()
+            logger.debug("Interrupt: Cleared audio stream queue.")
+        }
+
+        // 4. Check if LLM is still running and cancel it
+        let wasLLMRunning = (llmTask != nil)
+        if let task = llmTask {
+            task.cancel() // This cancellationError will be caught in fetchLLMResponse
+            llmTask = nil
+            logger.debug("Interrupt: Cancelled LLM task.")
+        }
+
+        // 5. Handle message log based on LLM completion status BEFORE interruption
+        // If LLM was running or hadn't fully finished, remove any partial message added by cancelled fetchLLMResponse
+        // Note: We modify fetchLLMResponse's cancellation handler to NOT add partial messages anymore.
+        // This check becomes a safeguard or could be removed if confident fetchLLMResponse is clean.
+        // Let's keep it as a safeguard for now.
+        if wasLLMRunning || !isLLMFinished {
+            if messages.last?.role == "assistant_partial" || messages.last?.role == "assistant_error" {
+                logger.debug("Interrupt: Removing last partial/error message added before interruption (safeguard).")
+                messages.removeLast()
+            }
+            // Explicitly mark LLM as not finished since it was interrupted.
+            isLLMFinished = false
+            llmResponseBuffer = "" // Clear buffer if LLM was interrupted.
+        } else {
+            // If LLM *was* finished, the full 'assistant' message should already be there. Do nothing to messages.
+            logger.debug("Interrupt: LLM was already finished. Keeping final assistant message.")
+            // llmResponseBuffer is likely needed by findNextTTSChunk if it restarts, but startListening clears it anyway.
+        }
+
+
+        // 6. Reset state variables necessary for a clean startListening transition
+        isSpeaking = false
+        isProcessing = false // We are going straight to listening
+        ttsOutputLevel = 0.0
+        // llmResponseBuffer = "" // Handled above based on LLM state
+        processedTextIndex = 0
+        // isLLMFinished is handled above
+
+        // 7. Start listening immediately
+        startListening()
     }
     
     // --- Speech Recognition (Listening) ---
@@ -437,14 +502,44 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     // --- LLM Interaction ---
     func fetchLLMResponse(prompt: String) async {
         await MainActor.run { [weak self] in
-            // Reset state for a new turn
             guard let self = self else { return }
-            self.stopSpeaking() // Ensure player stopped, queue cleared, etc.
+
+            // --- Modified Reset Logic at Start of LLM Fetch ---
+            // Goal: Stop any *previous* TTS activity without clearing the 'isProcessing=true'
+            // state that signifies the transition from listening to processing/speaking.
+
+            self.logger.debug("fetchLLMResponse: Starting, resetting TTS state (keeping isProcessing=true).")
+
+            // 1. Cancel any ongoing TTS fetch task from a previous turn.
+            if let task = self.ttsFetchTask {
+                task.cancel()
+                self.ttsFetchTask = nil
+                self.logger.debug("fetchLLMResponse: Cancelled previous TTS fetch task.")
+            }
+            // 2. Stop the audio player if it was speaking from a previous turn.
+            //    The .initial state sink handler should clear the queue.
+            if self.isSpeaking || self.internalPlayerState == .playing || self.internalPlayerState == .paused {
+                 self.chunkedAudioPlayer.stop()
+                 self.logger.debug("fetchLLMResponse: Called chunkedAudioPlayer.stop() for potential previous playback.")
+            }
+            // 3. Explicitly clear the queue as a safeguard, as the player stop might not immediately trigger the sink.
+             if !self.audioStreamQueue.isEmpty {
+                 self.audioStreamQueue.removeAll()
+                 self.logger.debug("fetchLLMResponse: Cleared audio stream queue safeguard.")
+             }
+
+
+            // Reset LLM buffer/flags for the new response
             self.llmResponseBuffer = ""
             self.processedTextIndex = 0
             self.isLLMFinished = false
             self.hasReceivedFirstLLMChunk = false
-            // self.internalPlayerState should be reset to .initial by stopSpeaking->player.stop() -> sink
+
+            // Ensure speaking state variables are reset, but *keep* isProcessing = true
+            if self.isSpeaking { self.isSpeaking = false }
+            if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+
+            // --- End Modified Reset Logic ---
         }
         
         var fullResponseAccumulator = ""
@@ -483,47 +578,70 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         } catch is CancellationError {
             logger.notice("⏹️ LLM Task Cancelled.")
             llmError = CancellationError()
-            await MainActor.run { [weak self] in self?.stopSpeaking() }
+            // Do *not* call stopSpeaking() here automatically.
+            // If cancelled by interruptTTSAndStartListening, that function handles the state transition.
+            // If cancelled by other means (e.g., view disappear), stopSpeaking might be called elsewhere.
+            // This avoids transitioning to idle if the user interrupt intended to go to listening.
+             await MainActor.run { [weak self] in
+                 // Only log, don't trigger state changes from here.
+                 self?.logger.debug("LLM Task caught CancellationError. State transition handled elsewhere (e.g., interrupt or cleanup).")
+             }
+            // Ensure NO partial message is added on cancellation.
         } catch {
+            // Handle other errors
             if !(error is CancellationError) {
                  logger.error("🚨 LLM Error during stream: \(error.localizedDescription)")
                  llmError = error
+                 // On non-cancellation error, stop everything and go towards idle/error state.
                  await MainActor.run { [weak self] in self?.stopSpeaking() }
              }
         }
-        
+
         // --- LLM Stream Finished ---
         await MainActor.run { [weak self] in
             guard let self = self else { return }
-            self.isLLMFinished = true // Mark LLM as done
-            self.logger.info("🤖 LLM full response received (\(fullResponseAccumulator.count) chars).")
+
+            // Only proceed with final message logic if the task wasn't cancelled.
+            if !(llmError is CancellationError) {
+                 self.isLLMFinished = true // Mark LLM as done ONLY if not cancelled externally
+                 self.logger.info("🤖 LLM full response received (\(fullResponseAccumulator.count) chars).")
                  print("--- LLM FINAL RESPONSE ---")
                  print(fullResponseAccumulator)
                  print("--------------------------")
 
-            // Append final assistant message
-            if !fullResponseAccumulator.isEmpty {
-                let messageRole = (llmError == nil) ? "assistant" : ((llmError is CancellationError) ? "assistant_partial" : "assistant_error")
-                let assistantMessage = ChatMessage(role: messageRole, content: fullResponseAccumulator)
-                if self.messages.last?.role != messageRole || self.messages.last?.content != assistantMessage.content {
-                     self.messages.append(assistantMessage)
+                // Append final assistant message ONLY on successful completion
+                if !fullResponseAccumulator.isEmpty && llmError == nil {
+                    let assistantMessage = ChatMessage(role: "assistant", content: fullResponseAccumulator)
+                    // Avoid duplicates
+                    if self.messages.last?.role != "assistant" || self.messages.last?.content != assistantMessage.content {
+                         self.messages.append(assistantMessage)
+                     }
+                } else if llmError != nil { // Handle non-cancellation errors reported by LLM API itself
+                    let errorMessageContent = "Sorry, an error occurred processing the response."
+                    let errorMessage = ChatMessage(role: "assistant_error", content: errorMessageContent)
+                     if self.messages.last?.content != errorMessageContent { // Avoid duplicate errors
+                        self.messages.append(errorMessage)
+                     }
+                }
+                 self.llmTask = nil // Clear task reference on successful completion or API error
+
+                // Try fetching the final TTS chunk ONLY if LLM finished successfully
+                 self.fetchAndBufferNextChunkIfNeeded()
+
+                // Check completion state *only* if the player is already idle AND LLM finished successfully.
+                 if (self.internalPlayerState == .initial || self.internalPlayerState == .completed) {
+                      self.checkCompletionAndTransition()
+                 } else {
+                     self.logger.debug("LLM finished successfully, but player is busy (\(String(describing: self.internalPlayerState))). Waiting for player completion to check final state.")
                  }
-            } else if llmError != nil && !(llmError is CancellationError) {
-                let errorMessage = ChatMessage(role: "assistant_error", content: "Sorry, an error occurred.")
-                self.messages.append(errorMessage)
+
+            } else {
+                // LLM Task was cancelled (likely by user interrupt).
+                // interruptTTSAndStartListening handles state/message cleanup & transition to listening.
+                self.logger.info("🤖 LLM Task was cancelled externally. Not adding final message or checking completion here.")
+                self.llmTask = nil // Clear task reference
+                // Do NOT call fetchAndBufferNextChunkIfNeeded or checkCompletionAndTransition here.
             }
-            self.llmTask = nil
-
-            // Try fetching one last time in case the final text segment is ready
-            self.fetchAndBufferNextChunkIfNeeded()
-
-            // Check completion state *only* if the player is already idle.
-            // If it's still playing the last chunk, the .completed handler will call checkCompletion.
-             if (self.internalPlayerState == .initial || self.internalPlayerState == .completed) {
-                  self.checkCompletionAndTransition()
-             } else {
-                 self.logger.debug("LLM finished, but player is busy (\(String(describing: self.internalPlayerState))). Waiting for player completion to check final state.")
-             }
         }
     }
     
@@ -977,17 +1095,31 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
 
     // --- Auto-Restart Listening ---
     func autoStartListeningAfterDelay() {
+        // do not add a delay in this function
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            guard !self.isSpeaking && !self.isProcessing && !self.isListening else { return }
+            // Guard against starting if state changed unexpectedly
+            guard !self.isSpeaking && !self.isProcessing && !self.isListening else {
+                // Don't log here, already logged in the check below if needed.
+                // This guard prevents unnecessary work if the state changed *before* this task started.
+                return
+            }
             
-            logger.info("🎙️ TTS finished. Switching to user turn...")
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            logger.info("🎙️ TTS finished. Preparing to switch to user turn...")
+            // Set isProcessing true to bridge the visual gap during the short delay
+            self.isProcessing = true
+            logger.trace("Set isProcessing=true for visual transition bridging.")
 
-            if !self.isListening && !self.isProcessing && !self.isSpeaking {
+            // Double-check state *after* the delay before starting to listen
+            // We only proceed if the state is still 'idle' (no speaking, no listening, BUT isProcessing might be true now)
+            if !self.isListening && !self.isSpeaking {
+                // We are good to start listening. startListening() will set isProcessing = false.
                 self.startListening()
             } else {
-                 logger.warning("🎤 Aborted auto-start: State changed during brief delay.")
+                 // State changed during the brief delay (e.g., user tapped cancel)
+                 logger.warning("🎤 Aborted auto-start: State changed during brief delay (isListening=\(self.isListening), isSpeaking=\(self.isSpeaking)).")
+                 // Ensure isProcessing is false if we aborted *after* setting it true for bridging.
+                 if self.isProcessing { self.isProcessing = false }
             }
         }
     }
@@ -1002,9 +1134,11 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     
     @MainActor
     func stopSpeaking() {
-         logger.notice("⏹️ stopSpeaking called.")
+         // This function is now primarily for explicit cancellation or cleanup,
+         // not the standard start of a new LLM response.
+         logger.notice("⏹️ stopSpeaking called (likely for cancellation/cleanup).")
 
-         // 1. Stop the audio player. This should trigger state changes (.initial) via the sink.
+         // 1. Stop the audio player.
          chunkedAudioPlayer.stop()
          logger.debug("Called chunkedAudioPlayer.stop(). Player state should transition to .initial.")
 
@@ -1015,24 +1149,23 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              logger.debug("Cancelled ongoing TTS fetch task.")
          }
 
-         // 3. Clear the audio stream queue *after* stopping the player.
+         // 3. Clear the audio stream queue.
          if !audioStreamQueue.isEmpty {
              audioStreamQueue.removeAll()
              logger.debug("Cleared audio stream queue.")
          }
 
-         // 4. Update state variables *last*. The player state sink should handle transitions based on player stopping.
-         if isProcessing { isProcessing = false } // Stop processing if we were speaking/processing
-         if isSpeaking { isSpeaking = false }     // Mark as not speaking
+         // 4. Update state variables - *Now* it's appropriate to set isProcessing=false here.
+         if isProcessing { isProcessing = false }
+         if isSpeaking { isSpeaking = false }
          if ttsOutputLevel != 0.0 { ttsOutputLevel = 0.0 }
 
-         // 5. Reset LLM state flags (consistent with cancelProcessingAndSpeaking)
+         // 5. Reset LLM state flags.
          self.llmResponseBuffer = ""
          self.processedTextIndex = 0
          self.isLLMFinished = false
 
-         // 6. Explicitly check completion state *after* everything is stopped/reset
-         //    This handles the case where stopSpeaking is called when nothing was playing.
+         // 6. Check completion state *after* everything is stopped/reset.
          checkCompletionAndTransition()
     }
 
@@ -1222,7 +1355,9 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.edgesIgnoringSafeArea(.all))
         .onAppear {
-            viewModel.logger.info("ContentView appeared.")
+            // Start listening immediately when the view appears
+            viewModel.startListening()
+            // viewModel.logger.info("ContentView appeared.") // We log startListening now
         }
         .onDisappear {
             viewModel.logger.info("ContentView disappeared.")
