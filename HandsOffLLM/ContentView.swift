@@ -96,9 +96,9 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     @Published var isListening: Bool = false
     @Published var isProcessing: Bool = false // Thinking/Waiting for LLM
     @Published var isSpeaking: Bool = false   // TTS playback is active
-    @Published var ttsRate: Float = AVSpeechUtteranceDefaultSpeechRate {
+    @Published var ttsRate: Float = 2.0 {
         didSet {
-            chunkedAudioPlayer.rate = ttsDisplayMultiplier
+            chunkedAudioPlayer.rate = ttsRate
         }
     }
     @Published var listeningAudioLevel: Float = -50.0 // Audio level dBFS (-50 silence, 0 max)
@@ -172,6 +172,10 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         } else {
         }
         
+        // Set the initial player rate based on the default ttsRate
+        chunkedAudioPlayer.rate = ttsRate
+        logger.debug("Initial player rate set to: \(self.ttsRate)")
+
         requestPermissions()
         setupAudioPlayerSubscriptions()
     }
@@ -725,26 +729,63 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
                  self.currentTTSStreamTask = nil
 
                  if let stream = fetchedStream, fetchError == nil {
-                     logger.info("▶️ Starting ChunkedAudioPlayer...")
-                     self.chunkedAudioPlayer.rate = self.ttsDisplayMultiplier
-                     self.chunkedAudioPlayer.volume = 1.0
-                     if self.internalPlayerState == .initial || self.internalPlayerState == .completed {
-                          self.chunkedAudioPlayer.start(stream, type: kAudioFileWAVEType)
-                     } else {
-                          self.logger.warning("Player state changed before playback could start. Expected initial/completed, got \(String(describing: self.internalPlayerState))")
-                          if self.internalPlayerState == .initial || self.internalPlayerState == .completed {
-                                self.checkCompletionAndContinue()
-                          }
+                     do {
+                         let audioSession = AVAudioSession.sharedInstance()
+
+                         // Set category allowing playback and Bluetooth, ducking others
+                         try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
+
+                         // Check if Bluetooth A2DP is connected
+                         let isBluetoothConnected = audioSession.currentRoute.outputs.contains { $0.portType == .bluetoothA2DP }
+                         self.logger.info("🎧 Bluetooth A2DP Connected: \(isBluetoothConnected)")
+
+                         // Override to speaker ONLY if Bluetooth is NOT connected
+                         if !isBluetoothConnected {
+                             try audioSession.overrideOutputAudioPort(.speaker)
+                             self.logger.info("🔊 Audio output forced to Speaker.")
+                         } else {
+                             // Ensure override is off if Bluetooth is connected
+                             try audioSession.overrideOutputAudioPort(.none)
+                             self.logger.info("🎧 Audio output route left to system (Bluetooth expected).")
+                         }
+
+                         // Activate the session *after* setting category and override
+                         try audioSession.setActive(true)
+
+                         // Start playback
+                         self.logger.info("▶️ Starting ChunkedAudioPlayer (Rate will be set immediately after)...")
+                         // DO NOT set rate before start anymore here, rely on init and post-start setting
+                         // self.chunkedAudioPlayer.rate = self.ttsRate // Removed from here
+                         self.chunkedAudioPlayer.volume = 1.0
+                         self.chunkedAudioPlayer.start(stream, type: kAudioFileWAVEType)
+
+                         // --- Try setting rate AFTER starting ---
+                         // Dispatch async to allow start() to potentially initialize internals
+                         Task { @MainActor [weak self] in
+                             guard let self = self else { return }
+                             // A tiny delay might not even be needed, but dispatching ensures it's after start returns
+                             // try? await Task.sleep(nanoseconds: 1_000_000) // Optional tiny delay (1ms)
+                             self.logger.debug("Applying rate \(self.ttsRate) shortly after start.")
+                             self.chunkedAudioPlayer.rate = self.ttsRate
+                         }
+                         // --- End setting rate after start ---
+
+                     } catch {
+                         self.logger.error("🚨 Failed to configure AudioSession or start player: \(error.localizedDescription)")
+                         if self.isProcessing { self.isProcessing = false }
+                         self.checkCompletionAndContinue()
                      }
+
                  } else {
+                      // Handle fetch error
                       self.logger.error("TTS Fetch failed or was cancelled. Error: \(fetchError?.localizedDescription ?? "Unknown")")
                       if self.isProcessing { self.isProcessing = false }
                       if self.isLLMFinished {
                            self.checkCompletionAndContinue()
                       }
                  }
-             }
-        }
+             } // End MainActor.run
+        } // End Task
     }
 
     private func findNextTTSChunk(text: String, startIndex: Int, isComplete: Bool) -> (String, Int) {
@@ -822,14 +863,6 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     func cleanupOnDisappear() {
         stopListeningCleanup()
         self.stopSpeaking()
-    }
-    
-    // --- TTS Speed Calculation ---
-    var ttsDisplayMultiplier: Float {
-        let rate = self.ttsRate
-        let minDisplay: Float = 1.0
-        let maxDisplay: Float = 4.0
-        return minDisplay + rate * (maxDisplay - minDisplay)
     }
     
     // --- OpenAI TTS Streaming Fetch ---
@@ -1035,8 +1068,8 @@ struct ContentView: View {
             HStack {
                 Text("Speed:")
                     .foregroundColor(.white)
-                Slider(value: $viewModel.ttsRate, in: 0.0...1.0, step: 0.05)
-                Text(String(format: "%.1fx", viewModel.ttsDisplayMultiplier))
+                Slider(value: $viewModel.ttsRate, in: 0.2...4.0, step: 0.1)
+                Text(String(format: "%.1fx", viewModel.ttsRate))
                     .foregroundColor(.white)
                     .frame(width: 40, alignment: .leading)
             }
