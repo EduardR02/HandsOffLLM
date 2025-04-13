@@ -59,9 +59,8 @@ class ChatViewModel: ObservableObject {
                 // AND we are not already listening, automatically start listening again.
                 if !speaking && !self.chatService.isProcessingLLM && !self.isListening {
                     self.logger.info("Speaking finished, automatically starting listening.")
-                    // Add a tiny delay to ensure state propagation before restarting
+                    // do not add a delay
                     Task {
-                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
                         // Re-check state in case something changed during the delay
                         if !self.isSpeaking && !self.chatService.isProcessingLLM && !self.isListening {
                            self.startListening()

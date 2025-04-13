@@ -20,79 +20,64 @@ struct ContentView: View {
      let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
 
     var body: some View {
-        VStack {
-            // Display Error Message (Optional)
-            if let error = viewModel.lastError {
-                 Text(error)
-                     .foregroundColor(.red)
-                     .padding()
+        ZStack { // Use ZStack for layering
+            // Background Color
+            Color.black.edgesIgnoringSafeArea(.all)
+
+            // Main content (Indicator and Slider) centered vertically
+            VStack {
+                // Optional Error Display (remains at top)
+                if let error = viewModel.lastError {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .padding()
+                    Spacer() // Pushes content down
+                } else {
+                    Spacer() // Pushes content down
+                }
+
+                VoiceIndicatorView(
+                    isListening: $viewModel.isListening,
+                    isProcessing: $viewModel.isProcessing,
+                    isSpeaking: $viewModel.isSpeaking,
+                    audioLevel: $viewModel.listeningAudioLevel,
+                    ttsLevel: $viewModel.ttsOutputLevel
+                )
+                .onTapGesture {
+                    viewModel.cycleState()
+                }
+
+                // Slider Section (Reverted to original HStack)
+                HStack {
+                    Text("Speed:")
+                        .foregroundColor(.white)
+                    Slider(value: $viewModel.ttsRate, in: 0.2...4.0, step: 0.1)
+                    Text(String(format: "%.1fx", viewModel.ttsRate))
+                        .foregroundColor(.white)
+                        .frame(width: 40, alignment: .leading)
+                }
+                .padding() // Keep padding around the slider HStack
+
+                Spacer() // Pushes content up from the bottom
             }
 
-            Spacer() // Pushes content to center/bottom
-
-             // Display Messages (Example - You might want a dedicated ChatHistoryView later)
-             // This is just a simple placeholder to show messages are available
-              ScrollView {
-                  VStack(alignment: .leading) {
-                      ForEach(viewModel.messages) { message in
-                           HStack {
-                               if message.role == "user" { Spacer() }
-                               Text("\(message.role): \(message.content)")
-                                   .padding(8)
-                                   .background(message.role == "user" ? Color.blue.opacity(0.7) : Color.gray.opacity(0.7))
-                                   .foregroundColor(.white)
-                                   .cornerRadius(8)
-                               if message.role != "user" { Spacer() }
-                           }
-                           .padding(.horizontal)
-                           .padding(.vertical, 2)
-                      }
-                  }
-              }
-             .frame(maxHeight: 200) // Limit height for now
-
-            Spacer() // Pushes indicator and controls to the bottom
-
-            VoiceIndicatorView(
-                isListening: $viewModel.isListening,
-                 // Use the combined processing state for the indicator's "thinking" phase
-                isProcessing: $viewModel.isProcessing,
-                isSpeaking: $viewModel.isSpeaking,
-                audioLevel: $viewModel.listeningAudioLevel,
-                ttsLevel: $viewModel.ttsOutputLevel
-            )
-            .onTapGesture {
-                // Use the ViewModel's state cycling logic
-                viewModel.cycleState()
+            // Picker positioned at the bottom
+            VStack { // Use a VStack to push the picker to the bottom edge
+                Spacer() // Pushes picker down
+                Picker("LLM", selection: $viewModel.selectedProvider) {
+                    ForEach(LLMProvider.allCases) { provider in
+                        Text(provider.rawValue).tag(provider)
+                    }
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .padding(.horizontal)
+                .padding(.bottom) // Add padding below the picker
+                .disabled(viewModel.isProcessing || viewModel.isSpeaking) // Corrected disabled logic: Only disable during processing/speaking
+                .opacity(pickerOpacity) // Control opacity
+                .animation(.easeInOut(duration: 0.3), value: pickerOpacity) // Animate opacity changes
             }
-            /*
-             // LLM Provider Picker (Example - Move to Settings later)
-             Picker("LLM", selection: $viewModel.selectedProvider) {
-                 ForEach(LLMProvider.allCases) { provider in
-                     Text(provider.rawValue).tag(provider)
-                 }
-             }
-             .pickerStyle(SegmentedPickerStyle())
-             .padding(.horizontal)
-             .disabled(viewModel.isProcessing || viewModel.isListening || viewModel.isSpeaking) // Disable during activity
-            */
-
-            HStack {
-                Text("Speed:")
-                    .foregroundColor(.white)
-                 // Slider still binds to the ViewModel's ttsRate
-                Slider(value: $viewModel.ttsRate, in: 0.2...4.0, step: 0.1)
-                    .disabled(viewModel.isSpeaking) // Optionally disable during speech
-                Text(String(format: "%.1fx", viewModel.ttsRate))
-                    .foregroundColor(.white)
-                    .frame(width: 40, alignment: .leading)
-            }
-            .padding()
-
-            // Removed Spacer to keep controls at the bottom
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.edgesIgnoringSafeArea(.all))
         .onAppear {
             logger.info("ContentView appeared.")
             // Start listening immediately if idle on appear
@@ -106,6 +91,16 @@ struct ContentView: View {
             logger.info("ContentView disappeared.")
             // Trigger ViewModel cleanup
             viewModel.cleanupOnDisappear()
+        }
+    }
+
+    // Computed property for picker opacity
+    private var pickerOpacity: Double {
+        // Visible (1.0) when idle or listening. Invisible (0.0) when processing LLM or speaking.
+        if viewModel.isProcessing || viewModel.isSpeaking {
+            return 0.0
+        } else {
+            return 1.0
         }
     }
 }
