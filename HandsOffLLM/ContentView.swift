@@ -823,30 +823,41 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
 
         let potentialChunk = remainingText.prefix(maxTTSChunkLength)
         var bestSplitIndex = potentialChunk.endIndex
+        let lookaheadMargin = 75 // Reduced margin for finding a boundary
 
+        // Try to find a sentence-ending punctuation mark first
         if let lastSentenceEnd = potentialChunk.lastIndex(where: { ".!?".contains($0) }) {
             let distanceToEnd = potentialChunk.distance(from: lastSentenceEnd, to: potentialChunk.endIndex)
-            if distanceToEnd < 150 || potentialChunk.count < 200 {
+            // If the boundary is within the lookahead margin, split after it
+            if distanceToEnd < lookaheadMargin {
                  bestSplitIndex = potentialChunk.index(after: lastSentenceEnd)
             }
+        // If no suitable sentence end is found, try a comma
         } else if let lastComma = potentialChunk.lastIndex(where: { ",".contains($0) }) {
              let distanceToEnd = potentialChunk.distance(from: lastComma, to: potentialChunk.endIndex)
-             if distanceToEnd < 150 || potentialChunk.count < 200 {
+             // If the boundary is within the lookahead margin, split after it
+             if distanceToEnd < lookaheadMargin {
                  bestSplitIndex = potentialChunk.index(after: lastComma)
              }
         }
+        // If no suitable boundary is found within the margin, bestSplitIndex remains potentialChunk.endIndex
 
         let chunkLength = potentialChunk.distance(from: potentialChunk.startIndex, to: bestSplitIndex)
 
-        let minInitialChunkLength = 80
-        let minSubsequentChunkLength = 100
+        // Calculate scaled minimum chunk length based on playback speed
+        let baseMinChunkLength: Int = 60
+        let scaledMinChunkLength = (self.ttsRate > 1.0) ? Int(Float(baseMinChunkLength) * self.ttsRate) : baseMinChunkLength
 
-        if startIndex == 0 && chunkLength < minInitialChunkLength && !isComplete {
+        // Check if the resulting chunk is too short, especially if it's not the complete text
+        if chunkLength < scaledMinChunkLength && potentialChunk.count == remainingText.count && !isComplete {
+            // If the potential chunk is the *entire* remaining text but still too short, don't send it yet unless LLM is finished.
             return ("", startIndex)
         }
-        if startIndex > 0 && chunkLength < minSubsequentChunkLength && potentialChunk.count == remainingText.count && !isComplete {
-            return ("", startIndex)
+        if chunkLength < baseMinChunkLength && !isComplete { // Use base for a hard minimum if not complete
+             // Avoid sending very small initial chunks even with scaling, wait for more text.
+             return ("", startIndex)
         }
+
 
         let finalChunk = String(potentialChunk[..<bestSplitIndex])
         return (finalChunk, startIndex + finalChunk.count)
