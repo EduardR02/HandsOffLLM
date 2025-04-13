@@ -207,41 +207,69 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
     // --- State Control ---
     func cycleState() {
         Task { @MainActor in
-            if !isListening && !isProcessing && !isSpeaking {
-                startListening()
-            } else if isListening {
-                stopListeningAndProcess()
+            if isListening {
+                // User tapped while listening: Reset listening, go to idle (grey)
+                resetListening()
             } else if isProcessing || isSpeaking {
+                // User tapped while processing/speaking: Cancel and immediately start listening
                 cancelProcessingAndSpeaking()
+            } else {
+                // User tapped while idle (grey): Start listening
+                startListening()
             }
         }
     }
     
+    func resetListening() {
+        logger.notice("🎙️ Listening reset requested by user.")
+        stopListeningCleanup() // Stops engine, cancels tasks, sets isListening = false
+        currentSpokenText = "" // Clear any partial transcription
+        // Ensure other states are false (stopListeningCleanup should handle isListening)
+        isProcessing = false
+        isSpeaking = false
+        listeningAudioLevel = -50.0
+        // No need to start listening here, stays idle until next tap
+    }
+    
     func cancelProcessingAndSpeaking() {
-        logger.notice("⏹️ Cancel requested by user.")
-        
-        if let task = llmTask {
-            task.cancel()
-            llmTask = nil
-        }
-        
-        stopSpeaking()
-        
-        if self.isProcessing {
-            isProcessing = false
-        }
+        logger.notice("⏹️ Cancel requested by user during processing/speaking.")
+
+        llmTask?.cancel()
+        llmTask = nil
+
+        stopSpeaking() // Stops TTS playback and fetch task
+
+        // Explicitly set states to false before potentially restarting listening
+        isProcessing = false
+        // isSpeaking is handled by stopSpeaking() which sets it to false
+
         self.llmResponseBuffer = ""
         self.processedTextIndex = 0
         self.isLLMFinished = false
+        self.nextAudioData = nil
+        self.isFetchingTTS = false
+        self.hasReceivedFirstLLMChunk = false
+
+        // If cancellation happened, immediately go back to listening
+        logger.info("🎤 Immediately transitioning back to listening after cancellation.")
+        startListening()
     }
     
     // --- Speech Recognition (Listening) ---
     func startListening() {
-        guard !audioEngine.isRunning else { return }
-        
+        // Add a guard to prevent starting if already in a non-idle state
+        guard !isListening && !isProcessing && !isSpeaking else {
+            logger.warning("Attempted to start listening while already active (\(self.isListening), \(self.isProcessing), \(self.isSpeaking)). Ignoring.")
+            return
+        }
+        guard !audioEngine.isRunning else {
+             logger.warning("Audio engine is already running, cannot start listening again yet.")
+             return
+        }
+
         isListening = true
-        isProcessing = false
-        isSpeaking = false
+        isProcessing = false // Ensure processing is false when listening starts
+        isSpeaking = false   // Ensure speaking is false when listening starts
         currentSpokenText = ""
         hasUserStartedSpeakingThisTurn = false
         listeningAudioLevel = -50.0
@@ -369,43 +397,55 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
     }
     
     func stopListeningCleanup() {
+        let wasListening = isListening // Check state before modification
         stopAudioEngine()
         recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
+        recognitionTask?.cancel() // Use cancel instead of finish, as we might interrupt it
         recognitionTask = nil
         recognitionRequest = nil
         invalidateSilenceTimer()
-        if isListening {
+        if wasListening { // Only log and update state if we were actually listening
             isListening = false
             listeningAudioLevel = -50.0
-            logger.notice("🎙️ Listening stopped.")
+            logger.notice("🎙️ Listening stopped (Cleanup).")
         }
     }
     
     func stopListeningAndProcess(transcription: String? = nil) {
          Task { @MainActor [weak self] in
              guard let self = self else { return }
-             guard self.isListening else { return }
-             
-             self.isProcessing = true
+             // Don't process if not listening or already processing/speaking
+             guard self.isListening else {
+                 logger.warning("stopListeningAndProcess called but not in listening state.")
+                 return
+             }
+             // Prevent triggering processing if already processing/speaking (e.g., silence timer fires after manual stop)
+             guard !self.isProcessing && !self.isSpeaking else {
+                 logger.warning("stopListeningAndProcess called but already processing or speaking.")
+                 self.stopListeningCleanup() // Ensure listening stops cleanly
+                 return
+             }
+
+             self.isProcessing = true // Set processing TRUE first
              let textToProcess = transcription ?? self.currentSpokenText
-             
-             self.stopListeningCleanup()
-             
+
+             self.stopListeningCleanup() // Now, cleanup listening state (sets isListening FALSE)
+
              if !textToProcess.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                  logger.info("⚙️ Processing transcription: '\(textToProcess)'")
                  let userMessage = ChatMessage(role: "user", content: textToProcess)
+                 // Avoid adding duplicate user messages if processing gets triggered multiple times rapidly
                  if self.messages.last?.role != "user" || self.messages.last?.content != userMessage.content {
                      self.messages.append(userMessage)
                  }
-                 
+
                  self.llmTask = Task {
                      await self.fetchLLMResponse(prompt: textToProcess)
                  }
              } else {
-                 logger.info("⚙️ No text detected to process.")
-                 self.isProcessing = false
-                 self.startListening()
+                 logger.info("⚙️ No text detected to process. Returning to listening.")
+                 self.isProcessing = false // Reset processing flag
+                 self.startListening() // Go back to listening state
              }
          }
      }
@@ -700,12 +740,13 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
             let (chunk, nextIndex) = findNextTTSChunk(text: llmResponseBuffer, startIndex: processedTextIndex, isComplete: isLLMFinished)
 
             if chunk.isEmpty {
-                if isLLMFinished && processedTextIndex == llmResponseBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
+                if isLLMFinished && processedTextIndex == llmResponseBuffer.count && currentAudioPlayer == nil && nextAudioData == nil && !isListening {
                     if isProcessing {
                         isProcessing = false
-                        logger.info("⚙️ Processing finished (TTS Idle).")
+                        logger.info("⚙️ Processing finished (LLM & TTS Idle).")
                     }
-                    autoStartListeningAfterDelay()
+                    logger.info("🎤 Directly transitioning to listening.")
+                    startListening()
                 }
                 return
             }
@@ -759,12 +800,13 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
                     }
                 }
             }
-        } else if isLLMFinished && processedTextIndex == llmResponseBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
+        } else if isLLMFinished && processedTextIndex == llmResponseBuffer.count && currentAudioPlayer == nil && nextAudioData == nil && !isListening {
             if isProcessing {
                 isProcessing = false
-                logger.info("⚙️ Processing finished (TTS Idle - Final Check).")
+                logger.info("⚙️ Processing finished (LLM & TTS Idle).")
             }
-            autoStartListeningAfterDelay()
+            logger.info("🎤 Directly transitioning to listening.")
+            startListening()
         }
     }
 
@@ -905,23 +947,6 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
               }
          }
      }
-
-    // --- Auto-Restart Listening ---
-    func autoStartListeningAfterDelay() {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            guard !self.isSpeaking && !self.isProcessing && !self.isListening else { return }
-            
-            logger.info("🎙️ TTS finished. Switching to user turn...")
-            try? await Task.sleep(nanoseconds: 200_000_000)
-
-            if !self.isListening && !self.isProcessing && !self.isSpeaking {
-                self.startListening()
-            } else {
-                 logger.warning("🎤 Aborted auto-start: State changed during brief delay.")
-            }
-        }
-    }
     
     // --- Cleanup ---
     deinit {
@@ -1026,36 +1051,41 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
     func stopSpeaking() {
          let wasSpeaking = self.isSpeaking
          
+         // Cancel TTS Fetch Task
          if let task = self.ttsFetchTask {
              task.cancel()
              self.ttsFetchTask = nil
-             self.isFetchingTTS = false
+             self.isFetchingTTS = false // Ensure flag is reset
          }
 
+         // Stop Audio Player
          if let player = self.currentAudioPlayer {
              player.stop()
              self.currentAudioPlayer = nil
          }
 
-         self.invalidateTTSLevelTimer()
+         // Cleanup Timer and Audio Data
+         self.invalidateTTSLevelTimer() // This also sets level to 0 if player is nil
+         self.nextAudioData = nil
 
-         if self.nextAudioData != nil {
-             self.nextAudioData = nil
-         }
-
-         if self.isSpeaking {
+         // Update State only if it was speaking
+         if wasSpeaking {
              self.isSpeaking = false
-             if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+             if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 } // Ensure level resets visually
+             logger.notice("⏹️ TTS interrupted/stopped.")
          }
 
-         if wasSpeaking && self.isLLMFinished && self.ttsFetchTask == nil && self.currentAudioPlayer == nil && self.nextAudioData == nil {
-             if self.isProcessing {
-                 self.isProcessing = false
-             }
-         }
-
-         logger.notice("⏹️ TTS interrupted.")
-    }
+         // Check if processing should end *after* stopping speaking
+         // This condition seems complex and might be handled elsewhere better.
+         // Let's simplify: Processing ends when LLM is finished AND TTS is idle, or when cancelled.
+         // This check might be redundant now.
+         // if wasSpeaking && self.isLLMFinished && self.ttsFetchTask == nil && self.currentAudioPlayer == nil && self.nextAudioData == nil {
+         //     if self.isProcessing {
+         //         self.isProcessing = false
+         //         logger.info("⚙️ Processing finished (triggered by stopSpeaking).") // Added log
+         //     }
+         // }
+     }
 }
 
 struct ContentView: View {
@@ -1094,6 +1124,10 @@ struct ContentView: View {
         .background(Color.black.edgesIgnoringSafeArea(.all))
         .onAppear {
             viewModel.logger.info("ContentView appeared.")
+            // Start listening immediately if not already active
+            if !viewModel.isListening && !viewModel.isProcessing && !viewModel.isSpeaking {
+                viewModel.startListening()
+            }
         }
         .onDisappear {
             viewModel.logger.info("ContentView disappeared.")
