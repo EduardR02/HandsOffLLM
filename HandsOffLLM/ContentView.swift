@@ -59,7 +59,7 @@ struct OpenAITTSRequest: Codable {
     let input: String
     let voice: String
     let response_format: String
-    let speed: Float
+    let instructions: String?
 }
 
 
@@ -96,12 +96,12 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
     @Published var isListening: Bool = false
     @Published var isProcessing: Bool = false // Thinking/Waiting for LLM
     @Published var isSpeaking: Bool = false   // TTS playback is active
-    @Published var ttsRate: Float = AVSpeechUtteranceDefaultSpeechRate {
+    @Published var ttsRate: Float = 2.0 {
         didSet {
             Task { @MainActor [weak self] in
                 guard let self = self, let player = self.currentAudioPlayer else { return }
                 if player.enableRate {
-                    player.rate = self.ttsDisplayMultiplier
+                    player.rate = self.ttsRate
                 } else {
                 }
             }
@@ -722,7 +722,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
 
             self.ttsFetchTask = Task { [weak self] in
                 do {
-                    let fetchedData = try await self?.fetchOpenAITTSAudio(apiKey: apiKey, text: chunk, speed: self?.ttsRate ?? AVSpeechUtteranceDefaultSpeechRate)
+                    let fetchedData = try await self?.fetchOpenAITTSAudio(apiKey: apiKey, text: chunk)
                     try Task.checkCancellation()
 
                     await MainActor.run { [weak self] in
@@ -840,7 +840,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
             currentAudioPlayer?.isMeteringEnabled = true
             
             if let player = currentAudioPlayer {
-                 player.rate = self.ttsDisplayMultiplier
+                 player.rate = self.ttsRate
             }
 
             if currentAudioPlayer?.play() == true {
@@ -931,16 +931,8 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
         self.stopSpeaking()
     }
     
-    // --- TTS Speed Calculation ---
-    var ttsDisplayMultiplier: Float {
-        let rate = self.ttsRate
-        let minDisplay: Float = 1.0
-        let maxDisplay: Float = 4.0
-        return minDisplay + rate * (maxDisplay - minDisplay)
-    }
-    
     // --- OpenAI TTS Fetch ---
-    func fetchOpenAITTSAudio(apiKey: String, text: String, speed: Float) async throws -> Data {
+    func fetchOpenAITTSAudio(apiKey: String, text: String) async throws -> Data {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LlmError.streamingError("Cannot synthesize empty text")
         }
@@ -953,14 +945,9 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVA
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         
-        let minOpenAISpeed: Float = 1.0
-        let maxOpenAISpeed: Float = 4.0
-        let calculatedOpenAISpeed = minOpenAISpeed + speed * (maxOpenAISpeed - minOpenAISpeed)
-        let clampedOpenAISpeed = max(0.25, min(calculatedOpenAISpeed, 4.0))
-        
         let payload = OpenAITTSRequest(
             model: openAITTSModel, input: text, voice: openAITTSVoice,
-            response_format: openAITTSFormat, speed: clampedOpenAISpeed
+            response_format: openAITTSFormat, instructions: Prompts.ttsInstructions
         )
         
         do { request.httpBody = try JSONEncoder().encode(payload) }
@@ -1094,8 +1081,8 @@ struct ContentView: View {
             HStack {
                 Text("Speed:")
                     .foregroundColor(.white)
-                Slider(value: $viewModel.ttsRate, in: 0.0...1.0, step: 0.05)
-                Text(String(format: "%.1fx", viewModel.ttsDisplayMultiplier))
+                Slider(value: $viewModel.ttsRate, in: 0.2...4.0, step: 0.1)
+                Text(String(format: "%.1fx", viewModel.ttsRate))
                     .foregroundColor(.white)
                     .frame(width: 40, alignment: .leading)
             }

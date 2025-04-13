@@ -10,4 +10,5 @@ struct Prompts {
     // remove the "-template" from the filename to use it
     // Define your default system prompt here
     static let chatPrompt: String? = "You are a helpful voice assistant. Keep your responses concise and conversational."
+    static let ttsInstructions: String? = "Speak in a clear and pleasant manner"
 }
