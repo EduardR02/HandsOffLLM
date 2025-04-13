@@ -294,6 +294,9 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         processedTextIndex = 0
         // isLLMFinished is handled above
 
+        // 6.5 Deactivate audio session before starting to listen again
+        deactivateAudioSession()
+
         // 7. Start listening immediately
         startListening()
     }
@@ -312,8 +315,11 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
         
         let audioSession = AVAudioSession.sharedInstance()
         do {
+            // Ensure previous session is inactive before configuring and activating again
+            try? audioSession.setActive(false) // Best effort deactivation
             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            logger.debug("Audio session configured and activated for listening.")
         } catch {
             logger.error("🚨 Audio session setup error: \(error.localizedDescription)")
             isListening = false
@@ -443,6 +449,8 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
             listeningAudioLevel = -50.0
             logger.notice("🎙️ Listening stopped.")
         }
+        // Deactivate audio session when listening stops
+        deactivateAudioSession()
     }
     
     func stopListeningAndProcess(transcription: String? = nil) {
@@ -629,7 +637,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
                  self.fetchAndBufferNextChunkIfNeeded()
 
                 // Check completion state *only* if the player is already idle AND LLM finished successfully.
-                 if (self.internalPlayerState == .initial || self.internalPlayerState == .completed) {
+                 if (self.internalPlayerState == .some(.initial) || self.internalPlayerState == .some(.completed)) {
                       self.checkCompletionAndTransition()
                  } else {
                      self.logger.debug("LLM finished successfully, but player is busy (\(String(describing: self.internalPlayerState))). Waiting for player completion to check final state.")
@@ -882,14 +890,14 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
                          self.logger.error("TTS Stream Creation Failed: \(error.localizedDescription)")
                      }
                     // Check completion *only* if the player is currently idle and might be waiting for this failed fetch.
-                    if self.internalPlayerState == .initial || self.internalPlayerState == .completed {
+                    if self.internalPlayerState == .some(.initial) || self.internalPlayerState == .some(.completed) {
                         self.checkCompletionAndTransition()
                     }
 
                 case .none:
                      self.logger.warning("TTS Fetch task finished with no result.")
                      // Similar to failure, check completion only if player is idle.
-                     if self.internalPlayerState == .initial || self.internalPlayerState == .completed {
+                     if self.internalPlayerState == .some(.initial) || self.internalPlayerState == .some(.completed) {
                          self.checkCompletionAndTransition()
                      }
                 }
@@ -944,82 +952,112 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
     @MainActor
     private func playBufferedStreamIfReady() {
         // Check if player is idle (initial or completed)
-        guard internalPlayerState == .initial || internalPlayerState == .completed else {
-            logger.trace("Player not ready (State: \(String(describing: self.internalPlayerState))), deferring playback.")
+        guard internalPlayerState == .some(.initial) || internalPlayerState == .some(.completed) else {
+            logger.trace("Player not ready (State: \(String(describing: self.internalPlayerState))), deferring playback attempt.")
             return
         }
         // Check if there's a stream in the queue
         guard !audioStreamQueue.isEmpty else {
-            logger.trace("No buffered stream available in queue to play.")
-            checkCompletionAndTransition() // Check if we are actually done
-                            return
-                        }
-                        
+            logger.trace("No buffered stream available. Calling checkCompletionAndTransition.")
+            // If the queue is empty, check if the whole process is finished.
+            checkCompletionAndTransition()
+            return
+        }
+
         // Dequeue the next stream
         let streamToPlay = audioStreamQueue.removeFirst()
-        logger.info("▶️ Player is ready, dequeuing and playing next stream. Queue size now: \(self.audioStreamQueue.count)")
+        logger.info("▶️ Player ready, dequeuing and playing next stream. Queue size now: \(self.audioStreamQueue.count)")
 
         do {
             // --- Configure Audio Session & Start Playback ---
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
+            // Ensure previous session is inactive before configuring and activating again
+            try? audioSession.setActive(false) // Best effort deactivation
+            try audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .allowBluetoothA2DP]) // Use .playback for TTS
             let isBluetoothConnected = audioSession.currentRoute.outputs.contains { $0.portType == .bluetoothA2DP }
             self.logger.info("🎧 Bluetooth A2DP Connected: \(isBluetoothConnected)")
             if !isBluetoothConnected {
                  try audioSession.overrideOutputAudioPort(.speaker)
-                self.logger.info("🔊 Audio output forced to Speaker.")
-                        } else {
+                self.logger.info("🔊 Audio output forced to Speaker for TTS.")
+            } else {
                 try audioSession.overrideOutputAudioPort(.none)
-                self.logger.info("🎧 Audio output route left to system (Bluetooth expected).")
+                self.logger.info("🎧 Audio output route left to system (Bluetooth expected) for TTS.")
             }
             try audioSession.setActive(true)
+            logger.debug("Audio session configured and activated for playback.")
             // --- End Audio Session Config ---
 
             // --- Start Playback ---
             self.logger.debug("Setting player rate to \(self.ttsRate) before start.")
             self.chunkedAudioPlayer.rate = self.ttsRate
-            self.chunkedAudioPlayer.volume = 1.0
-            self.chunkedAudioPlayer.start(streamToPlay, type: kAudioFileWAVEType) // Play the dequeued stream
+            self.chunkedAudioPlayer.volume = 1.0 // Ensure volume is set
+            self.chunkedAudioPlayer.start(streamToPlay, type: kAudioFileWAVEType)
 
-            // --- Apply Rate Post-Start ---
+            // --- Apply Rate Post-Start (Keep this task for robustness) ---
             Task { @MainActor [weak self] in
                  guard let self = self else { return }
+                 // Small delay might help ensure player is fully ready for rate change
+                 try? await Task.sleep(for: .milliseconds(50))
                  self.logger.trace("Applying rate \(self.ttsRate) shortly after start.")
                  self.chunkedAudioPlayer.rate = self.ttsRate
             }
             // --- End Apply Rate Post-Start ---
 
-                } catch {
+        } catch {
             logger.error("🚨 Failed to configure AudioSession or start player: \(error.localizedDescription)")
-            if self.isProcessing { self.isProcessing = false }
-            audioStreamQueue.insert(streamToPlay, at: 0) // Put stream back on failure? Or discard? Let's discard for now.
+            // Put stream back? Or just log and check completion? Let's log and check completion.
+            // If session failed, retrying might not help.
+            audioStreamQueue.removeAll() // Clear queue on failure to avoid retrying bad state
+            if self.isProcessing { self.isProcessing = false } // End processing on failure
+            if self.isSpeaking { self.isSpeaking = false }
+             deactivateAudioSession() // Ensure session is off on failure
             checkCompletionAndTransition()
         }
     }
 
     private func checkCompletionAndTransition() {
-        logger.trace("Checking completion/transition. LLM Finished: \(self.isLLMFinished), Processed Index: \(self.processedTextIndex)/\(self.llmResponseBuffer.count), Queue Size: \(self.audioStreamQueue.count), Player State: \(String(describing: self.internalPlayerState)), Fetch Task: \(self.ttsFetchTask != nil)")
+        logger.trace("Checking completion/transition. LLM Finished: \(self.isLLMFinished), Processed Idx: \(self.processedTextIndex)/\(self.llmResponseBuffer.count), Queue: \(self.audioStreamQueue.count), Player: \(String(describing: self.internalPlayerState)), Fetching: \(self.ttsFetchTask != nil)")
 
          // Condition 1: Everything truly finished
-         if isLLMFinished &&
-            processedTextIndex == llmResponseBuffer.count &&
-            (internalPlayerState == .initial || internalPlayerState == .completed) &&
-            audioStreamQueue.isEmpty && // Check queue
-            ttsFetchTask == nil
-         {
-             if self.isProcessing { self.isProcessing = false }
-             logger.info("✅ Processing finished (LLM Done, All Text Processed, Queue Empty, Player Idle).")
-             self.autoStartListeningAfterDelay()
+         let isWorkDone = isLLMFinished &&
+                          processedTextIndex == llmResponseBuffer.count &&
+                          audioStreamQueue.isEmpty &&
+                          ttsFetchTask == nil
+         let isPlayerIdle = (internalPlayerState == .some(.initial) || internalPlayerState == .some(.completed))
+
+         if isWorkDone && isPlayerIdle {
+             logger.info("✅ All TTS processed and played. LLM finished.")
+             if self.isProcessing { self.isProcessing = false } // Stop processing indicator
+             if self.isSpeaking { self.isSpeaking = false } // Ensure speaking is off
+             // Deactivate audio session *before* starting to listen again
+             deactivateAudioSession()
+             self.autoStartListeningAfterDelay() // Transition back to listening
          }
-         // Condition 2: Player is idle, but more text OR queue might need processing
-         else if (internalPlayerState == .initial || internalPlayerState == .completed) {
+         // Condition 2: Player is idle, but more work might exist (more text or items in queue)
+         else if isPlayerIdle {
+             // Player became idle, but we are not finished overall.
+             // Try playing next item from queue first.
              if !audioStreamQueue.isEmpty {
-                 logger.debug("Player Idle/Completed, attempting to play next from queue.")
-                 self.playBufferedStreamIfReady() // Try playing from queue first
-             } else if processedTextIndex < llmResponseBuffer.count {
-                 logger.debug("Player Idle/Completed & Queue Empty, checking for more text to fetch.")
-                 self.fetchAndBufferNextChunkIfNeeded() // If queue empty, try fetching
+                 logger.debug("Player Idle, attempting to play next from queue.")
+                 self.playBufferedStreamIfReady()
              }
+             // If queue is empty, but more text exists and no fetch is running, try fetching.
+             else if processedTextIndex < llmResponseBuffer.count && ttsFetchTask == nil {
+                 logger.debug("Player Idle & Queue Empty, checking for more text to fetch.")
+                 self.fetchAndBufferNextChunkIfNeeded()
+             }
+             // If queue is empty, text is done, but LLM is NOT finished, just wait.
+             else if !isLLMFinished {
+                 logger.debug("Player Idle, Queue Empty, Text Processed, but waiting for LLM to finish.")
+             }
+             // If queue empty, text done, LLM done, but fetch task is somehow still running? (Shouldn't happen often) - Wait or log error? Let's wait.
+             else if ttsFetchTask != nil {
+                 logger.debug("Player Idle, Queue Empty, Text Processed, LLM Done, but waiting for final TTS fetch task.")
+             }
+         }
+         // Condition 3: Player is busy (.playing, .paused). No transition needed now.
+         else {
+              logger.trace("Player is busy (\(String(describing: self.internalPlayerState))). No transition action needed now.")
          }
     }
 
@@ -1095,52 +1133,67 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
 
     // --- Auto-Restart Listening ---
     func autoStartListeningAfterDelay() {
-        // do not add a delay in this function
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            // Guard against starting if state changed unexpectedly
+            // Guard against starting if state changed unexpectedly while this task was queued
             guard !self.isSpeaking && !self.isProcessing && !self.isListening else {
-                // Don't log here, already logged in the check below if needed.
-                // This guard prevents unnecessary work if the state changed *before* this task started.
+                self.logger.warning("🎤 Aborted auto-start: State changed before execution (isListening=\(self.isListening), isSpeaking=\(self.isSpeaking), isProcessing=\(self.isProcessing)).")
                 return
             }
             
-            logger.info("🎙️ TTS finished. Preparing to switch to user turn...")
-            // Set isProcessing true to bridge the visual gap during the short delay
-            self.isProcessing = true
-            logger.trace("Set isProcessing=true for visual transition bridging.")
+            logger.info("🎙️ TTS finished. Transitioning back to listening.")
+            // No artificial delay needed, startListening handles setup.
+            // Ensure isProcessing is false before starting (should be false already if called from checkCompletion)
+            if self.isProcessing { self.isProcessing = false }
 
-            // Double-check state *after* the delay before starting to listen
-            // We only proceed if the state is still 'idle' (no speaking, no listening, BUT isProcessing might be true now)
-            if !self.isListening && !self.isSpeaking {
-                // We are good to start listening. startListening() will set isProcessing = false.
-                self.startListening()
-            } else {
-                 // State changed during the brief delay (e.g., user tapped cancel)
-                 logger.warning("🎤 Aborted auto-start: State changed during brief delay (isListening=\(self.isListening), isSpeaking=\(self.isSpeaking)).")
-                 // Ensure isProcessing is false if we aborted *after* setting it true for bridging.
-                 if self.isProcessing { self.isProcessing = false }
-            }
+            // Start listening immediately.
+            self.startListening()
         }
     }
     
     // --- Cleanup ---
     deinit {
+        // Perform cleanup if needed, though onDisappear is usually sufficient for SwiftUI views
+        logger.notice("ChatViewModel deinit.")
+        // Ensure main actor calls are dispatched correctly from deinit
+        Task { @MainActor [weak self] in
+            self?.chunkedAudioPlayer.stop()
+            self?.deactivateAudioSession() // Ensure session is off
+        }
+        // Task cancellations can be done synchronously
+        llmTask?.cancel()
+        ttsFetchTask?.cancel()
+
     }
+    
     func cleanupOnDisappear() {
-        stopListeningCleanup()
-        self.stopSpeaking()
+        logger.info("ContentView disappeared. Cleaning up.")
+        stopListeningCleanup() // Also deactivates session
+        // Explicitly cancel LLM and TTS tasks and stop player
+        llmTask?.cancel()
+        llmTask = nil
+        ttsFetchTask?.cancel()
+        ttsFetchTask = nil
+        chunkedAudioPlayer.stop()
+        // Reset states fully
+        isProcessing = false
+        isSpeaking = false
+        ttsOutputLevel = 0.0
+        llmResponseBuffer = ""
+        processedTextIndex = 0
+        isLLMFinished = false
+        audioStreamQueue.removeAll()
+        // Session should be deactivated by stopListeningCleanup or player stop->initial state->checkCompletion->deactivate
+        deactivateAudioSession() // Belt-and-suspenders deactivation
     }
     
     @MainActor
     func stopSpeaking() {
-         // This function is now primarily for explicit cancellation or cleanup,
-         // not the standard start of a new LLM response.
-         logger.notice("⏹️ stopSpeaking called (likely for cancellation/cleanup).")
+         // For explicit cancellation/cleanup.
+         logger.notice("⏹️ stopSpeaking called (explicit cancellation/cleanup).")
 
          // 1. Stop the audio player.
-         chunkedAudioPlayer.stop()
-         logger.debug("Called chunkedAudioPlayer.stop(). Player state should transition to .initial.")
+         chunkedAudioPlayer.stop() // This should trigger state change to .initial
 
          // 2. Cancel any ongoing TTS fetch task.
          if let task = self.ttsFetchTask {
@@ -1155,84 +1208,112 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              logger.debug("Cleared audio stream queue.")
          }
 
-         // 4. Update state variables - *Now* it's appropriate to set isProcessing=false here.
+         // 4. Update state variables
          if isProcessing { isProcessing = false }
          if isSpeaking { isSpeaking = false }
          if ttsOutputLevel != 0.0 { ttsOutputLevel = 0.0 }
 
-         // 5. Reset LLM state flags.
+         // 5. Reset LLM state flags (important for clean state)
          self.llmResponseBuffer = ""
          self.processedTextIndex = 0
-         self.isLLMFinished = false
+         self.isLLMFinished = false // Assume interruption means LLM sequence isn't complete
 
-         // 6. Check completion state *after* everything is stopped/reset.
+         // 6. Deactivate audio session
+         deactivateAudioSession()
+
+         // 7. Check completion state *after* everything is stopped/reset.
+         // This might not be needed as state is fully reset, but doesn't hurt.
          checkCompletionAndTransition()
     }
 
     private func setupAudioPlayerSubscriptions() {
          chunkedAudioPlayer.$currentState
              .receive(on: DispatchQueue.main)
-             .sink { [weak self] state in
+             .sink { [weak self] (state: AudioPlayerState?) in
                  guard let self = self else { return }
-                 self.logger.debug("AudioPlayer State Changed: \(String(describing: state)) -> internal: \(String(describing: self.internalPlayerState))")
                  let previousState = self.internalPlayerState
                  self.internalPlayerState = state // Update internal state FIRST
+                 self.logger.debug("AudioPlayer State Changed: \(String(describing: previousState)) -> \(String(describing: state))")
 
                  switch state {
-                 case .initial:
+                 case .initial, .completed: // Player is idle (stopped, finished, or never started)
                      if self.isSpeaking { self.isSpeaking = false }
                      if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-                     // Player stopped or reset. Always check if we should play the next or transition.
-                     self.logger.debug("Player state is .initial. Calling playBufferedStreamIfReady/checkCompletion.")
-                     self.playBufferedStreamIfReady() // Will call checkCompletion if queue empty
+                     self.logger.debug("Player Idle (State: \(String(describing: state))). Calling playBufferedStreamIfReady/checkCompletion.")
+                     // Try playing the next chunk or check if we're fully done.
+                     // `playBufferedStreamIfReady` calls `checkCompletionAndTransition` if queue is empty.
+                     self.playBufferedStreamIfReady()
 
                  case .playing:
                      if !self.isSpeaking { self.isSpeaking = true }
-                     // Ensure processing is true only if LLM isn't finished yet.
-                     // If LLM is finished, we are just playing out the last chunks.
+                     // Ensure processing is true while playing, unless LLM is fully done.
                      if !self.isLLMFinished && !self.isProcessing {
                          self.isProcessing = true
-                         self.logger.debug("Player started playing, ensuring isProcessing is true.")
+                         self.logger.debug("Player playing, ensuring isProcessing=true.")
                      }
+                     // Set visual feedback for TTS level (adjust value as needed)
                      if self.ttsOutputLevel == 0.0 { self.ttsOutputLevel = 0.7 }
-                     // Proactively fetch the next chunk
+                     // Player is busy playing a chunk, proactively fetch the *next* TTS chunk.
+                     self.logger.trace("Player playing, proactively fetching next TTS chunk.")
                      self.fetchAndBufferNextChunkIfNeeded()
 
                  case .paused:
-                     if self.isSpeaking { self.isSpeaking = false } // Reflect paused state
+                     // Paused state might need visual update or specific handling if pause is intended.
+                     if self.isSpeaking { self.isSpeaking = false } // Reflect paused state visually if needed
                      if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-                     // No action needed for queue/fetching on pause.
-
-                 case .completed:
-                     if self.isSpeaking { self.isSpeaking = false }
-                     if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-                     self.logger.info("▶️ AudioPlayer Completed Chunk.")
-                     // Chunk finished. Immediately try to play the next one or check completion.
-                     self.playBufferedStreamIfReady() // Will call checkCompletion if queue empty
+                     // No action needed for queue/fetching on pause in this app.
 
                  case .failed:
-                     self.logger.error("🚨 AudioPlayer Failed (See $currentError for details)")
+                     self.logger.error("🚨 AudioPlayer Failed (See $currentError). Resetting TTS state.")
                      if self.isSpeaking { self.isSpeaking = false }
                      if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-                     // Clear potentially corrupted streams from queue.
+                     // Clear the queue as the player or streams might be in a bad state.
                      if !self.audioStreamQueue.isEmpty {
                          self.audioStreamQueue.removeAll()
                          self.logger.debug("Cleared audio queue due to player failure.")
                      }
-                     // Check overall state (maybe start listening again, or try fetching if LLM not done)
+                     // Cancel any pending TTS fetch as well.
+                     if let task = self.ttsFetchTask {
+                         task.cancel()
+                         self.ttsFetchTask = nil
+                         self.logger.debug("Cancelled TTS fetch task due to player failure.")
+                     }
+                     // Deactivate audio session on failure
+                     self.deactivateAudioSession()
+                     // Check overall state - likely transition back to idle/listening if LLM done.
                      self.checkCompletionAndTransition()
+
+                 case .none: // Add this case to handle nil
+                     // Handle the nil case, e.g., log it or do nothing if it's expected
+                     self.logger.trace("AudioPlayer State became nil.")
+                     // You might want to ensure state variables reflect this if needed
+                     if self.isSpeaking { self.isSpeaking = false }
+                     if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+                     // Consider if checkCompletionAndTransition is needed here too
+                     // self.checkCompletionAndTransition() 
                  }
              }
              .store(in: &cancellables)
 
+         // Keep $currentError subscription
          chunkedAudioPlayer.$currentError
              .receive(on: DispatchQueue.main)
              .compactMap { $0 }
-             .sink { [weak self] error in
+             .sink { [weak self] (error: Error) in
                  let errorMessage = "🚨 AudioPlayer Error Detail: \(error.localizedDescription)"
                  self?.logger.error("\(errorMessage)")
+                 // Error state is handled by the .failed case in the state sink.
              }
              .store(in: &cancellables)
+    }
+
+    private func deactivateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            logger.debug("Audio session deactivated.")
+        } catch {
+            logger.error("🚨 Failed to deactivate audio session: \(error.localizedDescription)")
+        }
     }
 }
 
