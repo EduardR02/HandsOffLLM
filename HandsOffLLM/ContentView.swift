@@ -966,53 +966,97 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
 
         // Dequeue the next stream
         let streamToPlay = audioStreamQueue.removeFirst()
-        logger.info("▶️ Player ready, dequeuing and playing next stream. Queue size now: \(self.audioStreamQueue.count)")
 
-        do {
-            // --- Configure Audio Session & Start Playback ---
-            let audioSession = AVAudioSession.sharedInstance()
-            // Ensure previous session is inactive before configuring and activating again
-            try? audioSession.setActive(false) // Best effort deactivation
-            try audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .allowBluetoothA2DP]) // Use .playback for TTS
-            let isBluetoothConnected = audioSession.currentRoute.outputs.contains { $0.portType == .bluetoothA2DP }
-            self.logger.info("🎧 Bluetooth A2DP Connected: \(isBluetoothConnected)")
-            if !isBluetoothConnected {
-                 try audioSession.overrideOutputAudioPort(.speaker)
-                self.logger.info("🔊 Audio output forced to Speaker for TTS.")
-            } else {
-                try audioSession.overrideOutputAudioPort(.none)
-                self.logger.info("🎧 Audio output route left to system (Bluetooth expected) for TTS.")
+        let audioSession = AVAudioSession.sharedInstance()
+        Task { // Wrap the whole session setup and start in a Task to allow sleep
+            do {
+                // --- Configure Audio Session ONCE for Playback ---
+                if audioSession.category != .playback {
+                    logger.debug("Audio session category is not .playback (\(audioSession.category.rawValue)), setting up for TTS...")
+
+                    // Deactivate Previous Session Explicitly
+                    do {
+                        logger.debug("Attempting to deactivate previous audio session (if active)...")
+                        try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                        logger.debug("Previous audio session deactivated successfully.")
+                    } catch {
+                        logger.warning("Could not deactivate previous audio session (may already be inactive): \(error.localizedDescription)")
+                    }
+
+                    // Brief Delay
+                    logger.trace("Brief delay before setting new audio session category...")
+                    try? await Task.sleep(for: .milliseconds(50)) // 50ms delay
+
+                    // Configure New Session (Simplified)
+                    logger.debug("Setting category to .playback, mode .spokenAudio...")
+                    try audioSession.setCategory(.playback, mode: .spokenAudio) // Keep options removed
+                    logger.debug("Audio category and mode set successfully.")
+
+                    // Activate New Session
+                    logger.debug("Attempting to activate audio session for playback...")
+                    try audioSession.setActive(true)
+                    logger.debug("Audio session activated successfully for playback.")
+
+                } else {
+                     logger.debug("Audio session already configured for playback. Skipping setup.")
+                     // Ensure session is active if it somehow got deactivated without category change.
+                     // We might not strictly need this, but it's a safety check.
+                     // Avoid activating if other audio *is* playing to prevent interruptions.
+                     if !audioSession.isOtherAudioPlaying {
+                         do {
+                             try audioSession.setActive(true)
+                             logger.trace("Ensured playback session is active.")
+                         } catch {
+                             // Log if activation fails, but proceed to player start anyway
+                             logger.warning("Could not ensure playback session is active (may fail playback): \(error.localizedDescription)")
+                         }
+                     } else {
+                          logger.trace("Other audio playing, not forcing session active state.")
+                     }
+                }
+                // --- End Audio Session Config ---
+
+
+                // --- Start Playback ---
+                logger.debug("Setting player rate to \(self.ttsRate) before start.")
+                self.chunkedAudioPlayer.rate = self.ttsRate
+                self.chunkedAudioPlayer.volume = 1.0 // Ensure volume is set
+                self.chunkedAudioPlayer.start(streamToPlay, type: kAudioFileWAVEType)
+                logger.info("▶️ Player start() called with stream. Queue size now: \(self.audioStreamQueue.count)")
+
+                // --- Apply Rate Post-Start ---
+                // This Task can remain nested or be separate; nesting is fine here.
+                Task { @MainActor [weak self] in
+                     guard let self = self else { return }
+                     try? await Task.sleep(for: .milliseconds(50))
+                     if self.internalPlayerState == .playing {
+                         logger.trace("Applying rate \(self.ttsRate) shortly after start (player is playing).")
+                         self.chunkedAudioPlayer.rate = self.ttsRate
+                     } else {
+                         logger.trace("Skipping post-start rate apply because player state is \(String(describing: self.internalPlayerState)).")
+                     }
+                }
+
+            } catch {
+                // Log the specific point of failure if possible (though error originates from lower level)
+                logger.error("🚨 Failed during audio session setup or player start: \(error.localizedDescription)")
+                // Log the specific OSStatus error code and details if available
+                if let nsError = error as NSError? {
+                     logger.error("Error details: Domain=\(nsError.domain), Code=\(nsError.code), UserInfo=\(nsError.userInfo)")
+                } else {
+                     logger.error("Error details: \(error)") // Fallback logging
+                }
+
+                // --- Cleanup on Failure ---
+                audioStreamQueue.removeAll() // Clear queue on failure
+                if self.isProcessing { self.isProcessing = false } // End processing indicator
+                if self.isSpeaking { self.isSpeaking = false } // Ensure speaking state is off
+                // Attempt to deactivate session again in case it was partially activated or left in a bad state
+                deactivateAudioSession()
+                // Check overall state after failure
+                checkCompletionAndTransition()
             }
-            try audioSession.setActive(true)
-            logger.debug("Audio session configured and activated for playback.")
-            // --- End Audio Session Config ---
-
-            // --- Start Playback ---
-            self.logger.debug("Setting player rate to \(self.ttsRate) before start.")
-            self.chunkedAudioPlayer.rate = self.ttsRate
-            self.chunkedAudioPlayer.volume = 1.0 // Ensure volume is set
-            self.chunkedAudioPlayer.start(streamToPlay, type: kAudioFileWAVEType)
-
-            // --- Apply Rate Post-Start (Keep this task for robustness) ---
-            Task { @MainActor [weak self] in
-                 guard let self = self else { return }
-                 // Small delay might help ensure player is fully ready for rate change
-                 try? await Task.sleep(for: .milliseconds(50))
-                 self.logger.trace("Applying rate \(self.ttsRate) shortly after start.")
-                 self.chunkedAudioPlayer.rate = self.ttsRate
-            }
-            // --- End Apply Rate Post-Start ---
-
-        } catch {
-            logger.error("🚨 Failed to configure AudioSession or start player: \(error.localizedDescription)")
-            // Put stream back? Or just log and check completion? Let's log and check completion.
-            // If session failed, retrying might not help.
-            audioStreamQueue.removeAll() // Clear queue on failure to avoid retrying bad state
-            if self.isProcessing { self.isProcessing = false } // End processing on failure
-            if self.isSpeaking { self.isSpeaking = false }
-             deactivateAudioSession() // Ensure session is off on failure
-            checkCompletionAndTransition()
-        }
+        } // End Task wrapper
     }
 
     private func checkCompletionAndTransition() {
@@ -1029,8 +1073,11 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              logger.info("✅ All TTS processed and played. LLM finished.")
              if self.isProcessing { self.isProcessing = false } // Stop processing indicator
              if self.isSpeaking { self.isSpeaking = false } // Ensure speaking is off
-             // Deactivate audio session *before* starting to listen again
+
+             // *** Deactivate audio session HERE, before starting to listen again ***
              deactivateAudioSession()
+             logger.debug("Deactivated playback audio session before transitioning to listen.")
+
              self.autoStartListeningAfterDelay() // Transition back to listening
          }
          // Condition 2: Player is idle, but more work might exist (more text or items in queue)
@@ -1039,7 +1086,7 @@ class ChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate {
              // Try playing next item from queue first.
              if !audioStreamQueue.isEmpty {
                  logger.debug("Player Idle, attempting to play next from queue.")
-                 self.playBufferedStreamIfReady()
+                 self.playBufferedStreamIfReady() // This will now skip session setup if already .playback
              }
              // If queue is empty, but more text exists and no fetch is running, try fetching.
              else if processedTextIndex < llmResponseBuffer.count && ttsFetchTask == nil {
