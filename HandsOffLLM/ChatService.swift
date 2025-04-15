@@ -128,9 +128,7 @@ class ChatService: ObservableObject {
         // Log final response if successful or partially successful
          if !currentFullResponse.isEmpty {
              logger.info("🤖 LLM full response processed (\(self.currentFullResponse.count) chars). Error: \(error?.localizedDescription ?? "None")")
-             print("--- LLM FINAL RESPONSE ---")
-             print(currentFullResponse)
-             print("--------------------------")
+             logger.info("------ LLM FINAL RESPONSE ------\n\(self.currentFullResponse)\n----------------------")
          } else if error == nil {
               logger.info("🤖 LLM response was empty.")
          } else if !(error is CancellationError) {

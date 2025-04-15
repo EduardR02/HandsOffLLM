@@ -3,21 +3,34 @@ import SwiftUI
 import OSLog // Keep OSLog if VoiceIndicatorView or other parts need it, or pass logger
 
 struct ContentView: View {
-    // Instantiate Services and ViewModel
-    // Ideally, these would be injected from a higher level (e.g., App struct)
-    // for better testability and lifecycle management.
-    private static let settingsService = SettingsService()
-    private static let audioService = AudioService(settingsService: settingsService)
-    private static let chatService = ChatService(settingsService: settingsService)
-    
-    @StateObject private var viewModel = ChatViewModel(
-        audioService: audioService,
-        chatService: chatService,
-        settingsService: settingsService
-    )
+    // Remove the static service properties
+    // private static let settingsService = SettingsService()
+    // private static let audioService = AudioService(settingsService: settingsService)
+    // private static let chatService = ChatService(settingsService: settingsService)
 
-    // Logger can be kept here if needed, or passed down from ViewModel/Services
-     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
+    // Initialize ViewModel and its dependencies within the @StateObject initializer
+    @StateObject private var viewModel: ChatViewModel
+
+    // Logger can be kept here if needed
+    let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
+
+    // Custom initializer (if needed for previews or dependency injection later)
+    // We'll initialize directly in the @StateObject for now
+    init() {
+        // Create services first
+        let settings = SettingsService()
+        let audio = AudioService(settingsService: settings)
+        let chat = ChatService(settingsService: settings)
+
+        // Initialize the StateObject with the services
+        // Note: _viewModel refers to the StateObject wrapper itself
+        _viewModel = StateObject(wrappedValue: ChatViewModel(
+            audioService: audio,
+            chatService: chat,
+            settingsService: settings
+        ))
+        logger.info("ContentView and ViewModel initialized.") // Log initialization
+    }
 
     var body: some View {
         ZStack { // Use ZStack for layering
@@ -26,20 +39,11 @@ struct ContentView: View {
 
             // Main content (Indicator and Slider) centered vertically
             VStack {
-                // Optional Error Display (remains at top)
-                if let error = viewModel.lastError {
-                    Text(error)
-                        .foregroundColor(.red)
-                        .padding()
-                    Spacer() // Pushes content down
-                } else {
-                    Spacer() // Pushes content down
-                }
+                // Don't display errors, keep interface clean
+                Spacer()
 
                 VoiceIndicatorView(
-                    isListening: $viewModel.isListening,
-                    isProcessing: $viewModel.isProcessing,
-                    isSpeaking: $viewModel.isSpeaking,
+                    state: $viewModel.state,
                     audioLevel: $viewModel.listeningAudioLevel,
                     ttsLevel: $viewModel.ttsOutputLevel
                 )
@@ -72,35 +76,18 @@ struct ContentView: View {
                 .pickerStyle(SegmentedPickerStyle())
                 .padding(.horizontal)
                 .padding(.bottom) // Add padding below the picker
-                .disabled(viewModel.isProcessing || viewModel.isSpeaking) // Corrected disabled logic: Only disable during processing/speaking
-                .opacity(pickerOpacity) // Control opacity
-                .animation(.easeInOut(duration: 0.3), value: pickerOpacity) // Animate opacity changes
+                .disabled(viewModel.state == .processingLLM || viewModel.state == .speakingTTS)
+                .opacity(viewModel.state == .processingLLM || viewModel.state == .speakingTTS ? 0.0 : 1.0)
+                .animation(.easeInOut(duration: 0.3), value: viewModel.state)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            logger.info("ContentView appeared.")
-            // Start listening immediately if idle on appear
-            // Check the ViewModel's state, not services directly
-            if !viewModel.isListening && !viewModel.isProcessing && !viewModel.isSpeaking {
-                 logger.info("Starting initial listening on appear.")
-                 viewModel.startListening()
-            }
+            // logger.info("ContentView appeared. Current state: \(viewModel.state)") // Logging moved to init
+            // ViewModel init now handles startup listening
         }
         .onDisappear {
-            logger.info("ContentView disappeared.")
-            // Trigger ViewModel cleanup
-            viewModel.cleanupOnDisappear()
-        }
-    }
-
-    // Computed property for picker opacity
-    private var pickerOpacity: Double {
-        // Visible (1.0) when idle or listening. Invisible (0.0) when processing LLM or speaking.
-        if viewModel.isProcessing || viewModel.isSpeaking {
-            return 0.0
-        } else {
-            return 1.0
+             logger.info("ContentView disappeared.")
         }
     }
 }

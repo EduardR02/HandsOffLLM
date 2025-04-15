@@ -1,9 +1,10 @@
 import SwiftUI
 
+// No need for import YourAppModuleName if ViewModelState is top-level
+
 struct VoiceIndicatorView: View {
-    @Binding var isListening: Bool
-    @Binding var isProcessing: Bool
-    @Binding var isSpeaking: Bool
+    // Use the top-level ViewModelState
+    @Binding var state: ViewModelState
     @Binding var audioLevel: Float // User mic level (dBFS)
     @Binding var ttsLevel: Float   // TTS output level (normalized 0-1)
 
@@ -103,13 +104,12 @@ struct VoiceIndicatorView: View {
         let scale: CGFloat
         let blurRadius: CGFloat
         let angle: Angle // Angle for rotation (used by Angular gradients)
-        let identifier: Int
-        // Add normalized levels if needed by gradient functions directly in body
+        let identifier: Int // Corresponds to ViewModelState hashValue or explicit mapping
         let normalizedMicLevel: CGFloat
         let normalizedTTSLevel: CGFloat
     }
 
-    // Calculate the state properties
+    // Calculate the state properties based on the ViewModelState
     private func calculateStateProperties(currentAngle: Angle) -> StateProperties {
         let micLevelNormalized = CGFloat(max(0, min(1, (audioLevel - minDB) / (maxDB - minDB))))
         let ttsLevelNormalized = CGFloat(max(0, min(1, (ttsLevel - minTTSLevel) / (maxTTSLevel - minTTSLevel))))
@@ -123,30 +123,29 @@ struct VoiceIndicatorView: View {
         let calculatedScale: CGFloat
         let calculatedBlur: CGFloat
 
-        // --- State Prioritization Update ---
-        if isSpeaking { // HIGHEST PRIORITY: Show speaking visuals if actively playing TTS
+        // Determine visuals based on the state enum
+        switch state {
+        case .speakingTTS:
             rotationSpeedMultiplier = 2.5
-            stateIdentifier = 3
+            stateIdentifier = 3 // Matches gradientView case
             calculatedScale = baseScale + (curvedTTSLevel * speakingScaleMultiplier)
             calculatedBlur = 3 + (curvedTTSLevel * 3)
-        } else if isListening { // Second Priority: Show listening visuals
+        case .listening:
             rotationSpeedMultiplier = 3.0
-            stateIdentifier = 1
+            stateIdentifier = 1 // Matches gradientView case
             calculatedScale = baseScale + (curvedMicLevel * listeningScaleMultiplier)
             calculatedBlur = 2 + (curvedMicLevel * 4)
-        } else if isProcessing { // Third Priority: Show processing visuals only if not speaking or listening
+        case .processingLLM:
             rotationSpeedMultiplier = 0 // No rotation for radial
-            stateIdentifier = 2
-            calculatedScale = baseScale * 0.9
-            calculatedBlur = 8
-        } else { // Lowest Priority: Idle
+            stateIdentifier = 2 // Matches gradientView case
+            calculatedScale = baseScale * 0.9 // Slightly smaller for processing
+            calculatedBlur = 15 // More blur for processing state
+        case .idle:
             rotationSpeedMultiplier = 0.5 // Slow rotation
-            stateIdentifier = 0
+            stateIdentifier = 0 // Matches gradientView case
             calculatedScale = baseScale
             calculatedBlur = 2
         }
-        // --- End State Prioritization Update ---
-
 
         let dynamicAngle = currentAngle * rotationSpeedMultiplier
 
@@ -163,80 +162,68 @@ struct VoiceIndicatorView: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 0.016, paused: false)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
-            let baseRotationSpeed: Double = 70 // Slightly faster base rotation
+            let baseRotationSpeed: Double = 70
             let currentAngle = Angle.degrees(fmod(time * baseRotationSpeed, 360))
 
             let determinedState = calculateStateProperties(currentAngle: currentAngle)
 
-            // --- Layered Circles using ZStack ---
             ZStack {
                 // Background Glow Layer
                 gradientView(for: determinedState) // Use helper
                     .frame(width: 200, height: 200)
-                    .scaleEffect(determinedState.scale * 1.05) // Slightly larger scale than main circle
-                    .blur(radius: determinedState.blurRadius + 25) // Significantly more blur
-                    .opacity(0.6) // Adjust opacity for glow intensity
-
+                    .scaleEffect(determinedState.scale * 1.05)
+                    .blur(radius: determinedState.blurRadius + 25)
+                    .opacity(0.6)
 
                 // Main Foreground Layer
                 gradientView(for: determinedState) // Use helper
                     .frame(width: 200, height: 200)
                     .scaleEffect(determinedState.scale)
-                    .blur(radius: determinedState.blurRadius) // Apply adjusted blur
+                    .blur(radius: determinedState.blurRadius)
 
             }
-            .shadow(color: .black.opacity(0.4), radius: determinedState.blurRadius > 2 ? 20 : 10, x: 0, y: 10) // Adjusted shadow on the ZStack
-            // --- Animation Control ---
-            // Apply the spring animation to the ZStack so both layers animate together
-             .animation(.spring(response: animationResponse * 0.8, dampingFraction: animationDamping), value: determinedState.identifier) // State change (gradient/blur type)
-             .animation(.spring(response: animationResponse, dampingFraction: animationDamping), value: determinedState.scale) // Scale change
-             .animation(.spring(response: animationResponse, dampingFraction: animationDamping), value: determinedState.blurRadius) // Blur change
+            .shadow(color: .black.opacity(0.4), radius: determinedState.blurRadius > 2 ? 20 : 10, x: 0, y: 10)
+             .animation(.spring(response: animationResponse * 0.8, dampingFraction: animationDamping), value: determinedState.identifier) // Animate based on state identifier
+             .animation(.spring(response: animationResponse, dampingFraction: animationDamping), value: determinedState.scale)
+             .animation(.spring(response: animationResponse, dampingFraction: animationDamping), value: determinedState.blurRadius)
         }
     }
 
-    // Helper function to return the correctly filled Circle view based on state
+    // Helper function to return the correctly filled Circle view based on state identifier
     @ViewBuilder
-    private func gradientView(for state: StateProperties) -> some View {
-        // Create the Circle shape first
+    private func gradientView(for stateProps: StateProperties) -> some View {
         let shape = Circle()
-
-        // Apply the correct fill based on the state identifier
-        switch state.identifier {
+        switch stateProps.identifier {
         case 0: // Idle
-            shape.fill(idleGradient(angle: state.angle))
+            shape.fill(idleGradient(angle: stateProps.angle))
         case 1: // Listening
-            shape.fill(listeningGradient(normalizedLevel: state.normalizedMicLevel, angle: state.angle))
+            shape.fill(listeningGradient(normalizedLevel: stateProps.normalizedMicLevel, angle: stateProps.angle))
         case 2: // Processing
-            shape.fill(processingGradient(angle: state.angle))
+            shape.fill(processingGradient(angle: stateProps.angle)) // Uses Radial, angle ignored internally
         case 3: // Speaking
-            shape.fill(speakingGradient(angle: state.angle))
+            shape.fill(speakingGradient(angle: stateProps.angle))
         default:
-            shape.fill(idleGradient(angle: state.angle))
+            shape.fill(idleGradient(angle: stateProps.angle))
         }
     }
 }
 
 // --- Previews ---
-// Previews remain the same, update ttsLevel in previews if needed
-// ... (Previews remain unchanged, but will reflect the new appearance) ...
+// Update previews to use the state enum explicitly
 
 #Preview("Idle") {
     VoiceIndicatorView(
-        isListening: .constant(false),
-        isProcessing: .constant(false),
-        isSpeaking: .constant(false),
+        state: .constant(ViewModelState.idle), // Explicit type
         audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.0) // Add ttsLevel
+        ttsLevel: .constant(0.0)
     )
-    .preferredColorScheme(.dark) // Add dark background for preview clarity
+    .preferredColorScheme(.dark)
 }
 
 #Preview("Listening Low") {
     VoiceIndicatorView(
-        isListening: .constant(true),
-        isProcessing: .constant(false),
-        isSpeaking: .constant(false),
-        audioLevel: .constant(-30.0), // Mic level
+        state: .constant(ViewModelState.listening), // Explicit type
+        audioLevel: .constant(-30.0),
         ttsLevel: .constant(0.0)
     )
     .preferredColorScheme(.dark)
@@ -244,44 +231,36 @@ struct VoiceIndicatorView: View {
 
 #Preview("Listening High") {
     VoiceIndicatorView(
-        isListening: .constant(true),
-        isProcessing: .constant(false),
-        isSpeaking: .constant(false),
-        audioLevel: .constant(-5.0), // Mic level
+        state: .constant(ViewModelState.listening), // Explicit type
+        audioLevel: .constant(-5.0),
         ttsLevel: .constant(0.0)
     )
-     .preferredColorScheme(.dark)
+    .preferredColorScheme(.dark)
 }
 
 #Preview("Processing") {
     VoiceIndicatorView(
-        isListening: .constant(false),
-        isProcessing: .constant(true),
-        isSpeaking: .constant(false),
+        state: .constant(ViewModelState.processingLLM), // Explicit type
         audioLevel: .constant(-50.0),
         ttsLevel: .constant(0.0)
     )
-     .preferredColorScheme(.dark)
+    .preferredColorScheme(.dark)
 }
 
-#Preview("Speaking Low TTS") {
+#Preview("Speaking Low") {
     VoiceIndicatorView(
-        isListening: .constant(false),
-        isProcessing: .constant(false),
-        isSpeaking: .constant(true),
+        state: .constant(ViewModelState.speakingTTS), // Explicit type
         audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.2) // Simulate quiet TTS (will be curved)
+        ttsLevel: .constant(0.1)
     )
-     .preferredColorScheme(.dark)
+    .preferredColorScheme(.dark)
 }
 
-#Preview("Speaking High TTS") {
+#Preview("Speaking High") {
     VoiceIndicatorView(
-        isListening: .constant(false),
-        isProcessing: .constant(false),
-        isSpeaking: .constant(true),
+        state: .constant(ViewModelState.speakingTTS), // Explicit type
         audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.9) // Simulate loud TTS (will be curved)
+        ttsLevel: .constant(0.9)
     )
-     .preferredColorScheme(.dark)
+    .preferredColorScheme(.dark)
 }
