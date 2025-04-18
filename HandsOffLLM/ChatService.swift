@@ -454,8 +454,8 @@ class ChatService: ObservableObject {
                 parentConversationId: parentId
              )
              currentConversationId = newConversation.id
-             // Add immediately? Or wait for first user message? Add now for simplicity.
-             historyService?.addOrUpdateConversation(newConversation)
+             // wait for the user message, otherwise will spam history with empty conversations
+             //historyService?.addOrUpdateConversation(newConversation)
              logger.info("Created new conversation context with ID: \(newConversation.id)")
          }
     }
