@@ -2,10 +2,56 @@
 import Foundation
 
 // MARK: - Chat Message Structure
-struct ChatMessage: Identifiable {
-    let id = UUID()
-    let role: String // e.g., "user", "assistant", "assistant_partial", "assistant_error"
-    let content: String
+struct ChatMessage: Identifiable, Codable {
+    let id: UUID
+    var role: String // e.g., "user", "assistant", "assistant_partial", "assistant_error"
+    var content: String
+}
+
+// MARK: - Conversation History Structure
+struct Conversation: Identifiable, Codable {
+    var id = UUID()
+    var title: String? // Optional: can be generated later
+    var messages: [ChatMessage] = []
+    var createdAt: Date = Date()
+    var parentConversationId: UUID? // To link continued conversations
+    var ttsAudioPaths: [UUID: String]? // Optional: Map message ID to saved audio file path
+}
+
+// MARK: - Settings Structures
+
+struct ModelInfo: Identifiable, Codable, Hashable {
+    let id: String // e.g., "claude-3-opus-20240229"
+    let name: String // User-facing name, e.g., "Claude 3 Opus"
+    let description: String // e.g., "Most powerful model"
+    let provider: LLMProvider // Link back to the provider enum
+}
+
+struct PromptPreset: Identifiable, Codable, Hashable {
+    let id: String // Unique ID for the preset, e.g., "casual-friend"
+    let name: String // User-facing name, e.g., "Casual Friend"
+    let description: String // Short description for UI
+    let fullPrompt: String // The actual prompt text
+}
+
+struct SettingsData: Codable {
+    // Model Selections: Store the ID of the selected model for each provider
+    var selectedModelIdPerProvider: [LLMProvider: String] = [:]
+
+    // Preset Selections: Store the ID of the selected preset
+    var selectedSystemPromptPresetId: String?
+    var selectedTTSInstructionPresetId: String?
+
+    // Advanced Overrides
+    var advancedTemperature: Float?
+    var advancedMaxTokens: Int?
+    var advancedSystemPrompt: String?
+    var advancedTTSInstruction: String?
+
+    // Default values can be set here or when initializing SettingsService
+    init() {
+        // Sensible defaults if needed
+    }
 }
 
 // MARK: - Claude API Structures
@@ -98,7 +144,7 @@ enum LlmError: Error, LocalizedError {
 }
 
 // MARK: - LLM Provider Enum
-enum LLMProvider: String, CaseIterable, Identifiable {
+enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case gemini = "Gemini"
     case claude = "Claude"
     var id: String { self.rawValue }

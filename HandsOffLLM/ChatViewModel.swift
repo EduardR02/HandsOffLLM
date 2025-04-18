@@ -34,6 +34,7 @@ class ChatViewModel: ObservableObject {
     private let audioService: AudioService
     private let chatService: ChatService
     private let settingsService: SettingsService
+    private let historyService: HistoryService
 
     private var cancellables = Set<AnyCancellable>()
     private var isProcessingLLM: Bool = false // Internal tracking
@@ -44,10 +45,11 @@ class ChatViewModel: ObservableObject {
     private var isUserCancelling: Bool = false
     private var userCancelResetTask: Task<Void, Never>? = nil
 
-    init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService) {
+    init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService) {
         self.audioService = audioService
         self.chatService = chatService
         self.settingsService = settingsService
+        self.historyService = historyService
         logger.info("ChatViewModel initialized.")
 
         // --- Subscribe to Service Publishers ---
@@ -197,6 +199,11 @@ class ChatViewModel: ObservableObject {
         // Forward initial TTS Rate to Audio Service
         audioService.ttsRate = self.ttsRate
 
+        // Apply initial provider selection from settings if possible
+        // Note: This assumes a default provider setting exists. Adapt if needed.
+        // This simple approach just sets the default visually; ChatService uses the setting directly.
+        self.selectedProvider = settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude // Example default
+
         // --- Initial State Transition: idle -> listening ---
         // Start listening shortly after initialization
         Task { @MainActor in
@@ -315,45 +322,25 @@ class ChatViewModel: ObservableObject {
             updateState(.idle)
             audioService.resetListening()
 
-        case .speakingTTS:
-            logger.info("Cycle: Speaking -> Cancel -> Listening")
-            // --- Indicate User Cancellation ---
-            isUserCancelling = true
-            // Schedule a task to reset the flag after a delay, in case the error doesn't arrive
-            userCancelResetTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                if self.isUserCancelling { // Check if flag wasn't reset by error handler
-                    logger.info("Resetting isUserCancelling flag after timeout.")
-                    self.isUserCancelling = false
-                }
-            }
-            // --- End Indication ---
-            audioService.stopSpeaking() // -> This might trigger the "cancelled" error
-            chatService.cancelProcessing() // Less likely to cause issues here
-            updateState(.listening) // Immediate UI update
-            startListening() // Start listening engine
+        case .speakingTTS, .processingLLM: // Combine cancel logic
+             let fromState = state == .speakingTTS ? "Speaking" : "Processing LLM"
+             logger.info("Cycle: \(fromState) -> Cancel -> Listening")
+             isUserCancelling = true
+             userCancelResetTask = Task { @MainActor in
+                 try? await Task.sleep(for: .seconds(1))
+                 if self.isUserCancelling {
+                     logger.info("Resetting isUserCancelling flag after timeout.")
+                     self.isUserCancelling = false
+                 }
+             }
+             chatService.cancelProcessing()
+             audioService.stopSpeaking()
+             updateState(.listening)
+             startListening()
 
         case .idle:
             logger.info("Cycle: Idle -> Listening")
             startListening()
-
-        case .processingLLM:
-            logger.info("Cycle: Processing LLM -> Cancel -> Listening")
-            // --- Indicate User Cancellation ---
-            isUserCancelling = true
-            // Schedule flag reset task
-            userCancelResetTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                if self.isUserCancelling {
-                    logger.info("Resetting isUserCancelling flag after timeout.")
-                    self.isUserCancelling = false
-                }
-            }
-            // --- End Indication ---
-            chatService.cancelProcessing() // -> Might trigger error? Less likely via subject
-            audioService.stopSpeaking()   // -> Might trigger "cancelled" error if TTS started buffering
-            updateState(.listening) // Immediate UI update
-            startListening() // Start listening engine
         }
     }
 
@@ -372,11 +359,19 @@ class ChatViewModel: ObservableObject {
         }
          guard !self.isListening else {
              logger.info("StartListening called but AudioService is already listening.")
+             // Ensure UI state matches if audio service is already listening somehow
+             if state == .idle { updateState(.listening) }
              return
          }
         lastError = nil
         logger.info("Requesting AudioService to start listening (Current state: \(String(describing: self.state))).")
+        // Ensure chat context is ready before listening (might already be set)
+        if chatService.activeConversationId == nil {
+             logger.info("No active conversation context, resetting before listening.")
+             chatService.resetConversationContext()
+        }
         audioService.startListening()
+        // State transition to .listening is handled by handleIsListeningUpdate
     }
 
     // Resets to a clean idle state
@@ -384,6 +379,8 @@ class ChatViewModel: ObservableObject {
          logger.info("Resetting to Idle State. Attempt restart: \(attemptRestart)")
          cancelProcessingAndSpeaking()
          if audioService.isListening { audioService.resetListening() }
+         // Also reset the chat context to a new, fresh one
+         chatService.resetConversationContext()
 
          updateState(.idle)
          self.isListening = false
@@ -426,4 +423,40 @@ class ChatViewModel: ObservableObject {
             startListening()
         }
     }
+
+    // MARK: - History Interaction
+
+    // Called from ChatDetailView's "Continue from here" button
+    func loadConversationHistory(_ conversation: Conversation, upTo messageIndex: Int) {
+         logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
+         cancelProcessingAndSpeaking() // Stop current activity
+         if audioService.isListening { audioService.resetListening() } // Stop listening
+
+         guard messageIndex >= 0 && messageIndex < conversation.messages.count else {
+             logger.error("Invalid message index \(messageIndex) for conversation.")
+             return
+         }
+
+         // Get messages up to the specified index (inclusive)
+         let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
+
+         // Start a *new* conversation context in ChatService, linking to the parent
+         chatService.resetConversationContext(
+             messagesToLoad: messagesToLoad,
+             existingConversationId: nil, // Force new ID
+             parentId: conversation.id // Link to original
+         )
+
+         // Reset UI state to idle initially, ready for user input or interaction
+         updateState(.idle)
+         // Optionally, could immediately start listening after loading?
+         // startListening()
+     }
+
+    // --- Helper for starting new chat ---
+     func startNewChat() {
+          logger.info("Starting new chat session.")
+          resetToIdleState(attemptRestart: false) // Resets context and goes to Idle
+         // User can then tap to start listening
+     }
 }

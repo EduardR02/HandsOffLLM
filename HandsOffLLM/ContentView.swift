@@ -1,46 +1,34 @@
 // ContentView.swift
 import SwiftUI
-import OSLog // Keep OSLog if VoiceIndicatorView or other parts need it, or pass logger
+import OSLog
 
 struct ContentView: View {
-    // Remove the static service properties
-    // private static let settingsService = SettingsService()
-    // private static let audioService = AudioService(settingsService: settingsService)
-    // private static let chatService = ChatService(settingsService: settingsService)
+    // Receive ViewModel from the App level
+    @ObservedObject var viewModel: ChatViewModel
+    // Access environment objects if needed, e.g., for navigation data
+    @EnvironmentObject var historyService: HistoryService
 
-    // Initialize ViewModel and its dependencies within the @StateObject initializer
-    @StateObject private var viewModel: ChatViewModel
-
-    // Logger can be kept here if needed
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
 
-    // Custom initializer (if needed for previews or dependency injection later)
-    // We'll initialize directly in the @StateObject for now
-    init() {
-        // Create services first
-        let settings = SettingsService()
-        let audio = AudioService(settingsService: settings)
-        let chat = ChatService(settingsService: settings)
-
-        // Initialize the StateObject with the services
-        // Note: _viewModel refers to the StateObject wrapper itself
-        _viewModel = StateObject(wrappedValue: ChatViewModel(
-            audioService: audio,
-            chatService: chat,
-            settingsService: settings
-        ))
-        logger.info("ContentView and ViewModel initialized.") // Log initialization
-    }
+    // Removed initializer - ViewModel is passed in now
 
     var body: some View {
-        ZStack { // Use ZStack for layering
-            // Background Color
+        // Use NavigationStack provided by the App
+        ZStack {
             Color.black.edgesIgnoringSafeArea(.all)
 
-            // Main content (Indicator and Slider) centered vertically
             VStack {
-                // Don't display errors, keep interface clean
-                Spacer()
+                Spacer() // Push indicator down a bit
+
+                // Display errors subtly if needed (optional)
+                if let error = viewModel.lastError {
+                     Text(error)
+                         .font(.caption)
+                         .foregroundColor(.red)
+                         .padding(.bottom, 5)
+                         .transition(.opacity) // Animate appearance
+                 }
+
 
                 VoiceIndicatorView(
                     state: $viewModel.state,
@@ -59,15 +47,17 @@ struct ContentView: View {
                     Text(String(format: "%.1fx", viewModel.ttsRate))
                         .foregroundColor(.white)
                         .frame(width: 40, alignment: .leading)
+                        .id(viewModel.ttsRate) // Ensure text updates with slider
                 }
-                .padding() // Keep padding around the slider HStack
+                .padding()
+                .padding(.horizontal) // Add horizontal padding for slider/text
 
-                Spacer() // Pushes content up from the bottom
+                Spacer() // Pushes indicator/slider towards center
             }
 
-            // Picker positioned at the bottom
-            VStack { // Use a VStack to push the picker to the bottom edge
-                Spacer() // Pushes picker down
+            // Picker at the bottom
+            VStack {
+                Spacer()
                 Picker("LLM", selection: $viewModel.selectedProvider) {
                     ForEach(LLMProvider.allCases) { provider in
                         Text(provider.rawValue).tag(provider)
@@ -75,23 +65,91 @@ struct ContentView: View {
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .padding(.horizontal)
-                .padding(.bottom) // Add padding below the picker
+                .padding(.bottom)
                 .disabled(viewModel.state == .processingLLM || viewModel.state == .speakingTTS)
-                .opacity(viewModel.state == .processingLLM || viewModel.state == .speakingTTS ? 0.0 : 1.0)
+                .opacity(viewModel.state == .processingLLM || viewModel.state == .speakingTTS ? 0.5 : 1.0) // Use opacity instead of hide
                 .animation(.easeInOut(duration: 0.3), value: viewModel.state)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .toolbar {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                 // History Button
+                 NavigationLink {
+                     // Destination: History View
+                     HistoryView() // Needs access to HistoryService (via @EnvironmentObject)
+                 } label: {
+                     Image(systemName: "clock.arrow.circlepath")
+                 }
+
+                 // Settings Button
+                 NavigationLink {
+                     // Destination: Settings View
+                     SettingsView() // Needs access to SettingsService (via @EnvironmentObject)
+                 } label: {
+                     Image(systemName: "gearshape.fill")
+                 }
+            }
+             ToolbarItem(placement: .navigationBarLeading) {
+                  // Button to explicitly start a new chat session
+                  Button {
+                      viewModel.startNewChat()
+                  } label: {
+                      Image(systemName: "plus.circle")
+                  }
+                  .disabled(viewModel.state != .idle && viewModel.state != .listening) // Allow reset when idle or listening
+             }
+        }
+        .navigationTitle("HandsOffLLM") // Add a title if desired
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            // logger.info("ContentView appeared. Current state: \(viewModel.state)") // Logging moved to init
-            // ViewModel init now handles startup listening
+             logger.info("ContentView appeared.")
+             // Start listening automatically only if idle? Or require first tap?
+             // Let's require first tap for now. cycleState handles Idle -> Listening
+             // viewModel.beginListeningOnStartup() // Remove if first tap is preferred
         }
         .onDisappear {
-             logger.info("ContentView disappeared.")
+            logger.info("ContentView disappeared.")
+            // Consider stopping listening/speaking if view disappears unexpectedly?
+            // viewModel.cancelProcessingAndSpeaking()
         }
     }
 }
 
+// --- Preview Update ---
+// Need to provide mock services for the preview
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        // Create mock services for preview
+        let settings = SettingsService()
+        let history = HistoryService()
+        let audio = AudioService(settingsService: settings)
+        let chat = ChatService(settingsService: settings, historyService: history)
+        let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
+
+        NavigationStack { // Wrap in NavigationStack for preview
+            ContentView(viewModel: viewModel)
+        }
+        .environmentObject(settings)
+        .environmentObject(history)
+        .environmentObject(audio)
+        .preferredColorScheme(.dark)
+    }
+}
+
+// Create simpler preview struct if the above is too complex
 #Preview {
-    ContentView()
+     let settings = SettingsService()
+     let history = HistoryService()
+     let audio = AudioService(settingsService: settings)
+     let chat = ChatService(settingsService: settings, historyService: history)
+     let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
+
+    return NavigationStack {
+         ContentView(viewModel: viewModel)
+     }
+     .environmentObject(settings)
+     .environmentObject(history)
+     .environmentObject(audio)
+     .preferredColorScheme(.dark)
 }

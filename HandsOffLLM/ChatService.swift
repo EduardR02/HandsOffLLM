@@ -22,12 +22,19 @@ class ChatService: ObservableObject {
 
     // --- Dependencies ---
     private let settingsService: SettingsService
+    private var historyService: HistoryService? // Add HistoryService (optional for now)
+    private var currentConversationId: UUID? // Track the ID of the active conversation
     private lazy var urlSession: URLSession = {
         URLSession(configuration: .default)
     }()
 
-    init(settingsService: SettingsService) {
+    var activeConversationId: UUID? { currentConversationId }
+
+    init(settingsService: SettingsService, historyService: HistoryService? = nil) {
         self.settingsService = settingsService
+        self.historyService = historyService
+        // Start with a new conversation context
+        resetConversationContext()
     }
 
     // MARK: - Public Interaction
@@ -36,12 +43,15 @@ class ChatService: ObservableObject {
             logger.warning("processTranscription called while already processing.")
             return
         }
-
-        let userMessage = ChatMessage(role: "user", content: transcription)
-        // Avoid adding duplicate user messages if called rapidly
-        if messages.last?.role != "user" || messages.last?.content != userMessage.content {
-            messages.append(userMessage)
+        // If there's no active conversation, create a new one before proceeding.
+        if activeConversationId == nil { // Use the public getter now
+             logger.info("No active conversation context found. Creating a new one.")
+             resetConversationContext()
+             // activeConversationId should now be non-nil after resetConversationContext runs
         }
+
+        let userMessage = ChatMessage(id: UUID(), role: "user", content: transcription)
+        appendMessageAndUpdateHistory(userMessage) // Use helper to add and save
 
         logger.info("⚙️ Processing transcription with \(provider.rawValue): '\(transcription)'")
         isProcessingLLM = true
@@ -51,8 +61,6 @@ class ChatService: ObservableObject {
         llmTask = Task { [weak self] in
              guard let self = self else { return }
              await self.fetchLLMResponse(provider: provider)
-             // Task completion (success, error, cancellation) is handled within fetchLLMResponse
-             // isProcessingLLM is set to false there.
         }
     }
 
@@ -70,6 +78,16 @@ class ChatService: ObservableObject {
         let providerString = provider.rawValue
 
         do {
+            // --- Get ACTIVE settings ---
+            guard let activeModelId = settingsService.activeModelId(for: provider) else {
+                 throw LlmError.apiKeyMissing(provider: "\(provider.rawValue) model selection") // Reuse error or create new one
+            }
+            let activeSystemPrompt = settingsService.activeSystemPrompt
+            let activeTemperature = settingsService.activeTemperature
+            let activeMaxTokens = settingsService.activeMaxTokens
+            // --- End Get ACTIVE settings ---
+
+
             // 1. Select API Key and prepare stream based on provider
             let stream: AsyncThrowingStream<String, Error>
             switch provider {
@@ -77,14 +95,14 @@ class ChatService: ObservableObject {
                 guard let apiKey = settingsService.geminiAPIKey, !apiKey.isEmpty, apiKey != "YOUR_GEMINI_API_KEY" else {
                     throw LlmError.apiKeyMissing(provider: "Gemini")
                 }
-                logger.info("Using Gemini provider.")
-                stream = try await fetchGeminiStream(apiKey: apiKey)
+                logger.info("Using Gemini provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
+                stream = try await fetchGeminiStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
             case .claude:
                 guard let apiKey = settingsService.anthropicAPIKey, !apiKey.isEmpty, apiKey != "YOUR_ANTHROPIC_API_KEY" else {
                     throw LlmError.apiKeyMissing(provider: "Claude")
                 }
-                 logger.info("Using Claude provider.")
-                stream = try await fetchClaudeStream(apiKey: apiKey)
+                logger.info("Using Claude provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
+                stream = try await fetchClaudeStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
             }
 
             var firstChunkReceived = false
@@ -95,37 +113,51 @@ class ChatService: ObservableObject {
                  if !firstChunkReceived {
                       logger.info("🤖 Received first LLM chunk (\(providerString)).")
                       firstChunkReceived = true
+                      // Add assistant_partial message placeholder immediately
+                       let partialMsg = ChatMessage(id: UUID(), role: "assistant_partial", content: "")
+                       // Check if last message isn't already a partial/error to avoid duplicates during retries/fast streams
+                       if messages.last?.role != "assistant_partial" && messages.last?.role != "assistant_error" {
+                           appendMessageAndUpdateHistory(partialMsg)
+                       }
                  }
 
                  currentFullResponse.append(chunk) // Accumulate full response
+
+                 // Update the partial message in the main list
+                  if var lastMessage = messages.last, lastMessage.role == "assistant_partial" {
+                      lastMessage.content = currentFullResponse
+                      messages[messages.count - 1] = lastMessage // Update in-place
+                      // Don't need to save history on every chunk, wait for completion.
+                  }
+
                  llmChunkSubject.send(chunk)     // Send chunk for immediate TTS processing
             }
              // 3. Stream finished successfully
              logger.info("🤖 LLM stream completed successfully (\(providerString)).")
 
+
         } catch is CancellationError {
             logger.notice("⏹️ LLM Task Cancelled.")
             llmError = CancellationError()
-            // Don't send llmErrorSubject for cancellation, handle state below
         } catch let error as LlmError {
              logger.error("🚨 LLM Service Error (\(providerString)): \(error.localizedDescription)")
              llmError = error
-             llmErrorSubject.send(error) // Send specific LlmError
+             llmErrorSubject.send(error)
         } catch {
              logger.error("🚨 Unknown LLM Error during stream (\(providerString)): \(error.localizedDescription)")
              llmError = error
-             llmErrorSubject.send(error) // Send generic error
+             llmErrorSubject.send(error)
         }
 
-        // 4. Cleanup and Final State Update (Runs on MainActor due to class annotation)
+        // 4. Cleanup and Final State Update
         handleLLMCompletion(error: llmError)
     }
 
     private func handleLLMCompletion(error: Error?) {
-         isProcessingLLM = false // Mark processing as finished
-         llmCompleteSubject.send() // Signal completion (used by AudioService/ViewModel)
+         isProcessingLLM = false
+         llmCompleteSubject.send()
 
-        // Log final response if successful or partially successful
+         // Log final response if successful or partially successful
          if !currentFullResponse.isEmpty {
              logger.info("🤖 LLM full response processed (\(self.currentFullResponse.count) chars). Error: \(error?.localizedDescription ?? "None")")
              logger.info("------ LLM FINAL RESPONSE ------\n\(self.currentFullResponse)\n----------------------")
@@ -136,71 +168,93 @@ class ChatService: ObservableObject {
          } // Cancellation logging happened in the catch block
 
 
-        // Add the final assistant message to the history
-         if !currentFullResponse.isEmpty {
+        // Update the final assistant message in the history
+        if !currentFullResponse.isEmpty {
              let messageRole: String
-             if error == nil {
-                 messageRole = "assistant"
-             } else if error is CancellationError {
-                 messageRole = "assistant_partial" // Indicate partial response due to cancellation
+             if error == nil { messageRole = "assistant" }
+             else if error is CancellationError { messageRole = "assistant_partial" }
+             else { messageRole = "assistant_error" }
+
+             // Find the partial message we added and update its role and content
+             if let partialIndex = messages.lastIndex(where: { $0.role == "assistant_partial" }) {
+                  messages[partialIndex].role = messageRole
+                  messages[partialIndex].content = currentFullResponse // Ensure final content is set
+                  // Now update history
+                   if let convId = currentConversationId, var conversation = historyService?.conversations.first(where: { $0.id == convId }) {
+                        conversation.messages = self.messages
+                        conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
+                        historyService?.addOrUpdateConversation(conversation)
+                   }
+                  logger.info("Updated final message in history. Role: \(messageRole)")
              } else {
-                 messageRole = "assistant_error" // Indicate error during generation
+                 // If no partial message was found (e.g., response was instant?), add a new one.
+                 logger.warning("Could not find partial message to update. Adding new final message.")
+                  let finalMessage = ChatMessage(id: UUID(), role: messageRole, content: currentFullResponse)
+                  appendMessageAndUpdateHistory(finalMessage)
              }
-             let assistantMessage = ChatMessage(role: messageRole, content: currentFullResponse)
 
-             // Avoid duplicates if completion handler runs close to message appends elsewhere
-             if messages.last?.role != messageRole || messages.last?.content != assistantMessage.content {
-                  messages.append(assistantMessage)
+        } else if error != nil && !(error is CancellationError) {
+            // Handle error case where no response was generated at all
+             let errorMessage = ChatMessage(id: UUID(), role: "assistant_error", content: "Sorry, an error occurred while generating the response.")
+              // Remove previous partial if it exists and is empty
+             if messages.last?.role == "assistant_partial" && messages.last?.content.isEmpty == true {
+                 messages.removeLast()
              }
-         } else if error != nil && !(error is CancellationError) {
-             // If there was an error and no response, add an error message
-             let errorMessage = ChatMessage(role: "assistant_error", content: "Sorry, an error occurred while generating the response.")
-              if messages.last?.role != "assistant_error" { // Avoid duplicate errors
-                  messages.append(errorMessage)
-              }
-         }
+            appendMessageAndUpdateHistory(errorMessage) // Add the error message and save
+        } else if messages.last?.role == "assistant_partial" && messages.last?.content.isEmpty == true {
+            // Handle case where stream ends cleanly but empty (no partial message added or empty)
+            messages.removeLast() // Remove the empty partial placeholder
+            if let convId = currentConversationId, var conversation = historyService?.conversations.first(where: { $0.id == convId }) {
+                 conversation.messages = self.messages
+                 historyService?.addOrUpdateConversation(conversation)
+            }
+             logger.info("Removed empty partial message as LLM response was empty.")
+        }
 
-         llmTask = nil // Clear the task reference
-         currentFullResponse = "" // Clear buffer for next run
+        llmTask = nil
+        currentFullResponse = ""
     }
 
 
-    // MARK: - Gemini Implementation
-    private func fetchGeminiStream(apiKey: String) async throws -> AsyncThrowingStream<String, Error> {
-        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(settingsService.geminiModel):streamGenerateContent?key=\(apiKey)&alt=sse") else {
+    // MARK: - Gemini Implementation (Updated Signature)
+    private func fetchGeminiStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
+         // Use modelId from settings
+        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(modelId):streamGenerateContent?key=\(apiKey)&alt=sse") else {
             throw LlmError.invalidURL
         }
-
+        // ... request setup ...
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         // --- Build Payload ---
         var conversationHistory: [GeminiContent] = []
-        // Add System Prompt if available
-        if let sysPrompt = settingsService.systemPrompt, !sysPrompt.isEmpty {
+        // Use activeSystemPrompt from settings
+        if let sysPrompt = systemPrompt, !sysPrompt.isEmpty {
             conversationHistory.append(GeminiContent(role: "user", parts: [GeminiPart(text: sysPrompt)]))
-            // Gemini requires alternating roles, add a simple model response for the system prompt.
-            conversationHistory.append(GeminiContent(role: "model", parts: [GeminiPart(text: "OK.")]))
+            conversationHistory.append(GeminiContent(role: "model", parts: [GeminiPart(text: "OK.")])) // Keep Gemini's required alternation
         }
-        // Add message history, mapping roles
+        // Use current live messages
         let history = messages.map { msg -> GeminiContent in
-            // Map our roles ("user", "assistant", "assistant_partial", "assistant_error") to Gemini's ("user", "model")
             let geminiRole = (msg.role == "user") ? "user" : "model"
             return GeminiContent(role: geminiRole, parts: [GeminiPart(text: msg.content)])
         }
         conversationHistory.append(contentsOf: history)
+
+        // TODO: Add temperature and max_tokens to Gemini request if API supports them in this structure
+        // Currently, the GeminiRequest struct doesn't have them. Need to check Gemini API docs
+        // for generationConfig settings within the request.
         let payload = GeminiRequest(contents: conversationHistory)
         // --- End Payload ---
 
-
+        // ... encode payload, make request, process stream (remains the same) ...
         do {
             request.httpBody = try JSONEncoder().encode(payload)
         } catch {
             throw LlmError.requestEncodingError(error)
         }
 
-        logger.debug("Sending Gemini Request...")
+        logger.debug("Sending Gemini Request to \(modelId)...")
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
              (bytes, response) = try await urlSession.bytes(for: request)
@@ -214,9 +268,6 @@ class ChatService: ObservableObject {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             var errorBody = ""
-            // Try to read the error body
-            // This needs to be done carefully with async bytes
-            // This simple approach might not capture the full body if the loop breaks early
             do {
                  for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
             } catch {
@@ -245,7 +296,6 @@ class ChatService: ObservableObject {
 
                             do {
                                 let chunk = try JSONDecoder().decode(GeminiResponseChunk.self, from: jsonData)
-                                // Extract text from the first candidate/part
                                 if let text = chunk.candidates?.first?.content?.parts.first?.text {
                                     continuation.yield(text)
                                 } else {
@@ -253,8 +303,6 @@ class ChatService: ObservableObject {
                                 }
                             } catch {
                                 logger.warning("Failed to decode Gemini JSON chunk: \(error.localizedDescription). JSON: \(jsonDataString)")
-                                // Don't fail the whole stream for one bad chunk, just log it.
-                                // streamError = LlmError.responseDecodingError(error) // Or potentially throw?
                             }
                         }
                     }
@@ -264,59 +312,55 @@ class ChatService: ObservableObject {
                      streamError = CancellationError() // Propagate cancellation
                 } catch {
                      logger.error("Error processing Gemini byte stream: \(error.localizedDescription)")
-                     streamError = LlmError.networkError(error) // Treat stream reading errors as network errors
+                     streamError = LlmError.networkError(error)
                 }
-                // Finish the continuation with error or nil
                 continuation.finish(throwing: streamError)
             }
         }
-        // --- End AsyncThrowingStream ---
     }
 
 
-    // MARK: - Claude Implementation
-    private func fetchClaudeStream(apiKey: String) async throws -> AsyncThrowingStream<String, Error> {
+    // MARK: - Claude Implementation (Updated Signature)
+    private func fetchClaudeStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
+        // ... URL setup ...
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
             throw LlmError.invalidURL
         }
 
+        // ... request setup ...
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.addValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version") // Keep specific version
+        request.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
 
         // --- Build Payload ---
-         // Map messages to Claude's format
          let history = messages.map { msg -> MessageParam in
-             // Map our roles ("user", "assistant", "assistant_partial", "assistant_error") to Claude's ("user", "assistant")
              let claudeRole = (msg.role == "user") ? "user" : "assistant"
              return MessageParam(role: claudeRole, content: msg.content)
          }
-         let systemPromptToUse: String?
-         if let sysPrompt = settingsService.systemPrompt, !sysPrompt.isEmpty {
-             systemPromptToUse = sysPrompt
-         } else {
-             systemPromptToUse = nil // Ensure nil is passed if empty
-         }
+         // Use active system prompt
+         let systemPromptToUse: String? = (systemPrompt?.isEmpty ?? true) ? nil : systemPrompt
+
         let payload = ClaudeRequest(
-            model: settingsService.claudeModel,
+            model: modelId, // Use active model ID
             system: systemPromptToUse,
             messages: history,
             stream: true,
-            max_tokens: 8000, // Keep existing parameter
-            temperature: 1.0 // Keep existing parameter
+            max_tokens: maxTokens, // Use active max tokens
+            temperature: temperature // Use active temperature
         )
          // --- End Payload ---
 
+        // ... encode payload, make request, process stream (remains the same) ...
         do {
             request.httpBody = try JSONEncoder().encode(payload)
         } catch {
             throw LlmError.requestEncodingError(error)
         }
 
-         logger.debug("Sending Claude Request...")
+         logger.debug("Sending Claude Request to \(modelId)...")
          let (bytes, response): (URLSession.AsyncBytes, URLResponse)
          do {
               (bytes, response) = try await urlSession.bytes(for: request)
@@ -345,11 +389,10 @@ class ChatService: ObservableObject {
                 var streamError: Error? = nil
                 do {
                     logger.debug("Starting to process Claude stream...")
-                    var currentEventBuffer = "" // Buffer for multi-line events if they occur
+                    var currentEventBuffer = ""
                     for try await line in bytes.lines {
                          try Task.checkCancellation()
 
-                         // Simple SSE parsing (assumes event data is on lines starting with "data:")
                          if line.hasPrefix("data:") {
                              let jsonDataString = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                               if jsonDataString.isEmpty { continue }
@@ -361,34 +404,20 @@ class ChatService: ObservableObject {
 
                              do {
                                  let event = try JSONDecoder().decode(ClaudeStreamEvent.self, from: jsonData)
-                                 // Process relevant event types
                                  if event.type == "content_block_delta" {
-                                     if let text = event.delta?.text {
-                                         continuation.yield(text)
-                                     }
+                                     if let text = event.delta?.text { continuation.yield(text) }
                                  } else if event.type == "message_delta" {
-                                     // Sometimes delta might be nested under message_delta
-                                     if let text = event.delta?.text {
-                                         continuation.yield(text)
-                                     }
-                                     // You might also look at event.message.usage here if needed
+                                     if let text = event.delta?.text { continuation.yield(text) }
                                  } else if event.type == "message_stop" {
                                      logger.debug("Claude stream received message_stop event.")
-                                     // This indicates the end from Claude's side. The stream loop will naturally end.
-                                 } else if event.type == "ping" {
-                                      // Ignore ping events
-                                 } else {
-                                      logger.debug("Received unhandled Claude event type: \(event.type)")
-                                 }
+                                 } else if event.type == "ping" { /* Ignore */ }
+                                  else { logger.debug("Received unhandled Claude event type: \(event.type)") }
                              } catch {
                                  logger.warning("Failed to decode Claude JSON event: \(error.localizedDescription). JSON: \(jsonDataString)")
-                                 // Don't fail the whole stream for one bad event
                              }
                          } else if line.isEmpty {
-                             // End of an event, process buffer if needed (not strictly necessary with current simple parsing)
                              currentEventBuffer = ""
                          } else {
-                             // Append to buffer if line doesn't start with "data:" (might handle multi-line data if needed)
                              currentEventBuffer += line
                          }
                     }
@@ -400,16 +429,59 @@ class ChatService: ObservableObject {
                      logger.error("Error processing Claude byte stream: \(error.localizedDescription)")
                      streamError = LlmError.networkError(error)
                 }
-                // Finish the continuation
                 continuation.finish(throwing: streamError)
             }
         }
-        // --- End AsyncThrowingStream ---
     }
+
+    // --- New method to start/reset conversation ---
+    func resetConversationContext(messagesToLoad: [ChatMessage]? = nil, existingConversationId: UUID? = nil, parentId: UUID? = nil) {
+         logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None")")
+         messages = messagesToLoad ?? [] // Load provided messages or start empty
+         currentFullResponse = ""
+         llmTask?.cancel() // Cancel any pending LLM task
+         llmTask = nil
+         isProcessingLLM = false // Ensure processing flag is reset
+
+         if let existingId = existingConversationId {
+             currentConversationId = existingId
+         } else {
+             // Create a new conversation in history if starting fresh or continuing
+             let newConversation = Conversation(
+                id: UUID(),
+                messages: messages, // Start with the loaded messages
+                createdAt: Date(),
+                parentConversationId: parentId
+             )
+             currentConversationId = newConversation.id
+             // Add immediately? Or wait for first user message? Add now for simplicity.
+             historyService?.addOrUpdateConversation(newConversation)
+             logger.info("Created new conversation context with ID: \(newConversation.id)")
+         }
+    }
+
+    // --- Update message handling ---
+     private func appendMessageAndUpdateHistory(_ message: ChatMessage) {
+         messages.append(message)
+         // Update the corresponding conversation in HistoryService
+         if let convId = currentConversationId, var conversation = historyService?.conversations.first(where: { $0.id == convId }) {
+             conversation.messages = self.messages // Update messages
+             // Generate title only if needed (e.g., after first user/assistant exchange)
+             if conversation.title == nil && messages.count > 1 {
+                  conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
+             }
+             historyService?.addOrUpdateConversation(conversation)
+         } else if currentConversationId == nil {
+             logger.warning("Tried to update history but currentConversationId is nil.")
+             // Optionally create a new conversation here if it doesn't exist yet
+             resetConversationContext(messagesToLoad: messages)
+         } else {
+             logger.warning("Tried to update history but could not find conversation with ID \(self.currentConversationId!)")
+         }
+     }
 
     deinit {
         logger.info("ChatService deinit.")
-        // Cancel any ongoing task when the service is deallocated
         llmTask?.cancel()
     }
 }

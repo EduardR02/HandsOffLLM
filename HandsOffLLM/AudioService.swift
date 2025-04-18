@@ -451,30 +451,21 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // MARK: - TTS Playback Internal Logic
     @MainActor
     private func manageTTSPlayback() {
-         // Don't fetch if already fetching
          guard !isFetchingTTS else {
              logger.debug("TTS Manage: Already fetching, skipping.")
              return
          }
 
-        // Priority 1: If we have pre-fetched audio and player is idle, play it.
         if currentAudioPlayer == nil, let dataToPlay = nextAudioData {
             logger.debug("TTS Manage: Found pre-fetched data, playing...")
             self.nextAudioData = nil // Consume the data
             playAudioData(dataToPlay)
-            // After starting playback, immediately check if more text needs fetching
-            // This recursive call handles the case where playback starts AND more text is available
             manageTTSPlayback()
             return
         }
 
-        // Determine if we *need* to fetch more audio
         let unprocessedText = currentTextToSpeakBuffer.suffix(from: currentTextToSpeakBuffer.index(currentTextToSpeakBuffer.startIndex, offsetBy: currentTextProcessedIndex))
-
-        // Conditions to fetch:
-        // 1. Player is idle, there's unprocessed text, AND (stream is finished OR text is reasonably long)
         let shouldFetchInitial = currentAudioPlayer == nil && !unprocessedText.isEmpty && nextAudioData == nil && (isTextStreamComplete || unprocessedText.count > 5)
-        // 2. Player is active, there's unprocessed text, AND we haven't already fetched the next chunk
         let shouldFetchNext = currentAudioPlayer != nil && !unprocessedText.isEmpty && nextAudioData == nil
 
         if shouldFetchInitial || shouldFetchNext {
@@ -483,12 +474,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
 
              if chunk.isEmpty {
                  logger.debug("TTS Manage: Found no suitable chunk to fetch yet.")
-                 // If the stream is finished, we have processed everything, and the player is idle, it means TTS is truly done.
                  if isTextStreamComplete && currentTextProcessedIndex == currentTextToSpeakBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
                      logger.info("🏁 TTS processing and playback complete.")
-                     // State cleanup might happen here or be triggered by the ViewModel observing isSpeaking = false
-                     if isSpeaking { isSpeaking = false } // Ensure state is updated
-                     // Reset buffer state for next interaction
+                     if isSpeaking { isSpeaking = false }
                      self.currentTextToSpeakBuffer = ""
                      self.currentTextProcessedIndex = 0
                      self.isTextStreamComplete = false
@@ -498,37 +486,33 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
 
             logger.info("➡️ Sending chunk (\(chunk.count) chars) to TTS API...")
             self.currentTextProcessedIndex = nextIndex
-            self.isFetchingTTS = true // Set flag BEFORE starting async task
+            self.isFetchingTTS = true
 
             guard let apiKey = self.settingsService.openaiAPIKey, !apiKey.isEmpty, apiKey != "YOUR_OPENAI_API_KEY" else {
                  logger.error("🚨 OpenAI API Key missing, cannot fetch TTS.")
                  self.isFetchingTTS = false
                  errorSubject.send(LlmError.apiKeyMissing(provider: "OpenAI TTS"))
+                 manageTTSPlayback()
                  return
             }
 
-            // --- Start Async Fetch Task ---
             self.ttsFetchTask = Task { [weak self] in
                 guard let self = self else { return }
                 do {
-                    let fetchedData = try await self.fetchOpenAITTSAudio(apiKey: apiKey, text: chunk)
-                    try Task.checkCancellation() // Check if cancelled before proceeding
+                    let fetchedData = try await self.fetchOpenAITTSAudio(apiKey: apiKey, text: chunk, instruction: self.settingsService.activeTTSInstruction)
+                    try Task.checkCancellation()
 
-                    // --- Task Success ---
-                    await MainActor.run { [weak self] in
+                     await MainActor.run { [weak self] in
                          guard let self = self else { return }
-                         self.isFetchingTTS = false // Reset flag on main thread
+                         self.isFetchingTTS = false
                          self.ttsFetchTask = nil
 
                          guard let data = fetchedData, !data.isEmpty else {
                              logger.warning("TTS fetch returned no data for chunk.")
-                              self.manageTTSPlayback() // Try to manage again (maybe get next chunk)
+                              self.manageTTSPlayback()
                              return
                          }
-
                          logger.info("⬅️ Received TTS audio (\(data.count) bytes).")
-
-                         // If player is idle, play immediately. Otherwise, store for later.
                          if self.currentAudioPlayer == nil {
                               logger.debug("TTS Manage: Player idle, playing fetched data immediately.")
                               self.playAudioData(data)
@@ -536,38 +520,29 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                               logger.debug("TTS Manage: Player active, storing fetched data.")
                               self.nextAudioData = data
                          }
-                         // After handling data, check again if more fetching is needed
                          self.manageTTSPlayback()
                     }
                 } catch is CancellationError {
-                     // --- Task Cancelled ---
                      await MainActor.run { [weak self] in
                           self?.logger.notice("⏹️ TTS Fetch task cancelled.")
-                          self?.isFetchingTTS = false // Reset flag on cancellation
+                          self?.isFetchingTTS = false
                           self?.ttsFetchTask = nil
-                          // Don't automatically call manageTTSPlayback() on cancellation,
-                          // let the cancellation flow handle state.
                      }
                  } catch {
-                     // --- Task Error ---
                      await MainActor.run { [weak self] in
                           guard let self = self else { return }
                           self.logger.error("🚨 TTS Fetch failed: \(error.localizedDescription)")
-                          self.isFetchingTTS = false // Reset flag on error
+                          self.isFetchingTTS = false
                           self.ttsFetchTask = nil
                           self.errorSubject.send(AudioError.ttsFetchFailed(error))
-                          // Maybe try fetching again? Or signal failure?
-                          // For now, just log and signal error. Further calls to manageTTSPlayback might retry.
-                          self.manageTTSPlayback() // See if remaining text can be processed
+                          self.manageTTSPlayback()
                      }
                  }
-             } // --- End of Async Fetch Task ---
+            }
 
         } else if isTextStreamComplete && currentTextProcessedIndex == currentTextToSpeakBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
-            // This condition checks if everything is done *after* potentially trying to fetch
             logger.info("🏁 TTS processing and playback seems complete (checked after fetch condition).")
-             if isSpeaking { isSpeaking = false } // Ensure state is updated
-             // Reset buffer state
+             if isSpeaking { isSpeaking = false }
              self.currentTextToSpeakBuffer = ""
              self.currentTextProcessedIndex = 0
              self.isTextStreamComplete = false
@@ -577,87 +552,43 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     }
 
 
-    // Find the next chunk of text suitable for TTS synthesis
     private func findNextTTSChunk(text: String, startIndex: Int, isComplete: Bool) -> (String, Int) {
         let remainingText = text.suffix(from: text.index(text.startIndex, offsetBy: startIndex))
-        if remainingText.isEmpty {
-            logger.debug("TTS Chunk: No remaining text.")
-            return ("", startIndex)
-        }
+        if remainingText.isEmpty { return ("", startIndex) }
 
         let maxChunkLength = settingsService.maxTTSChunkLength
 
-        // If the entire remaining text is short enough, send it all, especially if complete.
         if remainingText.count <= maxChunkLength && isComplete {
-             logger.debug("TTS Chunk: Sending all remaining text (\(remainingText.count) chars) as it's complete.")
              return (String(remainingText), startIndex + remainingText.count)
-        }
-
-        // Take up to maxChunkLength characters
-        let potentialChunk = remainingText.prefix(maxChunkLength)
-        var bestSplitIndex = potentialChunk.endIndex // Default to sending the whole potential chunk
-
-        // If the stream is not complete, try to find a natural break near the end.
-        if !isComplete {
-            let lookaheadMargin = 75 // How far back from the end to look for a boundary
-
-            // Find the last suitable boundary within the margin
-            if let searchRange = potentialChunk.index(potentialChunk.endIndex, offsetBy: -min(lookaheadMargin, potentialChunk.count), limitedBy: potentialChunk.startIndex) {
-                // Prioritize sentence endings
-                if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
-                     bestSplitIndex = lastSentenceEnd
-                     logger.debug("TTS Chunk: Found sentence boundary.")
-                // Then try commas
-                } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
-                     bestSplitIndex = lastComma
-                     logger.debug("TTS Chunk: Found comma boundary.")
-                // Then try spaces (less ideal, but better than mid-word)
-                } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
-                    // Only use space if it's not immediately at the start (avoids splitting just spaces)
-                    if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
-                         bestSplitIndex = lastSpace
-                         logger.debug("TTS Chunk: Found space boundary.")
-                    } else {
-                        logger.debug("TTS Chunk: Found only leading space boundary, ignoring.")
-                    }
-                } else {
-                     logger.debug("TTS Chunk: No suitable boundary found in lookahead margin.")
-                     // bestSplitIndex remains potentialChunk.endIndex
-                }
-            }
-        } else {
-             logger.debug("TTS Chunk: Stream is complete, using full potential chunk or remainder.")
-             // If complete, we don't need to find a boundary, just take the max length allowed.
-             bestSplitIndex = potentialChunk.endIndex
-        }
-
-
-        let chunkLength = potentialChunk.distance(from: potentialChunk.startIndex, to: bestSplitIndex)
-
-        // Calculate scaled minimum chunk length based on playback speed
-        let baseMinChunkLength: Int = 60 // Minimum characters to send generally
-        let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, self.ttsRate)) // Scale up for faster speech
-
-        // Avoid sending very short chunks unless it's the *absolute* end of the text
-        if chunkLength < baseMinChunkLength && !isComplete {
-            logger.debug("TTS Chunk: Chunk too short (\(chunkLength) < \(baseMinChunkLength)) and stream not complete. Waiting.")
-            return ("", startIndex) // Wait for more text
-        }
-        // Apply scaled minimum if > base, but still avoid tiny chunks if not complete
-         if chunkLength < scaledMinChunkLength && chunkLength >= baseMinChunkLength && !isComplete {
-            logger.debug("TTS Chunk: Chunk shorter than scaled minimum (\(chunkLength) < \(scaledMinChunkLength)) and stream not complete. Waiting.")
-            return ("", startIndex) // Wait for more text
          }
 
-        // Check if the *entire remaining text* is too short and stream isn't complete yet
-        if chunkLength == remainingText.count && chunkLength < scaledMinChunkLength && !isComplete {
-             logger.debug("TTS Chunk: Entire remaining text is shorter than scaled minimum (\(chunkLength) < \(scaledMinChunkLength)) and stream not complete. Waiting.")
-             return ("", startIndex)
-        }
+         let potentialChunk = remainingText.prefix(maxChunkLength)
+         var bestSplitIndex = potentialChunk.endIndex
+         if !isComplete {
+             let lookaheadMargin = 75
+             if let searchRange = potentialChunk.index(potentialChunk.endIndex, offsetBy: -min(lookaheadMargin, potentialChunk.count), limitedBy: potentialChunk.startIndex) {
+                 if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
+                      bestSplitIndex = lastSentenceEnd
+                 } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
+                      bestSplitIndex = lastComma
+                 } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
+                     if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
+                          bestSplitIndex = lastSpace
+                     }
+                 }
+             }
+         }
 
-        let finalChunk = String(potentialChunk[..<bestSplitIndex])
-        logger.debug("TTS Chunk: Determined final chunk length: \(finalChunk.count)")
-        return (finalChunk, startIndex + finalChunk.count)
+         let chunkLength = potentialChunk.distance(from: potentialChunk.startIndex, to: bestSplitIndex)
+         let baseMinChunkLength: Int = 60
+         let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, self.ttsRate))
+
+         if chunkLength < baseMinChunkLength && !isComplete { return ("", startIndex) }
+         if chunkLength < scaledMinChunkLength && chunkLength >= baseMinChunkLength && !isComplete { return ("", startIndex) }
+         if chunkLength == remainingText.count && chunkLength < scaledMinChunkLength && !isComplete { return ("", startIndex) }
+
+         let finalChunk = String(potentialChunk[..<bestSplitIndex])
+         return (finalChunk, startIndex + finalChunk.count)
     }
 
 
@@ -665,53 +596,38 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private func playAudioData(_ data: Data) {
         guard !data.isEmpty else {
              logger.warning("Attempted to play empty audio data.")
-             // If playing empty data failed, potentially try fetching/playing next?
              manageTTSPlayback()
              return
         }
         do {
              let audioSession = AVAudioSession.sharedInstance()
              try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
-
-             // --- Speaker Override ---
-             do {
-                 try audioSession.overrideOutputAudioPort(.speaker)
-                 logger.info("🔊 Audio output route forced to Speaker.")
-             } catch {
-                 logger.error("🚨 Failed to override audio output to speaker: \(error.localizedDescription)")
-                 // Don't fail playback if override fails, just log it.
-             }
-             // --- End Speaker Override ---
-
-             try audioSession.setActive(true) // Activate session *after* setting category/override
+             try? audioSession.overrideOutputAudioPort(.speaker)
+             try audioSession.setActive(true)
 
             currentAudioPlayer = try AVAudioPlayer(data: data)
-            currentAudioPlayer?.delegate = self // Set delegate non-isolated context OK
+            currentAudioPlayer?.delegate = self
             currentAudioPlayer?.enableRate = true
-            currentAudioPlayer?.isMeteringEnabled = true // Enable metering for level visualization
-
-            if let player = currentAudioPlayer {
-                 player.rate = self.ttsRate // Set rate before playing
-            }
+            currentAudioPlayer?.isMeteringEnabled = true
+            currentAudioPlayer?.rate = self.ttsRate
 
             if currentAudioPlayer?.play() == true {
-                isSpeaking = true // Set speaking state TRUE
+                isSpeaking = true
                 logger.info("▶️ Playback started.")
-                startTTSLevelTimer() // Start visualizing levels
-                // Don't call manageTTSPlayback here, let the fetch completion/player finish trigger it.
+                startTTSLevelTimer()
             } else {
                 logger.error("🚨 Failed to start audio playback (play() returned false).")
                 currentAudioPlayer = nil
-                isSpeaking = false // Ensure speaking is false if play fails
+                isSpeaking = false
                 errorSubject.send(AudioError.audioPlaybackError(NSError(domain: "AudioService", code: 1, userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer.play() returned false"])))
-                 manageTTSPlayback() // Try to recover or play next
+                 manageTTSPlayback()
             }
         } catch {
             logger.error("🚨 Failed to initialize or play audio: \(error.localizedDescription)")
              errorSubject.send(AudioError.audioPlaybackError(error))
             currentAudioPlayer = nil
-            isSpeaking = false // Ensure speaking is false on error
-            manageTTSPlayback() // Try to recover or play next
+            isSpeaking = false
+            manageTTSPlayback()
         }
     }
 
@@ -723,11 +639,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         }
     }
 
-    // MARK: - OpenAI TTS Fetch Implementation
-    private func fetchOpenAITTSAudio(apiKey: String, text: String) async throws -> Data? {
+    // MARK: - OpenAI TTS Fetch Implementation (Updated Signature)
+    private func fetchOpenAITTSAudio(apiKey: String, text: String, instruction: String?) async throws -> Data? {
          guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
              logger.warning("Attempted to synthesize empty text.")
-             return nil // Return nil for empty text, not an error
+             return nil
          }
          guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
              throw LlmError.invalidURL
@@ -743,7 +659,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
              input: text,
              voice: settingsService.openAITTSVoice,
              response_format: settingsService.openAITTSFormat,
-             instructions: settingsService.ttsInstructions
+             instructions: instruction
          )
 
          do { request.httpBody = try JSONEncoder().encode(payload) }
@@ -765,11 +681,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
          }
 
          guard !data.isEmpty else {
-             // Technically successful response, but empty data is problematic.
              logger.warning("Received empty audio data from OpenAI TTS API for non-empty text.")
-             return nil // Treat as non-error but no data
+             return nil
          }
-
          return data
      }
 
