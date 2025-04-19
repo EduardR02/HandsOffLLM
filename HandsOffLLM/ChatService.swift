@@ -8,7 +8,7 @@ class ChatService: ObservableObject {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatService")
 
     // --- Published State ---
-    @Published var messages: [ChatMessage] = []
+    @Published var currentConversation: Conversation?
     @Published var isProcessingLLM: Bool = false // True while fetching/streaming LLM response
 
     // --- Combine Subjects for Communication ---
@@ -19,12 +19,6 @@ class ChatService: ObservableObject {
     // --- Internal State ---
     private var llmTask: Task<Void, Never>? = nil
     private var currentFullResponse: String = ""
-    // Holds the full Conversation object currently being interacted with
-    private var currentConversationObject: Conversation?
-    // Keep the ID separate for quick checks if needed
-    private var currentConversationId: UUID? {
-        currentConversationObject?.id
-    }
 
     // --- Dependencies ---
     private let settingsService: SettingsService
@@ -33,7 +27,7 @@ class ChatService: ObservableObject {
         URLSession(configuration: .default)
     }()
 
-    var activeConversationId: UUID? { currentConversationId }
+    var activeConversationId: UUID? { currentConversation?.id }
 
     init(settingsService: SettingsService, historyService: HistoryService? = nil) {
         self.settingsService = settingsService
@@ -53,6 +47,10 @@ class ChatService: ObservableObject {
              logger.info("No active conversation context found. Creating a new one.")
              resetConversationContext()
              // activeConversationId should now be non-nil after resetConversationContext runs
+             guard currentConversation != nil else {
+                 logger.error("Failed to create a conversation context.")
+                 return
+             }
         }
 
         let userMessage = ChatMessage(id: UUID(), role: "user", content: transcription)
@@ -81,6 +79,13 @@ class ChatService: ObservableObject {
     private func fetchLLMResponse(provider: LLMProvider) async {
         var llmError: Error? = nil
         let providerString = provider.rawValue
+
+        guard currentConversation != nil else {
+            logger.error("Cannot fetch LLM response without an active conversation.")
+            llmError = LlmError.streamingError("No active conversation.")
+            handleLLMCompletion(error: llmError)
+            return
+        }
 
         do {
             // --- Get ACTIVE settings ---
@@ -120,20 +125,17 @@ class ChatService: ObservableObject {
                       firstChunkReceived = true
                       // Add assistant_partial message placeholder immediately
                        let partialMsg = ChatMessage(id: UUID(), role: "assistant_partial", content: "")
-                       // Check if last message isn't already a partial/error to avoid duplicates during retries/fast streams
-                       if messages.last?.role != "assistant_partial" && messages.last?.role != "assistant_error" {
+                       if currentConversation?.messages.last?.role != "assistant_partial" && currentConversation?.messages.last?.role != "assistant_error" {
                            appendMessageAndUpdateHistory(partialMsg)
                        }
                  }
 
                  currentFullResponse.append(chunk) // Accumulate full response
 
-                 // Update the partial message in the main list
-                  if var lastMessage = messages.last, lastMessage.role == "assistant_partial" {
+                 if var lastMessage = currentConversation?.messages.last, lastMessage.role == "assistant_partial" {
                       lastMessage.content = currentFullResponse
-                      messages[messages.count - 1] = lastMessage // Update in-place
-                      // Don't need to save history on every chunk, wait for completion.
-                  }
+                      currentConversation?.messages[currentConversation!.messages.count - 1] = lastMessage
+                 }
 
                  llmChunkSubject.send(chunk)     // Send chunk for immediate TTS processing
             }
@@ -180,19 +182,17 @@ class ChatService: ObservableObject {
              else if error is CancellationError { messageRole = "assistant_partial" }
              else { messageRole = "assistant_error" }
 
-             // Find the partial message we added and update its role and content
-             if let partialIndex = messages.lastIndex(where: { $0.role == "assistant_partial" }) {
-                  messages[partialIndex].role = messageRole
-                  messages[partialIndex].content = currentFullResponse // Ensure final content is set
-                  // Now update history
-                   if let convId = currentConversationId, var conversation = historyService?.conversations.first(where: { $0.id == convId }) {
-                        conversation.messages = self.messages
+             if let partialIndex = currentConversation?.messages.lastIndex(where: { $0.role == "assistant_partial" }) {
+                  currentConversation?.messages[partialIndex].role = messageRole
+                  currentConversation?.messages[partialIndex].content = currentFullResponse
+
+                  if var conversation = currentConversation {
                         conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
                         historyService?.addOrUpdateConversation(conversation)
-                   }
+                        currentConversation = conversation
+                  }
                   logger.info("Updated final message in history. Role: \(messageRole)")
              } else {
-                 // If no partial message was found (e.g., response was instant?), add a new one.
                  logger.warning("Could not find partial message to update. Adding new final message.")
                   let finalMessage = ChatMessage(id: UUID(), role: messageRole, content: currentFullResponse)
                   appendMessageAndUpdateHistory(finalMessage)
@@ -201,16 +201,13 @@ class ChatService: ObservableObject {
         } else if error != nil && !(error is CancellationError) {
             // Handle error case where no response was generated at all
              let errorMessage = ChatMessage(id: UUID(), role: "assistant_error", content: "Sorry, an error occurred while generating the response.")
-              // Remove previous partial if it exists and is empty
-             if messages.last?.role == "assistant_partial" && messages.last?.content.isEmpty == true {
-                 messages.removeLast()
+             if currentConversation?.messages.last?.role == "assistant_partial" && currentConversation?.messages.last?.content.isEmpty == true {
+                 currentConversation?.messages.removeLast()
              }
             appendMessageAndUpdateHistory(errorMessage) // Add the error message and save
-        } else if messages.last?.role == "assistant_partial" && messages.last?.content.isEmpty == true {
-            // Handle case where stream ends cleanly but empty (no partial message added or empty)
-            messages.removeLast() // Remove the empty partial placeholder
-            if let convId = currentConversationId, var conversation = historyService?.conversations.first(where: { $0.id == convId }) {
-                 conversation.messages = self.messages
+        } else if currentConversation?.messages.last?.role == "assistant_partial" && currentConversation?.messages.last?.content.isEmpty == true {
+            currentConversation?.messages.removeLast()
+            if let conversation = currentConversation {
                  historyService?.addOrUpdateConversation(conversation)
             }
              logger.info("Removed empty partial message as LLM response was empty.")
@@ -240,10 +237,10 @@ class ChatService: ObservableObject {
             conversationHistory.append(GeminiContent(role: "model", parts: [GeminiPart(text: "OK.")])) // Keep Gemini's required alternation
         }
         // Use current live messages
-        let history = messages.map { msg -> GeminiContent in
+        let history = currentConversation?.messages.map { msg -> GeminiContent in
             let geminiRole = (msg.role == "user") ? "user" : "model"
             return GeminiContent(role: geminiRole, parts: [GeminiPart(text: msg.content)])
-        }
+        } ?? []
         conversationHistory.append(contentsOf: history)
 
         // TODO: Add temperature and max_tokens to Gemini request if API supports them in this structure
@@ -341,10 +338,10 @@ class ChatService: ObservableObject {
 
 
         // --- Build Payload ---
-         let history = messages.map { msg -> MessageParam in
+         let history = currentConversation?.messages.map { msg -> MessageParam in
              let claudeRole = (msg.role == "user") ? "user" : "assistant"
              return MessageParam(role: claudeRole, content: msg.content)
-         }
+         } ?? []
          // Use active system prompt
          let systemPromptToUse: String? = (systemPrompt?.isEmpty ?? true) ? nil : systemPrompt
 
@@ -448,54 +445,59 @@ class ChatService: ObservableObject {
         llmTask = nil
         isProcessingLLM = false
 
+        var conversationToSet: Conversation? // Use temporary var
+
         if let existingId = existingConversationId,
-           let conversation = historyService?.conversations.first(where: { $0.id == existingId }) {
-            // --- Loading an existing conversation ---
-            currentConversationObject = conversation
-            logger.info("Loaded existing conversation context with ID: \(existingId)")
+           let loadedConv = historyService?.conversations.first(where: { $0.id == existingId }) {
+             conversationToSet = loadedConv
+             if let messages = messagesToLoad {
+                 conversationToSet?.messages = messages
+             }
         } else {
-            // --- Creating a new conversation context ---
-            if existingConversationId != nil {
-                // Log if we intended to load but couldn't find the conversation
-                logger.warning("Attempted to load conversation \(existingConversationId!) but not found. Starting new.")
-            }
-            currentConversationObject = Conversation(
+            conversationToSet = Conversation(
                 id: UUID(),
-                messages: [], // Start with empty messages
+                messages: messagesToLoad ?? [],
                 createdAt: Date(),
                 parentConversationId: parentId
             )
-            logger.info("Created new conversation context session with ID: \(self.currentConversationObject!.id)")
         }
-        // Sync the published messages array with the current state
-        messages = currentConversationObject?.messages ?? []
+        currentConversation = conversationToSet
     }
 
 
     // --- Update message handling ---
      private func appendMessageAndUpdateHistory(_ message: ChatMessage) {
-         // Ensure we have a current conversation object to work with
-         guard var conversation = currentConversationObject else {
-             logger.error("Critical error: Tried to append message but currentConversationObject is nil.")
-             return
+         // Check if conversation is nil and attempt recovery first
+         if currentConversation == nil {
+             logger.error("Critical error: Tried to append message but currentConversation is nil. Attempting recovery.")
+             resetConversationContext()
+             // Check *again* after attempting recovery
+             guard currentConversation != nil else {
+                 logger.error("Recovery failed: Could not create a conversation context after reset.")
+                 return // Exit if recovery failed
+             }
+             logger.warning("appendMessageAndUpdateHistory: Recovered by creating new context.")
+             // If recovery succeeded, execution continues below
          }
 
-         // Update the in-memory object
-         conversation.messages.append(message)
+         // Now we are sure currentConversation is non-nil
+         // Append directly to the @Published property's messages
+         currentConversation?.messages.append(message)
 
-         // Sync the @Published messages array for the UI
-         self.messages = conversation.messages
-
-         // Generate title if needed
-         if conversation.title == nil && conversation.messages.count > 1 {
-              conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
+         // Generate title if needed (operates on the @Published property)
+         if var conversation = currentConversation, conversation.title == nil && conversation.messages.count > 1 {
+              let updatedConv = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
+              if updatedConv.title != conversation.title {
+                  currentConversation = updatedConv // Update @Published if title changed
+              }
+              // Use updated for persistence check below
+              conversation = updatedConv
          }
 
          // Persist the updated conversation object
-         historyService?.addOrUpdateConversation(conversation)
-
-         // Update the instance variable with the potentially modified conversation
-         currentConversationObject = conversation
+         if let conversationToSave = currentConversation {
+             historyService?.addOrUpdateConversation(conversationToSave)
+         }
      }
 
     deinit {

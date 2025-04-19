@@ -154,9 +154,16 @@ class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        chatService.$messages
+        chatService.$currentConversation
             .receive(on: DispatchQueue.main)
-             .assign(to: &$messages) // Use assign directly
+            .sink(receiveCompletion: { [weak self] completion in
+                 if case .failure(let error) = completion {
+                     self?.logger.error("ChatService currentConversation publisher completed with error: \(error.localizedDescription)")
+                 }
+            }) { [weak self] conversation in
+                self?.messages = conversation?.messages ?? []
+            }
+            .store(in: &cancellables)
 
         // Chat Service Events
         chatService.llmChunkSubject
