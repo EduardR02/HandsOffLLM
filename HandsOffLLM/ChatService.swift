@@ -18,12 +18,17 @@ class ChatService: ObservableObject {
 
     // --- Internal State ---
     private var llmTask: Task<Void, Never>? = nil
-    private var currentFullResponse: String = "" // Accumulates the full response for final message
+    private var currentFullResponse: String = ""
+    // Holds the full Conversation object currently being interacted with
+    private var currentConversationObject: Conversation?
+    // Keep the ID separate for quick checks if needed
+    private var currentConversationId: UUID? {
+        currentConversationObject?.id
+    }
 
     // --- Dependencies ---
     private let settingsService: SettingsService
     private var historyService: HistoryService? // Add HistoryService (optional for now)
-    private var currentConversationId: UUID? // Track the ID of the active conversation
     private lazy var urlSession: URLSession = {
         URLSession(configuration: .default)
     }()
@@ -434,50 +439,63 @@ class ChatService: ObservableObject {
         }
     }
 
-    // --- New method to start/reset conversation ---
+    // --- Method to start/reset conversation ---
     func resetConversationContext(messagesToLoad: [ChatMessage]? = nil, existingConversationId: UUID? = nil, parentId: UUID? = nil) {
-         logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None")")
-         messages = messagesToLoad ?? [] // Load provided messages or start empty
-         currentFullResponse = ""
-         llmTask?.cancel() // Cancel any pending LLM task
-         llmTask = nil
-         isProcessingLLM = false // Ensure processing flag is reset
+        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None")")
 
-         if let existingId = existingConversationId {
-             currentConversationId = existingId
-         } else {
-             // Create a new conversation in history if starting fresh or continuing
-             let newConversation = Conversation(
+        currentFullResponse = ""
+        llmTask?.cancel()
+        llmTask = nil
+        isProcessingLLM = false
+
+        if let existingId = existingConversationId,
+           let conversation = historyService?.conversations.first(where: { $0.id == existingId }) {
+            // --- Loading an existing conversation ---
+            currentConversationObject = conversation
+            logger.info("Loaded existing conversation context with ID: \(existingId)")
+        } else {
+            // --- Creating a new conversation context ---
+            if existingConversationId != nil {
+                // Log if we intended to load but couldn't find the conversation
+                logger.warning("Attempted to load conversation \(existingConversationId!) but not found. Starting new.")
+            }
+            currentConversationObject = Conversation(
                 id: UUID(),
-                messages: messages, // Start with the loaded messages
+                messages: [], // Start with empty messages
                 createdAt: Date(),
                 parentConversationId: parentId
-             )
-             currentConversationId = newConversation.id
-             // wait for the user message, otherwise will spam history with empty conversations
-             //historyService?.addOrUpdateConversation(newConversation)
-             logger.info("Created new conversation context with ID: \(newConversation.id)")
-         }
+            )
+            logger.info("Created new conversation context session with ID: \(self.currentConversationObject!.id)")
+        }
+        // Sync the published messages array with the current state
+        messages = currentConversationObject?.messages ?? []
     }
+
 
     // --- Update message handling ---
      private func appendMessageAndUpdateHistory(_ message: ChatMessage) {
-         messages.append(message)
-         // Update the corresponding conversation in HistoryService
-         if let convId = currentConversationId, var conversation = historyService?.conversations.first(where: { $0.id == convId }) {
-             conversation.messages = self.messages // Update messages
-             // Generate title only if needed (e.g., after first user/assistant exchange)
-             if conversation.title == nil && messages.count > 1 {
-                  conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
-             }
-             historyService?.addOrUpdateConversation(conversation)
-         } else if currentConversationId == nil {
-             logger.warning("Tried to update history but currentConversationId is nil.")
-             // Optionally create a new conversation here if it doesn't exist yet
-             resetConversationContext(messagesToLoad: messages)
-         } else {
-             logger.warning("Tried to update history but could not find conversation with ID \(self.currentConversationId!)")
+         // Ensure we have a current conversation object to work with
+         guard var conversation = currentConversationObject else {
+             logger.error("Critical error: Tried to append message but currentConversationObject is nil.")
+             return
          }
+
+         // Update the in-memory object
+         conversation.messages.append(message)
+
+         // Sync the @Published messages array for the UI
+         self.messages = conversation.messages
+
+         // Generate title if needed
+         if conversation.title == nil && conversation.messages.count > 1 {
+              conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
+         }
+
+         // Persist the updated conversation object
+         historyService?.addOrUpdateConversation(conversation)
+
+         // Update the instance variable with the potentially modified conversation
+         currentConversationObject = conversation
      }
 
     deinit {
