@@ -20,7 +20,8 @@ struct ContentView: View {
             VStack {
                 Spacer() // Push indicator down a bit
 
-                // Display errors subtly if needed (optional)
+                // Display errors subtly if needed (don't do this)
+                /*
                 if let error = viewModel.lastError {
                      Text(error)
                          .font(.caption)
@@ -28,6 +29,7 @@ struct ContentView: View {
                          .padding(.bottom, 5)
                          .transition(.opacity) // Animate appearance
                  }
+                */
 
 
                 VoiceIndicatorView(
@@ -100,7 +102,6 @@ struct ContentView: View {
                   .disabled(viewModel.state != .idle && viewModel.state != .listening) // Allow reset when idle or listening
              }
         }
-        .navigationTitle("HandsOffLLM") // Add a title if desired
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
              logger.info("ContentView appeared.")

@@ -51,7 +51,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
     let openAITTSModel = "gpt-4o-mini-tts"
     let openAITTSVoice = "nova" // Or alloy, echo, fable, onyx, shimmer
-    let openAITTSFormat = "opus" // Other options: opus, aac, flac, pcm, mp3
+    let openAITTSFormat = "aac" // Other options: opus, aac, flac, pcm, mp3
     let maxTTSChunkLength = 4000 // Keep hardcoded for now
 
     init() {
