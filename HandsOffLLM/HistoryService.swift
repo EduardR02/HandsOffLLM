@@ -296,20 +296,8 @@ class HistoryService: ObservableObject {
         let fileURL = audioDir.appendingPathComponent(filename)
         try data.write(to: fileURL, options: .atomicWrite)
         let relPath = "Audio/\(conversationID.uuidString)/\(filename)"
-        // Update in-memory conversation metadata
-        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
-            var conv = conversations[idx]
-            var map = conv.ttsAudioPaths ?? [:]
-            var paths = map[messageID] ?? []
-            paths.append(relPath)
-            map[messageID] = paths
-            conv.ttsAudioPaths = map
-            // Persist updated conversation file
-            saveConversationFile(conv)
-            // Update in-memory model
-            conversations[idx] = conv
-        }
-        return relPath
+
+        return relPath // Just return the path
     }
 }
 

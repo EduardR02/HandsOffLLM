@@ -207,6 +207,16 @@ class ChatViewModel: ObservableObject {
         // This simple approach just sets the default visually; ChatService uses the setting directly.
         self.selectedProvider = settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude // Example default
 
+        // --- NEW: Subscribe to saved audio chunk paths ---
+        audioService.ttsChunkSavedSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] messageID, path in
+                // Update the ChatService's currentConversation object
+                self?.chatService.updateAudioPathInCurrentConversation(messageID: messageID, path: path)
+            }
+            .store(in: &cancellables)
+        // --- END NEW ---
+
         // --- Initial State Transition: idle -> listening ---
         // Start listening shortly after initialization
         Task { @MainActor in

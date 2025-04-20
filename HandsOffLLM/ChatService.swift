@@ -19,6 +19,7 @@ class ChatService: ObservableObject {
     // --- Internal State ---
     private var llmTask: Task<Void, Never>? = nil
     private var currentFullResponse: String = ""
+    private var isLLMStreamComplete: Bool = false // ← New flag
 
     // --- Dependencies ---
     private let settingsService: SettingsService
@@ -59,6 +60,7 @@ class ChatService: ObservableObject {
         logger.info("⚙️ Processing transcription with \(provider.rawValue): '\(transcription)'")
         isProcessingLLM = true
         currentFullResponse = "" // Reset accumulator
+        isLLMStreamComplete = false // ← Reset flag
 
         // Start the LLM fetch task
         llmTask = Task { [weak self] in
@@ -163,6 +165,7 @@ class ChatService: ObservableObject {
     private func handleLLMCompletion(error: Error?) {
          isProcessingLLM = false
          llmCompleteSubject.send()
+         isLLMStreamComplete = true // ← Set flag
 
          // Log final response if successful or partially successful
          if !currentFullResponse.isEmpty {
@@ -182,39 +185,37 @@ class ChatService: ObservableObject {
              else if error is CancellationError { messageRole = "assistant_partial" }
              else { messageRole = "assistant_error" }
 
-             if let partialIndex = currentConversation?.messages.lastIndex(where: { $0.role == "assistant_partial" }) {
-                  currentConversation?.messages[partialIndex].role = messageRole
-                  currentConversation?.messages[partialIndex].content = currentFullResponse
+             if var conversation = currentConversation,
+                let lastMsgIndex = conversation.messages.lastIndex(where: { $0.role == "assistant_partial" }) {
 
-                  if var conversation = currentConversation {
-                        conversation = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
-                        historyService?.addOrUpdateConversation(conversation)
-                        currentConversation = conversation
-                  }
-                  logger.info("Updated final message in history. Role: \(messageRole)")
+                  // Update the message directly in the currentConversation
+                  conversation.messages[lastMsgIndex].role = messageRole
+                  conversation.messages[lastMsgIndex].content = currentFullResponse
+
+                  // Generate title if needed
+                  let updatedConv = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
+                  currentConversation = updatedConv // Update local state
+
+                  logger.info("Updated final message in history. Role: \(messageRole). Awaiting final audio path for save.")
+
              } else {
-                 logger.warning("Could not find partial message to update. Adding new final message.")
+                 logger.warning("Could not find partial message to update.")
                   let finalMessage = ChatMessage(id: UUID(), role: messageRole, content: currentFullResponse)
-                  appendMessageAndUpdateHistory(finalMessage)
+                  appendMessageAndUpdateHistory(finalMessage) // This already saves
              }
 
-        } else if error != nil && !(error is CancellationError) {
-            // Handle error case where no response was generated at all
-             let errorMessage = ChatMessage(id: UUID(), role: "assistant_error", content: "Sorry, an error occurred while generating the response.")
-             if currentConversation?.messages.last?.role == "assistant_partial" && currentConversation?.messages.last?.content.isEmpty == true {
-                 currentConversation?.messages.removeLast()
-             }
-            appendMessageAndUpdateHistory(errorMessage) // Add the error message and save
-        } else if currentConversation?.messages.last?.role == "assistant_partial" && currentConversation?.messages.last?.content.isEmpty == true {
-            currentConversation?.messages.removeLast()
-            if let conversation = currentConversation {
-                 historyService?.addOrUpdateConversation(conversation)
+        } else if error == nil {
+            // Handle empty response case if necessary
+            logger.info("🤖 LLM response was empty.")
+            // We might still need to save if title generation happened on an earlier message?
+            // If the conversation only had a user message and got an empty LLM response,
+            // title generation wouldn't run, and no save would occur. Let's ensure a save.
+            if let conversationToSave = currentConversation {
+                 logger.info("Saving conversation state after empty LLM response.")
+                 historyService?.addOrUpdateConversation(conversationToSave)
             }
-             logger.info("Removed empty partial message as LLM response was empty.")
         }
-
-        llmTask = nil
-        currentFullResponse = ""
+        // Error cases don't need a special save here, the state before error is likely saved.
     }
 
 
@@ -494,11 +495,45 @@ class ChatService: ObservableObject {
               conversation = updatedConv
          }
 
-         // Persist the updated conversation object
+         // Persist intermediate state (e.g., user messages, partial assistant messages)
          if let conversationToSave = currentConversation {
+             logger.debug("Saving intermediate conversation state in appendMessageAndUpdateHistory for message role \(message.role)")
              historyService?.addOrUpdateConversation(conversationToSave)
          }
      }
+
+    // --- NEW: Method to update audio paths in local state ---
+    func updateAudioPathInCurrentConversation(messageID: UUID, path: String) {
+        guard currentConversation != nil else {
+            logger.error("Cannot add audio path: currentConversation is nil.")
+            return
+        }
+        // Check if the message ID exists in the current conversation's messages
+        // This ensures we don't try to add paths to messages not part of the active context.
+        guard currentConversation!.messages.contains(where: { $0.id == messageID }) else {
+            logger.warning("Attempted to add audio path for message \(messageID) not found in current conversation \(self.currentConversation!.id).")
+            return
+        }
+
+        // Add the path
+        var map = currentConversation!.ttsAudioPaths ?? [:]
+        var paths = map[messageID] ?? []
+        if !paths.contains(path) { paths.append(path) }
+        map[messageID] = paths
+        currentConversation!.ttsAudioPaths = map
+        logger.info("Added audio path '\(path)' for message \(messageID).")
+
+        // --- NEW: Trigger final save ---
+        // Check if LLM is done AND this path is for the *last* message
+        if isLLMStreamComplete, let lastMessage = currentConversation!.messages.last, lastMessage.id == messageID {
+            logger.info("✅ Final audio path received for completed LLM stream. Triggering final save.")
+            if let conversationToSave = currentConversation {
+                historyService?.addOrUpdateConversation(conversationToSave)
+            }
+        }
+        // --- END NEW ---
+    }
+    // --- END NEW ---
 
     deinit {
         logger.info("ChatService deinit.")

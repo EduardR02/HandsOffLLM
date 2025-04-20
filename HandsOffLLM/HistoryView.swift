@@ -107,8 +107,10 @@ private struct ConversationRow: View {
 
     var body: some View {
         NavigationLink(
-            destination: ChatDetailView(rootIsActive: $rootIsActive,
-                                        conversation: conversation)
+            destination: ChatDetailView(
+                rootIsActive: $rootIsActive,
+                conversationId: conversation.id
+            )
         ) {
             VStack(alignment: .leading) {
                 Text(conversation.title ?? "Untitled Chat")

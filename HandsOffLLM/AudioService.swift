@@ -22,6 +22,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // --- Combine Subjects for Communication ---
     let transcriptionSubject = PassthroughSubject<String, Never>() // Sends final transcription
     let errorSubject = PassthroughSubject<Error, Never>()         // Reports errors
+    let ttsChunkSavedSubject = PassthroughSubject<(messageID: UUID, path: String), Never>() // ← New
 
     // --- Internal State ---
     private var lastMeasuredAudioLevel: Float = -50.0
@@ -82,6 +83,13 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         let nextPath = replayQueue.removeFirst()
         logger.info("Playing replay file: \(nextPath)")
         playAudioFile(relativePath: nextPath)
+    }
+
+    /// Stop any ongoing replay and clear the queue
+    func stopReplay() {
+        logger.notice("Stopping replay, clearing replay queue.")
+        replayQueue.removeAll()
+        stopSpeaking()
     }
 
     private lazy var urlSession: URLSession = {
@@ -558,6 +566,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                                     chunkIndex: self.currentTTSChunkIndex
                                 )
                                 self.logger.info("Saved TTS chunk #\(self.currentTTSChunkIndex) at \(relPath)")
+                                // --- NEW: Report path saved ---
+                                self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
+                                // --- END NEW ---
                             } catch {
                                 self.logger.error("Failed to save TTS audio chunk: \(error.localizedDescription)")
                             }

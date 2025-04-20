@@ -12,8 +12,17 @@ struct ChatDetailView: View {
     @Binding var rootIsActive: Bool          // NEW: binding to pop all the way home
     @EnvironmentObject var viewModel: ChatViewModel // For loading history
     @EnvironmentObject var audioService: AudioService // For TTS replay (future)
+    @EnvironmentObject var historyService: HistoryService         // ← added
 
-    let conversation: Conversation
+    let conversationId: UUID                                     // ← changed from `Conversation`
+
+    // Always read the latest from HistoryService
+    private var conversation: Conversation {
+        historyService.conversations.first { $0.id == conversationId }!
+    }
+
+    @State private var replayingMessageId: UUID? = nil           // ← added
+
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatDetailView")
 
     var body: some View {
@@ -37,6 +46,11 @@ struct ChatDetailView: View {
                      }
                  }
             }
+            .onReceive(audioService.$isSpeaking) { speaking in       // ← new
+                if !speaking && replayingMessageId != nil {
+                    replayingMessageId = nil
+                }
+            }
         }
     }
 
@@ -57,15 +71,25 @@ struct ChatDetailView: View {
                  if message.role.starts(with: "assistant") { // Covers assistant, assistant_partial, assistant_error
                      HStack {
                          Button {
-                             replayTTS(message: message)
+                             if replayingMessageId == message.id && audioService.isSpeaking {
+                                 audioService.stopReplay()             // ← new stop
+                                 replayingMessageId = nil
+                             } else {
+                                 replayingMessageId = message.id      // ← mark playing
+                                 replayTTS(message: message)
+                             }
                          } label: {
-                             Image(systemName: "speaker.wave.2.fill")
-                             Text("Replay")
+                             if replayingMessageId == message.id && audioService.isSpeaking {
+                                 Image(systemName: "stop.fill")
+                                 Text("Stop")
+                             } else {
+                                 Image(systemName: "speaker.wave.2.fill")
+                                 Text("Replay")
+                             }
                          }
                          .buttonStyle(.bordered)
                          .tint(.blue)
                          .font(.caption)
-                         // only enabled if we have saved audio paths
                          .disabled(conversation.ttsAudioPaths?[message.id]?.isEmpty ?? true)
 
                          Button {
@@ -144,7 +168,7 @@ struct ChatDetailView: View {
      let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
 
      return NavigationStack { // Add NavigationStack for preview context
-         ChatDetailView(rootIsActive: .constant(false), conversation: convo)
+         ChatDetailView(rootIsActive: .constant(false), conversationId: convo.id)
      }
      .environmentObject(viewModel)
      .environmentObject(audio)
