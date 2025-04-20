@@ -65,8 +65,8 @@ struct ChatDetailView: View {
                          .buttonStyle(.bordered)
                          .tint(.blue)
                          .font(.caption)
-                         // Disable if TTS data isn't available (future)
-                         .disabled(true) // Placeholder: Disable replay for now
+                         // only enabled if we have saved audio paths
+                         .disabled(conversation.ttsAudioPaths?[message.id]?.isEmpty ?? true)
 
                          Button {
                              continueFromMessage(index: index)
@@ -90,11 +90,12 @@ struct ChatDetailView: View {
 
      // --- Action Handlers ---
      private func replayTTS(message: ChatMessage) {
-         logger.info("Replay TTS tapped for message \(message.id). (Functionality not implemented)")
-         // TODO: Implement actual TTS replay using AudioService
-         // 1. Check if audio file exists (using conversation.ttsAudioPaths?[message.id])
-         // 2. If yes, tell AudioService to play the file.
-         // 3. If no, potentially re-synthesize and play? (More complex)
+         if let paths = conversation.ttsAudioPaths?[message.id], !paths.isEmpty {
+             logger.info("Replay TTS for message \(message.id), files: \(paths)")
+             audioService.replayAudioFiles(paths)
+         } else {
+             logger.warning("No saved audio for message \(message.id).")
+         }
      }
 
     private func continueFromMessage(index: Int) {
@@ -138,7 +139,7 @@ struct ChatDetailView: View {
      history.conversations = [convo]
 
      let settings = SettingsService()
-     let audio = AudioService(settingsService: settings)
+    let audio = AudioService(settingsService: settings, historyService: history)
      let chat = ChatService(settingsService: settings, historyService: history)
      let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
 

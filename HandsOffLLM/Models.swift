@@ -15,7 +15,15 @@ struct Conversation: Identifiable, Codable {
     var messages: [ChatMessage] = []
     var createdAt: Date = Date()
     var parentConversationId: UUID? // To link continued conversations
-    var ttsAudioPaths: [UUID: String]? // Optional: Map message ID to saved audio file path
+    // Optional: Map message ID to saved audio file paths (multiple chunks per message)
+    var ttsAudioPaths: [UUID: [String]]? // Optional: Map message ID to array of saved audio file paths
+}
+// MARK: - Conversation Index Entry
+/// Minimal metadata for listing conversations without loading full messages
+struct ConversationIndexEntry: Identifiable, Codable {
+    let id: UUID
+    let title: String?
+    let createdAt: Date
 }
 
 // MARK: - Settings Structures

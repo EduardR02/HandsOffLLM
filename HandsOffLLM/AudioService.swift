@@ -51,12 +51,46 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
 
     // --- Dependencies ---
     private let settingsService: SettingsService
+    private let historyService: HistoryService
+
+    // MARK: - TTS Save Context
+    private var currentTTSConversationID: UUID?
+    private var currentTTSMessageID: UUID?
+    private var currentTTSChunkIndex: Int = 0
+
+    func setTTSContext(conversationID: UUID, messageID: UUID) {
+        if currentTTSConversationID != conversationID || currentTTSMessageID != messageID {
+            currentTTSConversationID = conversationID
+            currentTTSMessageID = messageID
+            currentTTSChunkIndex = 0
+        }
+    }
+
+    // --- new: replay support ---
+    private var replayQueue: [String] = []
+
+    /// Start replaying a saved audio file sequence for a message
+    func replayAudioFiles(_ paths: [String]) {
+        logger.info("Replaying saved audio files: \(paths)")
+        replayQueue = paths
+        playNextReplay()
+    }
+
+    /// Play the next file in the replay queue
+    private func playNextReplay() {
+        guard !replayQueue.isEmpty else { return }
+        let nextPath = replayQueue.removeFirst()
+        logger.info("Playing replay file: \(nextPath)")
+        playAudioFile(relativePath: nextPath)
+    }
+
     private lazy var urlSession: URLSession = {
         URLSession(configuration: .default)
     }()
 
-    init(settingsService: SettingsService) {
+    init(settingsService: SettingsService, historyService: HistoryService) {
         self.settingsService = settingsService
+        self.historyService = historyService
         super.init()
         speechRecognizer.delegate = self
         requestPermissions()
@@ -513,6 +547,22 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                              return
                          }
                          logger.info("⬅️ Received TTS audio (\(data.count) bytes).")
+                        // Save this chunk's audio to disk under the conversation
+                        if let convID = self.currentTTSConversationID, let msgID = self.currentTTSMessageID {
+                            do {
+                                let relPath = try self.historyService.saveAudioData(
+                                    conversationID: convID,
+                                    messageID: msgID,
+                                    data: data,
+                                    ext: self.settingsService.openAITTSFormat,
+                                    chunkIndex: self.currentTTSChunkIndex
+                                )
+                                self.logger.info("Saved TTS chunk #\(self.currentTTSChunkIndex) at \(relPath)")
+                            } catch {
+                                self.logger.error("Failed to save TTS audio chunk: \(error.localizedDescription)")
+                            }
+                            self.currentTTSChunkIndex += 1
+                        }
                          if self.currentAudioPlayer == nil {
                               logger.debug("TTS Manage: Player idle, playing fetched data immediately.")
                               self.playAudioData(data)
@@ -673,11 +723,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
              throw LlmError.networkError(URLError(.badServerResponse))
          }
 
-         guard (200...299).contains(httpResponse.statusCode) else {
+        guard (200...299).contains(httpResponse.statusCode) else {
              var errorDetails = ""
              if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
              logger.error("🚨 OpenAI TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
-             throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
          }
 
          guard !data.isEmpty else {
@@ -704,30 +754,69 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             }
         }
     }
+    
+    // MARK: - Public TTS Synthesis & Playback Helpers
+    /// Synthesize full audio for given text (non‑streaming) and return raw Data
+    func synthesizeFullAudio(text: String) async throws -> Data? {
+        guard let apiKey = settingsService.openaiAPIKey, !apiKey.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "OpenAI TTS")
+        }
+        return try await fetchOpenAITTSAudio(apiKey: apiKey, text: text, instruction: settingsService.activeTTSInstruction)
+    }
+
+    /// Play an audio file previously saved at the given relative path under Documents
+    func playAudioFile(relativePath: String) {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            logger.error("Could not find Documents directory for audio playback.")
+            return
+        }
+        let fileURL = docs.appendingPathComponent(relativePath)
+        do {
+            let data = try Data(contentsOf: fileURL)
+            currentAudioPlayer?.stop()
+            currentAudioPlayer = try AVAudioPlayer(data: data)
+            currentAudioPlayer?.delegate = self
+            currentAudioPlayer?.enableRate = true
+            currentAudioPlayer?.rate = ttsRate
+            currentAudioPlayer?.isMeteringEnabled = true
+            if currentAudioPlayer?.play() == true {
+                isSpeaking = true
+                logger.info("▶️ Playback started for file: \(relativePath)")
+                startTTSLevelTimer()
+            } else {
+                logger.error("Failed to play audio file at: \(relativePath)")
+                isSpeaking = false
+            }
+        } catch {
+            logger.error("Error loading or playing audio file \(relativePath): \(error.localizedDescription)")
+            errorSubject.send(AudioError.audioPlaybackError(error))
+        }
+    }
 
     // MARK: - AVAudioPlayerDelegate
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-             // Ensure the finished player is the one we know about
-             guard player === self.currentAudioPlayer else {
-                 self.logger.warning("Delegate called for an unknown or outdated player.")
-                 return
-             }
-
-            self.logger.info("⏹️ Playback finished (Success: \(flag)).")
-            self.invalidateTTSLevelTimer() // Stop level updates
-            self.currentAudioPlayer = nil // Release the player
-
-            // Only change isSpeaking state if it was true
-            if self.isSpeaking {
-                self.isSpeaking = false
-                // Level should be reset by invalidateTTSLevelTimer if player is nil
-                 if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+            guard player === self.currentAudioPlayer else {
+                self.logger.warning("Unknown/outdated player finished.")
+                return
             }
 
-            // After finishing, check if there's more to play or fetch
-            self.manageTTSPlayback()
+            self.logger.info("⏹️ Playback finished (success: \(flag)).")
+            self.invalidateTTSLevelTimer()
+            self.currentAudioPlayer = nil
+
+            if self.isSpeaking {
+                self.isSpeaking = false
+                if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
+            }
+
+            // ── NEW: if we're in a replay, continue the queue; otherwise fall back to TTS streaming
+            if !self.replayQueue.isEmpty {
+                self.playNextReplay()
+            } else {
+                self.manageTTSPlayback()
+            }
         }
     }
 

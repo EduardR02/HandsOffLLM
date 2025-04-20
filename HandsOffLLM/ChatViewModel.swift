@@ -154,14 +154,22 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
 
         // Chat Service Events
+        // Subscribe to LLM text chunks to drive TTS processing and saving
         chatService.llmChunkSubject
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
+                if case .failure(let error) = completion {
                     self?.logger.error("ChatService llmChunkSubject completed with error: \(error.localizedDescription)")
-                 }
+                }
             }) { [weak self] chunk in
-                 self?.audioService.processTTSChunk(textChunk: chunk, isLastChunk: false)
+                guard let self = self else { return }
+                // Update TTS context for saving this message's audio
+                if let convID = self.chatService.currentConversation?.id,
+                   let msgID = self.chatService.currentConversation?.messages.last?.id {
+                    self.audioService.setTTSContext(conversationID: convID, messageID: msgID)
+                }
+                // Process the text chunk for TTS
+                self.audioService.processTTSChunk(textChunk: chunk, isLastChunk: false)
             }
             .store(in: &cancellables)
 

@@ -135,7 +135,7 @@ struct ContentView_Previews: PreviewProvider {
         // Create mock services for preview
         let settings = SettingsService()
         let history = HistoryService()
-        let audio = AudioService(settingsService: settings)
+        let audio = AudioService(settingsService: settings, historyService: history)
         let chat = ChatService(settingsService: settings, historyService: history)
         let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
 
@@ -153,7 +153,7 @@ struct ContentView_Previews: PreviewProvider {
 #Preview {
      let settings = SettingsService()
      let history = HistoryService()
-     let audio = AudioService(settingsService: settings)
+    let audio = AudioService(settingsService: settings, historyService: history)
      let chat = ChatService(settingsService: settings, historyService: history)
      let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
 

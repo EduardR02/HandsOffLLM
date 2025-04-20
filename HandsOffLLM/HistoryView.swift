@@ -84,13 +84,13 @@ struct HistoryView: View {
 
     // Mock other services needed by environment
     let settings = SettingsService()
-    let audio = AudioService(settingsService: settings)
+    let audio = AudioService(settingsService: settings, historyService: history)
     // Pass the *populated* history service to ChatService
     let chat = ChatService(settingsService: settings, historyService: history)
     let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
 
     // Add 'return' here to explicitly mark the View being returned
-    return NavigationStack {
+     return NavigationStack {
         HistoryView(rootIsActive: .constant(false))
     }
     .environmentObject(history)

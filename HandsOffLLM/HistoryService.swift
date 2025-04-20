@@ -11,59 +11,116 @@ import OSLog
 @MainActor
 class HistoryService: ObservableObject {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "HistoryService")
-    @Published var conversations: [Conversation] = []
+    @Published var conversations: [Conversation] = []   // Full conversation objects
 
-    private let persistenceFileName = "conversations.json"
-    private var persistenceURL: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(persistenceFileName)
+    // MARK: - Storage Locations
+    private let indexFileName = "conversations_index.json"
+    private var documentsURL: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
     }
+    private var indexFileURL: URL? {
+        documentsURL?.appendingPathComponent(indexFileName)
+    }
+    private var convFolderURL: URL? {
+        documentsURL?.appendingPathComponent("Conversations")
+    }
+    private var audioFolderURL: URL? {
+        documentsURL?.appendingPathComponent("Audio")
+    }
+    // In-memory metadata index
+    private var indexEntries: [ConversationIndexEntry] = []
 
     init() {
-        loadConversations()
+        // Ensure directories exist
+        if let convURL = convFolderURL {
+            try? FileManager.default.createDirectory(at: convURL, withIntermediateDirectories: true)
+        }
+        if let audioURL = audioFolderURL {
+            try? FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
+        }
+        // Load index and full conversations
+        loadIndex()
+        conversations = indexEntries.compactMap { entry in
+            if let conv = loadFullConversation(id: entry.id) {
+                return conv
+            } else {
+                var conv = Conversation(id: entry.id, messages: [], createdAt: entry.createdAt, parentConversationId: nil)
+                conv.title = entry.title
+                return conv
+            }
+        }
+        conversations.sort { $0.createdAt > $1.createdAt }
         logger.info("HistoryService initialized. Loaded \(self.conversations.count) conversations.")
     }
 
-    // MARK: - Persistence
-    private func loadConversations() {
-        guard let url = persistenceURL else {
-            logger.error("Could not get persistence URL.")
+    // MARK: - Index Persistence
+    private func loadIndex() {
+        guard let url = indexFileURL, FileManager.default.fileExists(atPath: url.path) else {
+            indexEntries = []
             return
         }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            logger.info("No history file found at \(url.path). Starting fresh.")
-            return
-        }
-
         do {
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
-            // Handle potential date decoding issues if format changes
-            decoder.dateDecodingStrategy = .iso8601 // Or .secondsSince1970 etc. depending on how you save
-            conversations = try decoder.decode([Conversation].self, from: data)
-            // Sort by date descending after loading
-            conversations.sort { $0.createdAt > $1.createdAt }
+            decoder.dateDecodingStrategy = .iso8601
+            indexEntries = try decoder.decode([ConversationIndexEntry].self, from: data)
         } catch {
-            logger.error("Failed to load or decode conversations: \(error.localizedDescription)")
-            // Handle error, maybe backup old file and start fresh?
-            conversations = []
+            logger.error("Failed to load index: \(error.localizedDescription)")
+            indexEntries = []
         }
     }
 
-    private func saveConversations() {
-        guard let url = persistenceURL else {
-            logger.error("Could not get persistence URL for saving.")
+    private func saveIndex() {
+        guard let url = indexFileURL else {
+            logger.error("Could not get index file URL.")
             return
         }
-
         do {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted // For readability
-            encoder.dateEncodingStrategy = .iso8601 // Match decoding strategy
-            let data = try encoder.encode(conversations)
+            encoder.outputFormatting = .prettyPrinted
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(indexEntries)
             try data.write(to: url, options: [.atomicWrite])
-            logger.info("Successfully saved \(self.conversations.count) conversations.")
         } catch {
-            logger.error("Failed to encode or save conversations: \(error.localizedDescription)")
+            logger.error("Failed to save index: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Full Conversation Storage
+    private func conversationFileURL(for id: UUID) -> URL? {
+        convFolderURL?.appendingPathComponent("\(id.uuidString).json")
+    }
+
+    private func loadFullConversation(id: UUID) -> Conversation? {
+        guard let url = conversationFileURL(for: id),
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(Conversation.self, from: data)
+        } catch {
+            logger.error("Failed to load conversation \(id): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func saveConversationFile(_ conversation: Conversation) {
+        guard let url = conversationFileURL(for: conversation.id) else {
+            logger.error("Could not get file URL for conversation \(conversation.id)")
+            return
+        }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(conversation)
+            try data.write(to: url, options: [.atomicWrite])
+            logger.info("Saved conversation file for \(conversation.id)")
+        } catch {
+            logger.error("Failed to save conversation \(conversation.id): \(error.localizedDescription)")
         }
     }
 
@@ -81,18 +138,58 @@ class HistoryService: ObservableObject {
         }
         // Ensure sorting after modification
         conversations.sort { $0.createdAt > $1.createdAt }
-        saveConversations()
+        // Persist full conversation to its own file
+        saveConversationFile(conversation)
+        // Update metadata index
+        let entry = ConversationIndexEntry(id: conversation.id,
+                                           title: conversation.title,
+                                           createdAt: conversation.createdAt)
+        if let idx = indexEntries.firstIndex(where: { $0.id == conversation.id }) {
+            indexEntries[idx] = entry
+        } else {
+            indexEntries.insert(entry, at: 0)
+        }
+        saveIndex()
     }
 
     func deleteConversation(at offsets: IndexSet) {
+        let idsToDelete = offsets.compactMap { idx in
+            conversations.indices.contains(idx) ? conversations[idx].id : nil
+        }
+        for id in idsToDelete {
+            // remove JSON
+            if let fileURL = conversationFileURL(for: id) {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+            // remove audio folder
+            if let audioDir = audioFolderURL?.appendingPathComponent(id.uuidString) {
+                try? FileManager.default.removeItem(at: audioDir)
+            }
+            // update indexEntries…
+            if let idx = indexEntries.firstIndex(where: { $0.id == id }) {
+                indexEntries.remove(at: idx)
+            }
+        }
+        saveIndex()
         conversations.remove(atOffsets: offsets)
-        saveConversations()
         logger.info("Deleted conversations at offsets \(offsets).")
     }
 
     func deleteConversation(id: UUID) {
+        // remove JSON
+        if let fileURL = conversationFileURL(for: id) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        // remove audio folder
+        if let audioDir = audioFolderURL?.appendingPathComponent(id.uuidString) {
+            try? FileManager.default.removeItem(at: audioDir)
+        }
+        // update indexEntries…
+        if let idx = indexEntries.firstIndex(where: { $0.id == id }) {
+            indexEntries.remove(at: idx)
+            saveIndex()
+        }
         conversations.removeAll { $0.id == id }
-        saveConversations()
         logger.info("Deleted conversation with id \(id).")
     }
 
@@ -177,6 +274,42 @@ class HistoryService: ObservableObject {
          }
 
         return sortedGroups
+    }
+    
+    // MARK: - Audio Saving
+    /// Save raw TTS audio data for a specific chunk as a file and update the conversation's audio paths
+    /// - Parameters:
+    ///   - conversationID: The UUID of the conversation
+    ///   - messageID: The UUID of the message
+    ///   - data: Audio data to save
+    ///   - ext: File extension (e.g., "aac", "mp3")
+    ///   - chunkIndex: Index of this audio chunk for naming
+    /// - Returns: Relative path under Documents to the saved audio file
+    func saveAudioData(conversationID: UUID, messageID: UUID, data: Data, ext: String, chunkIndex: Int) throws -> String {
+        guard let docs = documentsURL else {
+            throw NSError(domain: "HistoryService", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Documents directory not found"]) }
+        let audioDir = docs.appendingPathComponent("Audio").appendingPathComponent(conversationID.uuidString)
+        try FileManager.default.createDirectory(at: audioDir,
+                                               withIntermediateDirectories: true)
+        let filename = "\(messageID.uuidString)-\(chunkIndex).\(ext)"
+        let fileURL = audioDir.appendingPathComponent(filename)
+        try data.write(to: fileURL, options: .atomicWrite)
+        let relPath = "Audio/\(conversationID.uuidString)/\(filename)"
+        // Update in-memory conversation metadata
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            var conv = conversations[idx]
+            var map = conv.ttsAudioPaths ?? [:]
+            var paths = map[messageID] ?? []
+            paths.append(relPath)
+            map[messageID] = paths
+            conv.ttsAudioPaths = map
+            // Persist updated conversation file
+            saveConversationFile(conv)
+            // Update in-memory model
+            conversations[idx] = conv
+        }
+        return relPath
     }
 }
 

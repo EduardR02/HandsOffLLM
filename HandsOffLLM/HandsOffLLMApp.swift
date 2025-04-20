@@ -25,9 +25,12 @@ struct HandsOffLLMApp: App {
     init() {
         let settings = SettingsService()
         let history = HistoryService()
-        let audio = AudioService(settingsService: settings)
+        let audio = AudioService(settingsService: settings, historyService: history)
         let chat = ChatService(settingsService: settings, historyService: history)
-        let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
+        let viewModel = ChatViewModel(audioService: audio,
+                                     chatService: chat,
+                                     settingsService: settings,
+                                     historyService: history)
 
         _settingsService = StateObject(wrappedValue: settings)
         _historyService = StateObject(wrappedValue: history)
