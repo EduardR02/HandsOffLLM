@@ -437,34 +437,47 @@ class ChatService: ObservableObject {
         }
     }
 
-    // --- Method to start/reset conversation ---
-    func resetConversationContext(messagesToLoad: [ChatMessage]? = nil, existingConversationId: UUID? = nil, parentId: UUID? = nil) {
-        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None")")
+    // MARK: - Conversation Management
+    func resetConversationContext(
+        messagesToLoad: [ChatMessage]? = nil,
+        existingConversationId: UUID? = nil,
+        parentId: UUID? = nil,
+        initialAudioPaths: [UUID: [String]]? = nil // ← New parameter
+    ) {
+        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0)")
 
         currentFullResponse = ""
         llmTask?.cancel()
         llmTask = nil
         isProcessingLLM = false
+        isLLMStreamComplete = false // Reset completion flag too
 
-        var conversationToSet: Conversation? // Use temporary var
+        var conversationToSet: Conversation?
 
         if let existingId = existingConversationId,
            let loadedConv = historyService?.conversations.first(where: { $0.id == existingId }) {
              conversationToSet = loadedConv
+             // Overwrite messages if provided
              if let messages = messagesToLoad {
                  conversationToSet?.messages = messages
              }
+             // Inject audio paths if provided (might merge later if needed, but overwrite is fine for now)
+             if let audioPaths = initialAudioPaths {
+                 conversationToSet?.ttsAudioPaths = audioPaths
+             }
         } else {
+            // Create a completely new conversation
             conversationToSet = Conversation(
-                id: UUID(),
+                id: UUID(), // Always new ID if not loading existing
                 messages: messagesToLoad ?? [],
                 createdAt: Date(),
-                parentConversationId: parentId
+                parentConversationId: parentId,
+                ttsAudioPaths: initialAudioPaths // ← Use new parameter
             )
         }
         currentConversation = conversationToSet
+        // No immediate save needed here; subsequent actions will trigger saves.
     }
-
 
     // --- Update message handling ---
      private func appendMessageAndUpdateHistory(_ message: ChatMessage) {

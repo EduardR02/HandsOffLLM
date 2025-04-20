@@ -461,16 +461,34 @@ class ChatViewModel: ObservableObject {
          // Get messages up to the specified index (inclusive)
          let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
 
+         var audioPathsToLoad: [UUID: [String]]? = nil
+         // Ensure we actually have the full parent conversation data from history service
+         // Note: 'conversation' passed in might be stale if history changed; fetch fresh.
+         if let fullParentConversation = historyService.conversations.first(where: { $0.id == conversation.id }) {
+             if let parentAudioPaths = fullParentConversation.ttsAudioPaths {
+                 audioPathsToLoad = [:]
+                 for message in messagesToLoad {
+                     // If the parent had audio for this message, copy the paths
+                     if let paths = parentAudioPaths[message.id] {
+                         audioPathsToLoad?[message.id] = paths
+                     }
+                 }
+                 logger.info("Copied \(audioPathsToLoad?.count ?? 0) audio path entries from parent conversation.")
+             }
+         } else {
+              logger.warning("Could not find full parent conversation \(conversation.id) in HistoryService to copy audio paths.")
+         }
+
          // Start a *new* conversation context in ChatService, linking to the parent
          chatService.resetConversationContext(
              messagesToLoad: messagesToLoad,
              existingConversationId: nil, // Force new ID
-             parentId: conversation.id // Link to original
+             parentId: conversation.id, // Link to original
+             initialAudioPaths: audioPathsToLoad // ← Pass the copied paths
          )
 
-         // Reset UI state to idle initially, ready for the subsequent startListening() call
+         // Reset UI state to idle initially...
          updateState(.idle)
-         // startListening() is called immediately after this function returns in ChatDetailView
      }
 
     // --- Helper for starting new chat ---
