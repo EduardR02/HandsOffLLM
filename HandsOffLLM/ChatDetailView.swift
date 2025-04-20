@@ -46,9 +46,12 @@ struct ChatDetailView: View {
                      }
                  }
             }
-            .onReceive(audioService.$isSpeaking) { speaking in       // ← new
-                if !speaking && replayingMessageId != nil {
-                    replayingMessageId = nil
+            .onDisappear {
+                // Stop any ongoing replay when the view disappears
+                if replayingMessageId != nil {
+                    logger.info("ChatDetailView disappearing, stopping audio replay.")
+                    audioService.stopReplay()
+                    replayingMessageId = nil // Also clear the state
                 }
             }
         }
