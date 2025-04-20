@@ -99,10 +99,10 @@ struct ChatDetailView: View {
 
     private func continueFromMessage(index: Int) {
          logger.info("Continue tapped at \(index) for \(conversation.id).")
-         viewModel.loadConversationHistory(conversation, upTo: index)
-         viewModel.startListening()
-         // Pop everything back to root in one shot
-         rootIsActive = false
+        // Load up to the selected message and reset context; listening will resume when returning to main view
+        viewModel.loadConversationHistory(conversation, upTo: index)
+        // Pop back to the main view; ContentView.onChange will trigger listening start
+        rootIsActive = false
     }
 
     // --- Styling Helpers ---

@@ -202,7 +202,6 @@ class ChatViewModel: ObservableObject {
         // --- Initial State Transition: idle -> listening ---
         // Start listening shortly after initialization
         Task { @MainActor in
-             try? await Task.sleep(for: .milliseconds(100)) // Small delay allow UI to settle
              if self.state == .idle {
                  self.startListening()
              }
@@ -230,15 +229,17 @@ class ChatViewModel: ObservableObject {
         }
         // If listening STOPS...
         else if !listening && wasListening {
-            // *** REMOVED THE TRANSITION TO IDLE HERE ***
-            // When listening stops normally after speech detection, AudioService sets isListening=false
-            // *before* sending the transcription. We MUST wait for the transcription subject
-            // to trigger the transition to .processingLLM.
-            // Transitioning to .idle here would cause the transcription to be ignored.
-            // If listening stops for other reasons (e.g., VAD timeout *without* transcription, error),
-            // the state might remain .listening visually until the user taps, an error occurs, or a new cycle starts.
-            // This is less disruptive than breaking the main flow.
+            // AudioService stopped listening (e.g., silence timeout).
             logger.info("Internal isListening became false. State remains \(String(describing: self.state)) (awaiting transcription or user action).")
+            // If UI still expects listening, auto-restart
+            if state == .listening {
+                logger.info("Auto-restarting listening since state is .listening.")
+                // Delay slightly to avoid immediate re-stop
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(200))
+                    self.startListening()
+                }
+            }
         }
         // else: No change needed (e.g., listening=true when already listening, listening=false when already not listening)
     }
@@ -352,18 +353,19 @@ class ChatViewModel: ObservableObject {
             logger.warning("StartListening called in unexpected state: \(String(describing: self.state)). Preventing.")
             return
         }
-         guard !self.isListening else {
-             logger.info("StartListening called but AudioService is already listening.")
-             // Ensure UI state matches if audio service is already listening somehow
-             if state == .idle { updateState(.listening) }
-             return
-         }
+        guard !audioService.isListening else {
+            logger.info("StartListening called but AudioService is already listening.")
+            // Ensure UI state matches if audio service is already listening somehow
+            if state == .idle { updateState(.listening) }
+            return
+        }
+
         lastError = nil
         logger.info("Requesting AudioService to start listening (Current state: \(String(describing: self.state))).")
         // Ensure chat context is ready before listening (might already be set)
         if chatService.activeConversationId == nil {
-             logger.info("No active conversation context, resetting before listening.")
-             chatService.resetConversationContext()
+            logger.info("No active conversation context, resetting before listening.")
+            chatService.resetConversationContext()
         }
         audioService.startListening()
         // State transition to .listening is handled by handleIsListeningUpdate
@@ -386,7 +388,6 @@ class ChatViewModel: ObservableObject {
 
          if attemptRestart {
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(200))
                 logger.info("Attempting automatic restart after reset.")
                 self.startListening()
             }
@@ -424,8 +425,15 @@ class ChatViewModel: ObservableObject {
     // Called from ChatDetailView's "Continue from here" button
     func loadConversationHistory(_ conversation: Conversation, upTo messageIndex: Int) {
          logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
-         cancelProcessingAndSpeaking() // Stop current activity
-         if audioService.isListening { audioService.resetListening() } // Stop listening
+         cancelProcessingAndSpeaking() // Stop current LLM/TTS activity
+
+         // --- CHANGE START ---
+         // Always reset the audio service fully when loading history,
+         // as we intend to start listening immediately after in ChatDetailView.
+         // This ensures consistent cleanup regardless of the previous listening state.
+         logger.info("Performing full AudioService reset before loading history.")
+         audioService.resetListening() // Call reset unconditionally
+
 
          guard messageIndex >= 0 && messageIndex < conversation.messages.count else {
              logger.error("Invalid message index \(messageIndex) for conversation.")
@@ -442,10 +450,9 @@ class ChatViewModel: ObservableObject {
              parentId: conversation.id // Link to original
          )
 
-         // Reset UI state to idle initially, ready for user input or interaction
+         // Reset UI state to idle initially, ready for the subsequent startListening() call
          updateState(.idle)
-         // Optionally, could immediately start listening after loading?
-         // startListening()
+         // startListening() is called immediately after this function returns in ChatDetailView
      }
 
     // --- Helper for starting new chat ---

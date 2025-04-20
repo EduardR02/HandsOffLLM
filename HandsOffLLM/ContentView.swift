@@ -106,6 +106,14 @@ struct ContentView: View {
         .navigationDestination(isPresented: $showHistory) {
             HistoryView(rootIsActive: $showHistory)
         }
+        // When returning from history, ensure we resume listening if appropriate
+        .onChange(of: showHistory) { previous, current in
+            // If history view was dismissed (returned to main)
+            if !current {
+                // Trigger listening cycle in ViewModel (guarded internally)
+                viewModel.startListening()
+            }
+        }
         .onAppear {
              logger.info("ContentView appeared.")
              // Start listening automatically only if idle? Or require first tap?
