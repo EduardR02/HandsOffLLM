@@ -9,9 +9,9 @@ import SwiftUI
 import OSLog
 
 struct ChatDetailView: View {
+    @Binding var rootIsActive: Bool          // NEW: binding to pop all the way home
     @EnvironmentObject var viewModel: ChatViewModel // For loading history
     @EnvironmentObject var audioService: AudioService // For TTS replay (future)
-    @Environment(\.dismiss) var dismiss // To go back to main view after "Continue"
 
     let conversation: Conversation
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatDetailView")
@@ -98,18 +98,11 @@ struct ChatDetailView: View {
      }
 
     private func continueFromMessage(index: Int) {
-         logger.info("Continue from message tapped at index \(index) in conversation \(conversation.id).")
-         // Tell the main ViewModel to load this conversation history
+         logger.info("Continue tapped at \(index) for \(conversation.id).")
          viewModel.loadConversationHistory(conversation, upTo: index)
-         // Dismiss the History/Detail views to go back to the main ContentView
-         // This assumes ChatDetailView is pushed onto the stack from HistoryView.
-         // We might need a more robust navigation solution if the stack gets complex.
-         dismiss() // Dismiss ChatDetailView
-         // How to dismiss HistoryView as well? Need coordination or different navigation approach.
-         // For now, just dismiss this view. User will be back in HistoryView.
-         // A better approach might involve a NavigationCoordinator or using programmatic navigation state.
-
-         // Simplest approach: Rely on the user tapping back from HistoryView after continuing.
+         viewModel.startListening()
+         // Pop everything back to root in one shot
+         rootIsActive = false
     }
 
     // --- Styling Helpers ---
@@ -150,7 +143,7 @@ struct ChatDetailView: View {
      let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
 
      return NavigationStack { // Add NavigationStack for preview context
-          ChatDetailView(conversation: convo)
+         ChatDetailView(rootIsActive: .constant(false), conversation: convo)
      }
      .environmentObject(viewModel)
      .environmentObject(audio)

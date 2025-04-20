@@ -8,9 +8,8 @@
 import SwiftUI
 
 struct HistoryView: View {
+    @Binding var rootIsActive: Bool           // NEW: binding back to ContentView
     @EnvironmentObject var historyService: HistoryService
-    @EnvironmentObject var chatViewModel: ChatViewModel // Inject ViewModel for navigation/loading
-    @Environment(\.dismiss) var dismiss // To dismiss the view after loading a chat
 
     var groupedConversations: [(String, [Conversation])] {
         historyService.groupConversationsByDate()
@@ -21,19 +20,7 @@ struct HistoryView: View {
             ForEach(groupedConversations, id: \.0) { sectionTitle, conversationsInSection in
                 Section(header: Text(sectionTitle).foregroundColor(.gray)) {
                     ForEach(conversationsInSection) { conversation in
-                        NavigationLink {
-                            // Navigate to ChatDetailView
-                            ChatDetailView(conversation: conversation)
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(conversation.title ?? "Untitled Chat")
-                                    .font(.headline)
-                                Text("Messages: \(conversation.messages.count)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                // TODO: Add indicator if it's a continued chat (parentConversationId != nil)
-                            }
-                        }
+                        ConversationRow(conversation: conversation, rootIsActive: $rootIsActive)
                     }
                     .onDelete { indexSet in
                         // Find the actual conversations to delete based on the section and indexSet
@@ -104,12 +91,34 @@ struct HistoryView: View {
 
     // Add 'return' here to explicitly mark the View being returned
     return NavigationStack {
-        HistoryView()
+        HistoryView(rootIsActive: .constant(false))
     }
     .environmentObject(history)
     .environmentObject(viewModel) // Provide ViewModel
     .environmentObject(settings)
     .environmentObject(audio)
     .preferredColorScheme(.dark)
+}
+
+// MARK: – Tiny helper to speed up compilation
+private struct ConversationRow: View {
+    let conversation: Conversation
+    @Binding var rootIsActive: Bool
+
+    var body: some View {
+        NavigationLink(
+            destination: ChatDetailView(rootIsActive: $rootIsActive,
+                                        conversation: conversation)
+        ) {
+            VStack(alignment: .leading) {
+                Text(conversation.title ?? "Untitled Chat")
+                    .font(.headline)
+                Text("Messages: \(conversation.messages.count)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .isDetailLink(false)
+    }
 }
 

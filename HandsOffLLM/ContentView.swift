@@ -7,6 +7,7 @@ struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     // Access environment objects if needed, e.g., for navigation data
     @EnvironmentObject var historyService: HistoryService
+    @State private var showHistory = false   // NEW: track the HistoryLink binding
 
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
 
@@ -76,21 +77,20 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                 // History Button
-                 NavigationLink {
-                     // Destination: History View
-                     HistoryView() // Needs access to HistoryService (via @EnvironmentObject)
-                 } label: {
-                     Image(systemName: "clock.arrow.circlepath")
-                 }
+                // History Button: push via state & navigationDestination
+                Button {
+                    showHistory = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
 
-                 // Settings Button
-                 NavigationLink {
-                     // Destination: Settings View
-                     SettingsView() // Needs access to SettingsService (via @EnvironmentObject)
-                 } label: {
-                     Image(systemName: "gearshape.fill")
-                 }
+                // Settings Button
+                NavigationLink {
+                    // Destination: Settings View
+                    SettingsView() // Needs access to SettingsService (via @EnvironmentObject)
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                }
             }
              ToolbarItem(placement: .navigationBarLeading) {
                   // Button to explicitly start a new chat session
@@ -103,6 +103,9 @@ struct ContentView: View {
              }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showHistory) {
+            HistoryView(rootIsActive: $showHistory)
+        }
         .onAppear {
              logger.info("ContentView appeared.")
              // Start listening automatically only if idle? Or require first tap?
