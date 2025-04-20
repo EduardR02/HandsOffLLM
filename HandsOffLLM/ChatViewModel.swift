@@ -322,6 +322,33 @@ class ChatViewModel: ObservableObject {
         // The state machine waits for isSpeaking changes or errors.
     }
 
+    // --- NEW: Pause main activities ---
+    func pauseMainActivities() {
+        logger.info("⏸️ Pausing main activities (listening, processing, speaking) due to navigation.")
+        // Stop listening first
+        if audioService.isListening {
+            audioService.resetListening() // This stops audio engine and tasks
+        }
+        // Cancel any ongoing LLM request (handles partial saves internally)
+        if isProcessingLLM { // Check internal flag first
+             chatService.cancelProcessing()
+        }
+        // Stop any ongoing TTS playback
+        if audioService.isSpeaking {
+            audioService.stopSpeaking() // Stops player and cancels fetch
+        }
+        // Explicitly set state to idle, as service updates might be async
+        updateState(.idle)
+        // Reset internal tracking flags as well for consistency
+        self.isListening = false
+        self.isProcessingLLM = false
+        self.isSpeaking = false
+        // Reset audio levels visually
+        self.listeningAudioLevel = -50.0
+        self.ttsOutputLevel = 0.0
+    }
+    // --- END NEW ---
+
     // MARK: - User Actions
     func cycleState() {
         logger.debug("cycleState called. Current state: \(String(describing: self.state))")

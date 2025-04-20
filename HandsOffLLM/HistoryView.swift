@@ -10,6 +10,7 @@ import SwiftUI
 struct HistoryView: View {
     @Binding var rootIsActive: Bool           // NEW: binding back to ContentView
     @EnvironmentObject var historyService: HistoryService
+    @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
 
     var groupedConversations: [(String, [Conversation])] {
         historyService.groupConversationsByDate()
@@ -31,6 +32,13 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .listStyle(.insetGrouped) // Or plain, grouped, etc.
+        .onAppear {
+            viewModel.pauseMainActivities()
+        }
+        .onDisappear {
+            // Resume listening when leaving history
+            viewModel.startListening()
+        }
     }
 
     private func deleteConversations(in section: String, at offsets: IndexSet) {
