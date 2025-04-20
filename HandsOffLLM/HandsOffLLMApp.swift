@@ -19,28 +19,28 @@ struct HandsOffLLMApp: App {
     @StateObject private var chatService: ChatService
     // ViewModel needs all services
     @StateObject private var chatViewModel: ChatViewModel
-
+    
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "App")
-
+    
     init() {
         let settings = SettingsService()
         let history = HistoryService()
         let audio = AudioService(settingsService: settings, historyService: history)
         let chat = ChatService(settingsService: settings, historyService: history)
         let viewModel = ChatViewModel(audioService: audio,
-                                     chatService: chat,
-                                     settingsService: settings,
-                                     historyService: history)
-
+                                      chatService: chat,
+                                      settingsService: settings,
+                                      historyService: history)
+        
         _settingsService = StateObject(wrappedValue: settings)
         _historyService = StateObject(wrappedValue: history)
         _audioService = StateObject(wrappedValue: audio)
         _chatService = StateObject(wrappedValue: chat)
         _chatViewModel = StateObject(wrappedValue: viewModel)
-
+        
         logger.info("App Services Initialized.")
     }
-
+    
     var body: some Scene {
         WindowGroup {
             // Use NavigationStack for navigation features

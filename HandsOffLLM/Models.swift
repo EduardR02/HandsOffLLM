@@ -45,17 +45,17 @@ struct PromptPreset: Identifiable, Codable, Hashable {
 struct SettingsData: Codable {
     // Model Selections: Store the ID of the selected model for each provider
     var selectedModelIdPerProvider: [LLMProvider: String] = [:]
-
+    
     // Preset Selections: Store the ID of the selected preset
     var selectedSystemPromptPresetId: String?
     var selectedTTSInstructionPresetId: String?
-
+    
     // Advanced Overrides
     var advancedTemperature: Float?
     var advancedMaxTokens: Int?
     var advancedSystemPrompt: String?
     var advancedTTSInstruction: String?
-
+    
     // Default values can be set here or when initializing SettingsService
     init() {
         // Sensible defaults if needed
@@ -136,7 +136,7 @@ enum LlmError: Error, LocalizedError {
     case responseDecodingError(Error)
     case streamingError(String)
     case ttsError(String) // Added for specific TTS errors
-
+    
     var errorDescription: String? {
         switch self {
         case .apiKeyMissing(let provider): return "\(provider) API Key is missing."

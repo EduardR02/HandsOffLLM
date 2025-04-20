@@ -11,11 +11,11 @@ struct HistoryView: View {
     @Binding var rootIsActive: Bool           // NEW: binding back to ContentView
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
-
+    
     var groupedConversations: [(String, [Conversation])] {
         historyService.groupConversationsByDate()
     }
-
+    
     var body: some View {
         List {
             ForEach(groupedConversations, id: \.0) { sectionTitle, conversationsInSection in
@@ -40,22 +40,22 @@ struct HistoryView: View {
             viewModel.startListening()
         }
     }
-
+    
     private func deleteConversations(in section: String, at offsets: IndexSet) {
-         guard let conversationsInSection = groupedConversations.first(where: { $0.0 == section })?.1 else {
-             return
-         }
-         let idsToDelete = offsets.map { conversationsInSection[$0].id }
-         for id in idsToDelete {
-             historyService.deleteConversation(id: id)
-         }
+        guard let conversationsInSection = groupedConversations.first(where: { $0.0 == section })?.1 else {
+            return
+        }
+        let idsToDelete = offsets.map { conversationsInSection[$0].id }
+        for id in idsToDelete {
+            historyService.deleteConversation(id: id)
+        }
     }
 }
 
 #Preview {
     // Mock data for preview
     let history = HistoryService()
-
+    
     // --- Make Dummy Conversations Multi-Turn ---
     var convo1 = Conversation(
         messages: [
@@ -66,7 +66,7 @@ struct HistoryView: View {
         createdAt: Date()
     )
     convo1.title = history.generateTitleIfNeeded(for: convo1).title // Generate title after adding messages
-
+    
     var convo2 = Conversation(
         messages: [
             ChatMessage(id: UUID(), role: "user", content: "Explain quantum physics simply."),
@@ -77,7 +77,7 @@ struct HistoryView: View {
         createdAt: Calendar.current.date(byAdding: .day, value: -1, to: Date())!
     )
     convo2.title = history.generateTitleIfNeeded(for: convo2).title
-
+    
     var convo3 = Conversation(
         messages: [
             ChatMessage(id: UUID(), role: "user", content: "What was the weather like last month?"),
@@ -87,18 +87,18 @@ struct HistoryView: View {
     )
     convo3.title = history.generateTitleIfNeeded(for: convo3).title
     // --- End Multi-Turn Data ---
-
+    
     history.conversations = [convo1, convo2, convo3].sorted { $0.createdAt > $1.createdAt } // Ensure initial sort
-
+    
     // Mock other services needed by environment
     let settings = SettingsService()
     let audio = AudioService(settingsService: settings, historyService: history)
     // Pass the *populated* history service to ChatService
     let chat = ChatService(settingsService: settings, historyService: history)
     let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
-
+    
     // Add 'return' here to explicitly mark the View being returned
-     return NavigationStack {
+    return NavigationStack {
         HistoryView(rootIsActive: .constant(false))
     }
     .environmentObject(history)
@@ -112,7 +112,7 @@ struct HistoryView: View {
 private struct ConversationRow: View {
     let conversation: Conversation
     @Binding var rootIsActive: Bool
-
+    
     var body: some View {
         NavigationLink(
             destination: ChatDetailView(

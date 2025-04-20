@@ -16,7 +16,7 @@ enum ViewModelState: Equatable {
 @MainActor
 class ChatViewModel: ObservableObject {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatViewModel")
-
+    
     // --- UI State ---
     @Published var state: ViewModelState = .idle // Single source of truth for UI state
     @Published var listeningAudioLevel: Float = -50.0
@@ -28,131 +28,131 @@ class ChatViewModel: ObservableObject {
         }
     }
     @Published var lastError: String? = nil // For displaying errors (optional)
-
+    
     // --- Services ---
     private let audioService: AudioService
     private let chatService: ChatService
     private let settingsService: SettingsService
     private let historyService: HistoryService
-
+    
     private var cancellables = Set<AnyCancellable>()
     private var isProcessingLLM: Bool = false // Internal tracking
     private var isSpeaking: Bool = false     // Internal tracking
     private var isListening: Bool = false    // Internal tracking
-
+    
     // Flag to indicate user-initiated cancellation
     private var isUserCancelling: Bool = false
     private var userCancelResetTask: Task<Void, Never>? = nil
-
+    
     init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService) {
         self.audioService = audioService
         self.chatService = chatService
         self.settingsService = settingsService
         self.historyService = historyService
         logger.info("ChatViewModel initialized.")
-
+        
         // --- Subscribe to Service Publishers ---
-
+        
         // Audio Service States
         audioService.$isListening
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
-                     self?.logger.error("AudioService isListening publisher completed with error: \(error.localizedDescription)")
-                 }
+                if case .failure(let error) = completion {
+                    self?.logger.error("AudioService isListening publisher completed with error: \(error.localizedDescription)")
+                }
             }) { [weak self] listening in
                 self?.handleIsListeningUpdate(listening)
             }
             .store(in: &cancellables)
-
+        
         audioService.$isSpeaking
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
-                     self?.logger.error("AudioService isSpeaking publisher completed with error: \(error.localizedDescription)")
-                 }
+                if case .failure(let error) = completion {
+                    self?.logger.error("AudioService isSpeaking publisher completed with error: \(error.localizedDescription)")
+                }
             }) { [weak self] speaking in
                 self?.handleIsSpeakingUpdate(speaking)
             }
             .store(in: &cancellables)
-
+        
         audioService.$listeningAudioLevel
             .receive(on: DispatchQueue.main)
             .assign(to: &$listeningAudioLevel)
-
+        
         audioService.$ttsOutputLevel
             .receive(on: DispatchQueue.main)
             .assign(to: &$ttsOutputLevel)
-
+        
         // Audio Service Events
         audioService.transcriptionSubject
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] completion in
                 if case .failure(let error) = completion {
-                     self?.logger.error("AudioService transcriptionSubject completed with error: \(error.localizedDescription)")
-                 }
+                    self?.logger.error("AudioService transcriptionSubject completed with error: \(error.localizedDescription)")
+                }
             }) { [weak self] transcription in
-                 self?.logger.info("ViewModel received transcription: '\(transcription)'")
-                 if let self = self {
-                     if self.state == .listening {
-                         self.updateState(.processingLLM)
-                         self.chatService.processTranscription(transcription, provider: self.selectedProvider)
-                     } else {
+                self?.logger.info("ViewModel received transcription: '\(transcription)'")
+                if let self = self {
+                    if self.state == .listening {
+                        self.updateState(.processingLLM)
+                        self.chatService.processTranscription(transcription, provider: self.selectedProvider)
+                    } else {
                         self.logger.warning("Received transcription but not in listening state (\(String(describing: self.state))). Ignoring.")
-                     }
-                 }
+                    }
+                }
             }
             .store(in: &cancellables)
-
+        
         audioService.errorSubject
-             .receive(on: DispatchQueue.main)
-             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
-                     self?.logger.error("AudioService errorSubject completed with error: \(error.localizedDescription)")
-                 }
-             }) { [weak self] error in
-                 guard let self = self else { return }
-
-                 // Check if this error occurred during a user cancellation sequence
-                 if self.isUserCancelling {
-                     // Check if it's specifically a cancellation error (optional but good practice)
-                     let isCancellationError = (error as? URLError)?.code == .cancelled || error.localizedDescription.lowercased().contains("cancel")
-
-                     if isCancellationError {
-                         self.logger.info("Ignoring expected AudioService cancellation error during user action.")
-                         // Reset the flag immediately since the expected error arrived
-                         self.isUserCancelling = false
-                         self.userCancelResetTask?.cancel() // Cancel the fallback reset task
-                         self.userCancelResetTask = nil
-                         // DO NOT reset state here
-                         return // Stop further processing of this error
-                     } else {
-                         self.logger.warning("Received non-cancellation error during user cancellation window: \(error.localizedDescription)")
-                         // Proceed with normal error handling if it wasn't the expected cancellation error
-                     }
-                 }
-
-                 // Normal error handling path (if not user cancelling)
-                 self.logger.error("ViewModel received AudioService error: \(error.localizedDescription)")
-                 self.handleError(error) // Update lastError
-                 // Only reset if it wasn't handled as part of user cancellation
-                 self.resetToIdleState(attemptRestart: true)
-             }
-             .store(in: &cancellables)
-
-
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { [weak self] completion in
+                if case .failure(let error) = completion {
+                    self?.logger.error("AudioService errorSubject completed with error: \(error.localizedDescription)")
+                }
+            }) { [weak self] error in
+                guard let self = self else { return }
+                
+                // Check if this error occurred during a user cancellation sequence
+                if self.isUserCancelling {
+                    // Check if it's specifically a cancellation error (optional but good practice)
+                    let isCancellationError = (error as? URLError)?.code == .cancelled || error.localizedDescription.lowercased().contains("cancel")
+                    
+                    if isCancellationError {
+                        self.logger.info("Ignoring expected AudioService cancellation error during user action.")
+                        // Reset the flag immediately since the expected error arrived
+                        self.isUserCancelling = false
+                        self.userCancelResetTask?.cancel() // Cancel the fallback reset task
+                        self.userCancelResetTask = nil
+                        // DO NOT reset state here
+                        return // Stop further processing of this error
+                    } else {
+                        self.logger.warning("Received non-cancellation error during user cancellation window: \(error.localizedDescription)")
+                        // Proceed with normal error handling if it wasn't the expected cancellation error
+                    }
+                }
+                
+                // Normal error handling path (if not user cancelling)
+                self.logger.error("ViewModel received AudioService error: \(error.localizedDescription)")
+                self.handleError(error) // Update lastError
+                // Only reset if it wasn't handled as part of user cancellation
+                self.resetToIdleState(attemptRestart: true)
+            }
+            .store(in: &cancellables)
+        
+        
         // Chat Service States
         chatService.$isProcessingLLM
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
-                     self?.logger.error("ChatService isProcessingLLM publisher completed with error: \(error.localizedDescription)")
-                 }
+                if case .failure(let error) = completion {
+                    self?.logger.error("ChatService isProcessingLLM publisher completed with error: \(error.localizedDescription)")
+                }
             }) { [weak self] processing in
                 self?.handleIsProcessingLLMUpdate(processing)
             }
             .store(in: &cancellables)
-
+        
         // Chat Service Events
         // Subscribe to LLM text chunks to drive TTS processing and saving
         chatService.llmChunkSubject
@@ -172,41 +172,41 @@ class ChatViewModel: ObservableObject {
                 self.audioService.processTTSChunk(textChunk: chunk, isLastChunk: false)
             }
             .store(in: &cancellables)
-
+        
         chatService.llmCompleteSubject
-             .receive(on: DispatchQueue.main)
-             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
-                     self?.logger.error("ChatService llmCompleteSubject completed with error: \(error.localizedDescription)")
-                 }
-             }) { [weak self] in
-                 self?.logger.info("ViewModel received LLM completion signal.")
-                 self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
-             }
-             .store(in: &cancellables)
-
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { [weak self] completion in
+                if case .failure(let error) = completion {
+                    self?.logger.error("ChatService llmCompleteSubject completed with error: \(error.localizedDescription)")
+                }
+            }) { [weak self] in
+                self?.logger.info("ViewModel received LLM completion signal.")
+                self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
+            }
+            .store(in: &cancellables)
+        
         chatService.llmErrorSubject
-             .receive(on: DispatchQueue.main)
-             .sink(receiveCompletion: { [weak self] completion in
-                 if case .failure(let error) = completion {
-                     self?.logger.error("ChatService llmErrorSubject completed with error: \(error.localizedDescription)")
-                 }
-             }) { [weak self] error in
-                 self?.logger.error("ViewModel received ChatService error: \(error.localizedDescription)")
-                 self?.handleError(error)
-                  self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
-                  self?.resetToIdleState(attemptRestart: true)
-             }
-             .store(in: &cancellables)
-
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { [weak self] completion in
+                if case .failure(let error) = completion {
+                    self?.logger.error("ChatService llmErrorSubject completed with error: \(error.localizedDescription)")
+                }
+            }) { [weak self] error in
+                self?.logger.error("ViewModel received ChatService error: \(error.localizedDescription)")
+                self?.handleError(error)
+                self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
+                self?.resetToIdleState(attemptRestart: true)
+            }
+            .store(in: &cancellables)
+        
         // Forward initial TTS Rate to Audio Service
         audioService.ttsRate = self.ttsRate
-
+        
         // Apply initial provider selection from settings if possible
         // Note: This assumes a default provider setting exists. Adapt if needed.
         // This simple approach just sets the default visually; ChatService uses the setting directly.
         self.selectedProvider = settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude // Example default
-
+        
         // --- NEW: Subscribe to saved audio chunk paths ---
         audioService.ttsChunkSavedSubject
             .receive(on: DispatchQueue.main)
@@ -216,30 +216,30 @@ class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         // --- END NEW ---
-
+        
         // --- Initial State Transition: idle -> listening ---
         // Start listening shortly after initialization
         Task { @MainActor in
-             if self.state == .idle {
-                 self.startListening()
-             }
+            if self.state == .idle {
+                self.startListening()
+            }
         }
     }
-
+    
     // MARK: - State Update Helpers
-
+    
     private func updateState(_ newState: ViewModelState) {
         guard state != newState else { return }
         let oldState = state
         state = newState
         logger.info("State Transition: \(String(describing: oldState)) -> \(String(describing: newState))")
     }
-
+    
     private func handleIsListeningUpdate(_ listening: Bool) {
         let wasListening = self.isListening // Track previous internal state for logging/edge cases
         self.isListening = listening
         logger.debug("Internal isListening updated: \(listening)")
-
+        
         // If listening STARTS successfully, update state to .listening
         // This can happen from .idle (user tap/initial start) or after .speakingTTS completes
         if listening && !wasListening && (state == .idle || state == .speakingTTS) {
@@ -261,67 +261,67 @@ class ChatViewModel: ObservableObject {
         }
         // else: No change needed (e.g., listening=true when already listening, listening=false when already not listening)
     }
-
+    
     private func handleIsSpeakingUpdate(_ speaking: Bool) {
-         let wasSpeaking = self.isSpeaking
-         self.isSpeaking = speaking
-         logger.debug("Internal isSpeaking updated: \(speaking)")
-
-         // --- State Transition: processingLLM -> speakingTTS ---
-         // This is the correct place for this transition.
-         if speaking && !wasSpeaking && state == .processingLLM {
-             updateState(.speakingTTS)
-         }
-         // --- State Transition: speakingTTS -> listening ---
-         else if !speaking && wasSpeaking && state == .speakingTTS {
-             // TTS finished, automatically start listening again
-             logger.info("Speaking finished, attempting to automatically start listening.")
-             // Reset internal flags before starting? isProcessingLLM should already be false if LLM completed normally.
-             // self.isProcessingLLM = false // Probably not needed here
-             startListening() // Directly attempt to start listening
-         }
-         // --- Handle case where TTS finishes WITHOUT ever starting ---
-         // This might happen if the LLM response was empty or TTS failed immediately.
-         else if !speaking && wasSpeaking == false && state == .processingLLM {
-             // If speaking becomes false (or never became true) and we are still in processingLLM,
-             // and the LLM itself is also done, it means TTS finished/failed without playback.
-             // We should transition back to listening.
-             if !self.isProcessingLLM {
-                 logger.warning("TTS completed/failed without starting playback while in processingLLM state. Transitioning to listening.")
-                 // Don't reset completely, just try to go back to listening.
-                 startListening()
-             } else {
-                 // This case is less likely - isSpeaking becomes false while still processing LLM? Maybe an early TTS error.
-                 logger.warning("isSpeaking became false while still processing LLM and in processingLLM state. Waiting for LLM completion.")
-             }
-         }
-         else if !speaking && wasSpeaking && state == .listening {
-             // This can happen if user cancels TTS (cycleState: speakingTTS -> cancel -> listening)
-             logger.info("Speaking stopped while transitioning to listening state (\(String(describing: self.state))) (expected after cancel).")
-         }
-     }
-
+        let wasSpeaking = self.isSpeaking
+        self.isSpeaking = speaking
+        logger.debug("Internal isSpeaking updated: \(speaking)")
+        
+        // --- State Transition: processingLLM -> speakingTTS ---
+        // This is the correct place for this transition.
+        if speaking && !wasSpeaking && state == .processingLLM {
+            updateState(.speakingTTS)
+        }
+        // --- State Transition: speakingTTS -> listening ---
+        else if !speaking && wasSpeaking && state == .speakingTTS {
+            // TTS finished, automatically start listening again
+            logger.info("Speaking finished, attempting to automatically start listening.")
+            // Reset internal flags before starting? isProcessingLLM should already be false if LLM completed normally.
+            // self.isProcessingLLM = false // Probably not needed here
+            startListening() // Directly attempt to start listening
+        }
+        // --- Handle case where TTS finishes WITHOUT ever starting ---
+        // This might happen if the LLM response was empty or TTS failed immediately.
+        else if !speaking && wasSpeaking == false && state == .processingLLM {
+            // If speaking becomes false (or never became true) and we are still in processingLLM,
+            // and the LLM itself is also done, it means TTS finished/failed without playback.
+            // We should transition back to listening.
+            if !self.isProcessingLLM {
+                logger.warning("TTS completed/failed without starting playback while in processingLLM state. Transitioning to listening.")
+                // Don't reset completely, just try to go back to listening.
+                startListening()
+            } else {
+                // This case is less likely - isSpeaking becomes false while still processing LLM? Maybe an early TTS error.
+                logger.warning("isSpeaking became false while still processing LLM and in processingLLM state. Waiting for LLM completion.")
+            }
+        }
+        else if !speaking && wasSpeaking && state == .listening {
+            // This can happen if user cancels TTS (cycleState: speakingTTS -> cancel -> listening)
+            logger.info("Speaking stopped while transitioning to listening state (\(String(describing: self.state))) (expected after cancel).")
+        }
+    }
+    
     private func handleIsProcessingLLMUpdate(_ processing: Bool) {
         self.isProcessingLLM = processing
         logger.debug("Internal isProcessingLLM updated: \(processing)")
-
+        
         // State transition (listening -> processingLLM) is handled by transcriptionSubject
         // State transition (processingLLM -> speakingTTS) is handled by handleIsSpeakingUpdate
-
+        
         // *** REMOVE THE PREMATURE RESET ***
         // We should NOT reset just because LLM finished before TTS started playing.
         // The state should remain .processingLLM, waiting for isSpeaking to become true.
         /*
-        if !processing && state == .processingLLM && !self.isSpeaking {
-            // OLD LOGIC (REMOVED):
-            // logger.warning("LLM processing finished but TTS never started. State: \(String(describing: self.state)). Resetting.")
-            // resetToIdleState(attemptRestart: true)
-        }
-        */
+         if !processing && state == .processingLLM && !self.isSpeaking {
+         // OLD LOGIC (REMOVED):
+         // logger.warning("LLM processing finished but TTS never started. State: \(String(describing: self.state)). Resetting.")
+         // resetToIdleState(attemptRestart: true)
+         }
+         */
         // If LLM finishes processing, we just update the internal flag.
         // The state machine waits for isSpeaking changes or errors.
     }
-
+    
     // --- NEW: Pause main activities ---
     func pauseMainActivities() {
         logger.info("⏸️ Pausing main activities (listening, processing, speaking) due to navigation.")
@@ -331,7 +331,7 @@ class ChatViewModel: ObservableObject {
         }
         // Cancel any ongoing LLM request (handles partial saves internally)
         if isProcessingLLM { // Check internal flag first
-             chatService.cancelProcessing()
+            chatService.cancelProcessing()
         }
         // Stop any ongoing TTS playback
         if audioService.isSpeaking {
@@ -348,50 +348,50 @@ class ChatViewModel: ObservableObject {
         self.ttsOutputLevel = 0.0
     }
     // --- END NEW ---
-
+    
     // MARK: - User Actions
     func cycleState() {
         logger.debug("cycleState called. Current state: \(String(describing: self.state))")
-
+        
         // Cancel any pending flag reset task from a previous cycle
         userCancelResetTask?.cancel()
         userCancelResetTask = nil
-
+        
         switch state {
         case .listening:
             logger.info("Cycle: Listening -> Idle")
             updateState(.idle)
             audioService.resetListening()
-
+            
         case .speakingTTS, .processingLLM: // Combine cancel logic
-             let fromState = state == .speakingTTS ? "Speaking" : "Processing LLM"
-             logger.info("Cycle: \(fromState) -> Cancel -> Listening")
-             isUserCancelling = true
-             userCancelResetTask = Task { @MainActor in
-                 try? await Task.sleep(for: .seconds(1))
-                 if self.isUserCancelling {
-                     logger.info("Resetting isUserCancelling flag after timeout.")
-                     self.isUserCancelling = false
-                 }
-             }
-             chatService.cancelProcessing()
-             audioService.stopSpeaking()
-             updateState(.listening)
-             startListening()
-
+            let fromState = state == .speakingTTS ? "Speaking" : "Processing LLM"
+            logger.info("Cycle: \(fromState) -> Cancel -> Listening")
+            isUserCancelling = true
+            userCancelResetTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                if self.isUserCancelling {
+                    logger.info("Resetting isUserCancelling flag after timeout.")
+                    self.isUserCancelling = false
+                }
+            }
+            chatService.cancelProcessing()
+            audioService.stopSpeaking()
+            updateState(.listening)
+            startListening()
+            
         case .idle:
             logger.info("Cycle: Idle -> Listening")
             startListening()
         }
     }
-
+    
     // Cancels ongoing operations - now mostly handled within cycleState or resetToIdleState
     func cancelProcessingAndSpeaking() {
         logger.notice("⏹️ Cancel requested (likely internal or reset).")
         chatService.cancelProcessing()
         audioService.stopSpeaking()
     }
-
+    
     // Starts listening via the AudioService
     func startListening() {
         guard state == .idle || state == .speakingTTS || state == .listening else {
@@ -404,7 +404,7 @@ class ChatViewModel: ObservableObject {
             if state == .idle { updateState(.listening) }
             return
         }
-
+        
         lastError = nil
         logger.info("Requesting AudioService to start listening (Current state: \(String(describing: self.state))).")
         // Ensure chat context is ready before listening (might already be set)
@@ -415,34 +415,34 @@ class ChatViewModel: ObservableObject {
         audioService.startListening()
         // State transition to .listening is handled by handleIsListeningUpdate
     }
-
+    
     // Resets to a clean idle state
     func resetToIdleState(attemptRestart: Bool = false) {
-         logger.info("Resetting to Idle State. Attempt restart: \(attemptRestart)")
-         cancelProcessingAndSpeaking()
-         if audioService.isListening { audioService.resetListening() }
-         // Also reset the chat context to a new, fresh one
-         chatService.resetConversationContext()
-
-         updateState(.idle)
-         self.isListening = false
-         self.isSpeaking = false
-         self.isProcessingLLM = false
-         self.listeningAudioLevel = -50.0
-         self.ttsOutputLevel = 0.0
-
-         if attemptRestart {
+        logger.info("Resetting to Idle State. Attempt restart: \(attemptRestart)")
+        cancelProcessingAndSpeaking()
+        if audioService.isListening { audioService.resetListening() }
+        // Also reset the chat context to a new, fresh one
+        chatService.resetConversationContext()
+        
+        updateState(.idle)
+        self.isListening = false
+        self.isSpeaking = false
+        self.isProcessingLLM = false
+        self.listeningAudioLevel = -50.0
+        self.ttsOutputLevel = 0.0
+        
+        if attemptRestart {
             Task { @MainActor in
                 logger.info("Attempting automatic restart after reset.")
                 self.startListening()
             }
         }
-     }
-
+    }
+    
     // MARK: - Error Handling
     private func handleError(_ error: Error) {
         lastError = error.localizedDescription
-
+        
         if let llmError = error as? LlmError {
             switch llmError {
             case .apiKeyMissing(let provider):
@@ -451,12 +451,12 @@ class ChatViewModel: ObservableObject {
                 lastError = "An LLM error occurred: \(llmError.localizedDescription)"
             }
         } else if let audioError = error as? AudioService.AudioError {
-             lastError = "An audio error occurred: \(audioError.localizedDescription)"
+            lastError = "An audio error occurred: \(audioError.localizedDescription)"
         } else {
             lastError = "An unexpected error occurred: \(error.localizedDescription)"
         }
     }
-
+    
     // Method to trigger startup listening (if needed externally)
     func beginListeningOnStartup() {
         if state == .idle {
@@ -464,64 +464,64 @@ class ChatViewModel: ObservableObject {
             startListening()
         }
     }
-
+    
     // MARK: - History Interaction
-
+    
     // Called from ChatDetailView's "Continue from here" button
     func loadConversationHistory(_ conversation: Conversation, upTo messageIndex: Int) {
-         logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
-         cancelProcessingAndSpeaking() // Stop current LLM/TTS activity
-
-         // --- CHANGE START ---
-         // Always reset the audio service fully when loading history,
-         // as we intend to start listening immediately after in ChatDetailView.
-         // This ensures consistent cleanup regardless of the previous listening state.
-         logger.info("Performing full AudioService reset before loading history.")
-         audioService.resetListening() // Call reset unconditionally
-
-
-         guard messageIndex >= 0 && messageIndex < conversation.messages.count else {
-             logger.error("Invalid message index \(messageIndex) for conversation.")
-             return
-         }
-
-         // Get messages up to the specified index (inclusive)
-         let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
-
-         var audioPathsToLoad: [UUID: [String]]? = nil
-         // Ensure we actually have the full parent conversation data from history service
-         // Note: 'conversation' passed in might be stale if history changed; fetch fresh.
-         if let fullParentConversation = historyService.conversations.first(where: { $0.id == conversation.id }) {
-             if let parentAudioPaths = fullParentConversation.ttsAudioPaths {
-                 audioPathsToLoad = [:]
-                 for message in messagesToLoad {
-                     // If the parent had audio for this message, copy the paths
-                     if let paths = parentAudioPaths[message.id] {
-                         audioPathsToLoad?[message.id] = paths
-                     }
-                 }
-                 logger.info("Copied \(audioPathsToLoad?.count ?? 0) audio path entries from parent conversation.")
-             }
-         } else {
-              logger.warning("Could not find full parent conversation \(conversation.id) in HistoryService to copy audio paths.")
-         }
-
-         // Start a *new* conversation context in ChatService, linking to the parent
-         chatService.resetConversationContext(
-             messagesToLoad: messagesToLoad,
-             existingConversationId: nil, // Force new ID
-             parentId: conversation.id, // Link to original
-             initialAudioPaths: audioPathsToLoad // ← Pass the copied paths
-         )
-
-         // Reset UI state to idle initially...
-         updateState(.idle)
-     }
-
+        logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
+        cancelProcessingAndSpeaking() // Stop current LLM/TTS activity
+        
+        // --- CHANGE START ---
+        // Always reset the audio service fully when loading history,
+        // as we intend to start listening immediately after in ChatDetailView.
+        // This ensures consistent cleanup regardless of the previous listening state.
+        logger.info("Performing full AudioService reset before loading history.")
+        audioService.resetListening() // Call reset unconditionally
+        
+        
+        guard messageIndex >= 0 && messageIndex < conversation.messages.count else {
+            logger.error("Invalid message index \(messageIndex) for conversation.")
+            return
+        }
+        
+        // Get messages up to the specified index (inclusive)
+        let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
+        
+        var audioPathsToLoad: [UUID: [String]]? = nil
+        // Ensure we actually have the full parent conversation data from history service
+        // Note: 'conversation' passed in might be stale if history changed; fetch fresh.
+        if let fullParentConversation = historyService.conversations.first(where: { $0.id == conversation.id }) {
+            if let parentAudioPaths = fullParentConversation.ttsAudioPaths {
+                audioPathsToLoad = [:]
+                for message in messagesToLoad {
+                    // If the parent had audio for this message, copy the paths
+                    if let paths = parentAudioPaths[message.id] {
+                        audioPathsToLoad?[message.id] = paths
+                    }
+                }
+                logger.info("Copied \(audioPathsToLoad?.count ?? 0) audio path entries from parent conversation.")
+            }
+        } else {
+            logger.warning("Could not find full parent conversation \(conversation.id) in HistoryService to copy audio paths.")
+        }
+        
+        // Start a *new* conversation context in ChatService, linking to the parent
+        chatService.resetConversationContext(
+            messagesToLoad: messagesToLoad,
+            existingConversationId: nil, // Force new ID
+            parentId: conversation.id, // Link to original
+            initialAudioPaths: audioPathsToLoad // ← Pass the copied paths
+        )
+        
+        // Reset UI state to idle initially...
+        updateState(.idle)
+    }
+    
     // --- Helper for starting new chat ---
-     func startNewChat() {
-          logger.info("Starting new chat session.")
-          resetToIdleState(attemptRestart: false) // Resets context and goes to Idle
-         // User can then tap to start listening
-     }
+    func startNewChat() {
+        logger.info("Starting new chat session.")
+        resetToIdleState(attemptRestart: false) // Resets context and goes to Idle
+        // User can then tap to start listening
+    }
 }

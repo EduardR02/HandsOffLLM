@@ -8,31 +8,31 @@ struct ContentView: View {
     // Access environment objects if needed, e.g., for navigation data
     @EnvironmentObject var historyService: HistoryService
     @State private var showHistory = false   // NEW: track the HistoryLink binding
-
+    
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
-
+    
     // Removed initializer - ViewModel is passed in now
-
+    
     var body: some View {
         // Use NavigationStack provided by the App
         ZStack {
             Color.black.edgesIgnoringSafeArea(.all)
-
+            
             VStack {
                 Spacer() // Push indicator down a bit
-
+                
                 // Display errors subtly if needed (don't do this)
                 /*
-                if let error = viewModel.lastError {
-                     Text(error)
-                         .font(.caption)
-                         .foregroundColor(.red)
-                         .padding(.bottom, 5)
-                         .transition(.opacity) // Animate appearance
+                 if let error = viewModel.lastError {
+                 Text(error)
+                 .font(.caption)
+                 .foregroundColor(.red)
+                 .padding(.bottom, 5)
+                 .transition(.opacity) // Animate appearance
                  }
-                */
-
-
+                 */
+                
+                
                 VoiceIndicatorView(
                     state: $viewModel.state,
                     audioLevel: $viewModel.listeningAudioLevel,
@@ -41,7 +41,7 @@ struct ContentView: View {
                 .onTapGesture {
                     viewModel.cycleState()
                 }
-
+                
                 // Slider Section (Reverted to original HStack)
                 HStack {
                     Text("Speed:")
@@ -54,10 +54,10 @@ struct ContentView: View {
                 }
                 .padding()
                 .padding(.horizontal) // Add horizontal padding for slider/text
-
+                
                 Spacer() // Pushes indicator/slider towards center
             }
-
+            
             // Picker at the bottom
             VStack {
                 Spacer()
@@ -83,7 +83,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                 }
-
+                
                 // Settings Button
                 NavigationLink {
                     // Destination: Settings View
@@ -92,15 +92,15 @@ struct ContentView: View {
                     Image(systemName: "gearshape.fill")
                 }
             }
-             ToolbarItem(placement: .navigationBarLeading) {
-                  // Button to explicitly start a new chat session
-                  Button {
-                      viewModel.startNewChat()
-                  } label: {
-                      Image(systemName: "plus.circle")
-                  }
-                  .disabled(viewModel.state != .idle && viewModel.state != .listening) // Allow reset when idle or listening
-             }
+            ToolbarItem(placement: .navigationBarLeading) {
+                // Button to explicitly start a new chat session
+                Button {
+                    viewModel.startNewChat()
+                } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .disabled(viewModel.state != .idle && viewModel.state != .listening) // Allow reset when idle or listening
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showHistory) {
@@ -115,10 +115,10 @@ struct ContentView: View {
             }
         }
         .onAppear {
-             logger.info("ContentView appeared.")
-             // Start listening automatically only if idle? Or require first tap?
-             // Let's require first tap for now. cycleState handles Idle -> Listening
-             // viewModel.beginListeningOnStartup() // Remove if first tap is preferred
+            logger.info("ContentView appeared.")
+            // Start listening automatically only if idle? Or require first tap?
+            // Let's require first tap for now. cycleState handles Idle -> Listening
+            // viewModel.beginListeningOnStartup() // Remove if first tap is preferred
         }
         .onDisappear {
             logger.info("ContentView disappeared.")
@@ -138,7 +138,7 @@ struct ContentView_Previews: PreviewProvider {
         let audio = AudioService(settingsService: settings, historyService: history)
         let chat = ChatService(settingsService: settings, historyService: history)
         let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
-
+        
         NavigationStack { // Wrap in NavigationStack for preview
             ContentView(viewModel: viewModel)
         }
@@ -151,17 +151,17 @@ struct ContentView_Previews: PreviewProvider {
 
 // Create simpler preview struct if the above is too complex
 #Preview {
-     let settings = SettingsService()
-     let history = HistoryService()
+    let settings = SettingsService()
+    let history = HistoryService()
     let audio = AudioService(settingsService: settings, historyService: history)
-     let chat = ChatService(settingsService: settings, historyService: history)
-     let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
-
+    let chat = ChatService(settingsService: settings, historyService: history)
+    let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
+    
     return NavigationStack {
-         ContentView(viewModel: viewModel)
-     }
-     .environmentObject(settings)
-     .environmentObject(history)
-     .environmentObject(audio)
-     .preferredColorScheme(.dark)
+        ContentView(viewModel: viewModel)
+    }
+    .environmentObject(settings)
+    .environmentObject(history)
+    .environmentObject(audio)
+    .preferredColorScheme(.dark)
 }
