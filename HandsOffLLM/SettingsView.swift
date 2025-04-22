@@ -85,6 +85,28 @@ struct SettingsView: View {
                     }
                 }
                 
+                // MARK: - App Defaults
+                Section("App Defaults") {
+                    Picker("Default Provider", selection: Binding(
+                        get: { settingsService.settings.selectedDefaultProvider ?? .claude },
+                        set: { settingsService.updateDefaultProvider(provider: $0) }
+                    )) {
+                        ForEach(LLMProvider.allCases) { provider in
+                            Text(provider.rawValue).tag(provider)
+                        }
+                    }
+
+                    HStack {
+                        Text("Default Playback Speed:")
+                        Slider(value: Binding(
+                            get: { settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0 },
+                            set: { settingsService.updateDefaultPlaybackSpeed(speed: $0) }
+                        ), in: 0.2...4.0, step: 0.1)
+                        Text(String(format: "%.1fx", settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0))
+                            .frame(width: 40)
+                    }
+                }
+                
                 // MARK: - Advanced Settings
                 DisclosureGroup("Advanced Settings", isExpanded: $showingAdvanced) {
                     VStack(alignment: .leading) {
@@ -104,15 +126,17 @@ struct SettingsView: View {
                                 .frame(width: 40)
                         }
                         
-                        // Max Tokens Stepper
-                        Stepper("Max Tokens: \(settingsService.settings.advancedMaxTokens ?? settingsService.activeMaxTokens)",
-                                value: Binding(
-                                    get: { settingsService.settings.advancedMaxTokens ?? settingsService.activeMaxTokens },
-                                    set: { settingsService.updateAdvancedSetting(keyPath: \.advancedMaxTokens, value: $0) }
-                                ),
-                                in: 512...16384, // Example range
-                                step: 256)
-                        
+                        // Max Tokens Input (replacing stepper)
+                        HStack {
+                            Text("Max Tokens:")
+                            TextField("", value: Binding(
+                                get: { settingsService.settings.advancedMaxTokens ?? settingsService.activeMaxTokens },
+                                set: { settingsService.updateAdvancedSetting(keyPath: \.advancedMaxTokens, value: $0) }
+                            ), format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 80)
+                        }
                         
                         // Custom System Prompt TextEditor
                         VStack(alignment: .leading) {
@@ -221,7 +245,7 @@ struct TTSInstructionSelectionView: View {
     private let categories: [(title: String, ids: [String])] = [
         ("General / Supportive", ["default-happy", "critical-friend", "existential-crisis-companion", "morning-hype", "late-night-mode"]),
         ("Informative / Storytelling", ["passionate-educator", "vintage-broadcaster", "temporal-archivist", "internet-historian", "spaceship-ai"]),
-        ("Fictional / Roleplay", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive"]),
+        ("Fun", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive"]),
         ("Advanced", ["custom"]) // Keep custom separate
     ]
 

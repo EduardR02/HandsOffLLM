@@ -224,6 +224,16 @@ class ChatViewModel: ObservableObject {
                 self.startListening()
             }
         }
+
+        // New: apply default playback speed if set, then tell audioService
+        if let defaultSpeed = settingsService.settings.selectedDefaultPlaybackSpeed {
+            self.ttsRate = defaultSpeed
+        }
+        audioService.ttsRate = self.ttsRate
+
+        // New: apply default API provider selection (fallback to saved model‑provider if unset)
+        self.selectedProvider = settingsService.settings.selectedDefaultProvider
+            ?? (settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude)
     }
     
     // MARK: - State Update Helpers

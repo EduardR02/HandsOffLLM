@@ -87,13 +87,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     init() {
         loadSettings()
-        validateKeysAndPrompts() // Keep validation
+        validateKeysAndPrompts()
         logger.info("SettingsService initialized.")
         
-        // Set default model selections if none are saved
         setDefaultModelsIfNeeded()
-        // Set default prompt selections if none are saved
         setDefaultPromptsIfNeeded()
+        setDefaultUISettingsIfNeeded()
     }
     
     // --- Default Selections ---
@@ -124,6 +123,24 @@ class SettingsService: ObservableObject { // Make ObservableObject
         if settings.selectedTTSInstructionPresetId == nil, let defaultTTS = availableTTSInstructions.first(where: { $0.id != "custom" }) {
             settings.selectedTTSInstructionPresetId = defaultTTS.id
             logger.info("Setting default TTS instruction: \(defaultTTS.name)")
+            changed = true
+        }
+        if changed {
+            saveSettings()
+        }
+    }
+    
+    private func setDefaultUISettingsIfNeeded() {
+        var changed = false
+        if settings.selectedDefaultProvider == nil, let defaultProvider = LLMProvider.allCases.first {
+            settings.selectedDefaultProvider = defaultProvider
+            logger.info("Setting default API provider: \(defaultProvider.rawValue)")
+            changed = true
+        }
+        if settings.selectedDefaultPlaybackSpeed == nil {
+            let defaultSpeed: Float = 2.0
+            settings.selectedDefaultPlaybackSpeed = defaultSpeed
+            logger.info("Setting default playback speed: \(defaultSpeed)x")
             changed = true
         }
         if changed {
@@ -275,6 +292,17 @@ class SettingsService: ObservableObject { // Make ObservableObject
     }
     func updateAdvancedSetting<T>(keyPath: WritableKeyPath<SettingsData, T>, value: T) {
         settings[keyPath: keyPath] = value
+        saveSettings()
+    }
+    
+    // New: allow changing the default API provider
+    func updateDefaultProvider(provider: LLMProvider) {
+        settings.selectedDefaultProvider = provider
+        saveSettings()
+    }
+    // New: allow changing the default playback speed
+    func updateDefaultPlaybackSpeed(speed: Float) {
+        settings.selectedDefaultPlaybackSpeed = speed
         saveSettings()
     }
 }
