@@ -31,10 +31,31 @@ class SettingsService: ObservableObject { // Make ObservableObject
     ]
     
     let availableTTSInstructions: [PromptPreset] = [
-        PromptPreset(id: "default-clear", name: "Clear & Pleasant", description: "Standard clear voice", fullPrompt: "Speak in a clear and pleasant manner."),
-        PromptPreset(id: "energetic", name: "Energetic", description: "More enthusiastic tone", fullPrompt: "Speak with an energetic and enthusiastic tone."),
-        PromptPreset(id: "calm", name: "Calm & Relaxed", description: "Softer, calmer tone", fullPrompt: "Speak in a calm and relaxed tone."),
-        PromptPreset(id: "custom", name: "Custom", description: "Use instruction from Advanced", fullPrompt: ""), // Placeholder for custom
+        // General/Positive/Supportive
+        PromptPreset(id: "default-happy", name: "Default Happy", description: "", fullPrompt: Prompts.defaultHappy),
+        PromptPreset(id: "critical-friend", name: "Critical Friend", description: "", fullPrompt: Prompts.criticalFriend),
+        PromptPreset(id: "existential-crisis-companion", name: "Existential Crisis Companion", description: "", fullPrompt: Prompts.existentialCrisisCompanion),
+        PromptPreset(id: "morning-hype", name: "Morning Hype", description: "", fullPrompt: Prompts.morningHype),
+        PromptPreset(id: "late-night-mode", name: "Late Night Mode", description: "", fullPrompt: Prompts.lateNightMode),
+
+        // Professional/Informative/Storytelling
+        PromptPreset(id: "passionate-educator", name: "Passionate Educator", description: "", fullPrompt: Prompts.passionateEducator),
+        PromptPreset(id: "vintage-broadcaster", name: "Vintage Broadcaster", description: "", fullPrompt: Prompts.vintageBroadcaster),
+        PromptPreset(id: "temporal-archivist", name: "Temporal Archivist", description: "", fullPrompt: Prompts.temporalArchivist),
+        PromptPreset(id: "internet-historian", name: "Internet Historian", description: "", fullPrompt: Prompts.internetHistorian),
+        PromptPreset(id: "spaceship-ai", name: "Spaceship AI", description: "", fullPrompt: Prompts.spaceshipAI),
+
+        // Fictional/Roleplay/Entertainment
+        PromptPreset(id: "jaded-detective", name: "Jaded Detective", description: "", fullPrompt: Prompts.jadedDetective),
+        PromptPreset(id: "film-trailer-voice", name: "Film Trailer Voice", description: "", fullPrompt: Prompts.filmTrailerVoice),
+        PromptPreset(id: "cyberpunk-street-kid", name: "Cyberpunk Street Kid", description: "", fullPrompt: Prompts.cyberpunkStreetKid),
+        PromptPreset(id: "rick-sanchez", name: "Rick Sanchez", description: "", fullPrompt: Prompts.rickSanchez),
+        PromptPreset(id: "cosmic-horror-narrator", name: "Cosmic Horror Narrator", description: "", fullPrompt: Prompts.cosmicHorrorNarrator),
+        PromptPreset(id: "oblivion-npc", name: "Oblivion NPC", description: "", fullPrompt: Prompts.oblivionNPC),
+        PromptPreset(id: "passive-aggressive", name: "Passive Aggressive", description: "", fullPrompt: Prompts.passiveAggressive),
+
+        // Custom Placeholder
+        PromptPreset(id: "custom", name: "Custom", description: "Uses text from Advanced", fullPrompt: Prompts.spaceshipAI)
     ]
     
     // --- Persistence ---

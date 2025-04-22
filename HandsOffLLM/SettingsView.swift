@@ -14,6 +14,7 @@ struct SettingsView: View {
     @EnvironmentObject var settingsService: SettingsService
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
     @State private var showingAdvanced = false // State for DisclosureGroup
+    @State private var isTopLevelActive = true // Add this state
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
     
     var body: some View {
@@ -23,7 +24,7 @@ struct SettingsView: View {
                 Section("LLM Models") {
                     ForEach(LLMProvider.allCases) { provider in
                         NavigationLink {
-                            ModelSelectionView(provider: provider)
+                            ModelSelectionView(provider: provider, isParentTopLevelActive: $isTopLevelActive)
                         } label: {
                             HStack {
                                 Text(provider.rawValue)
@@ -55,15 +56,20 @@ struct SettingsView: View {
                 }
                 
                 Section("TTS Instructions") {
-                    Picker("Preset", selection: Binding(
-                        get: { settingsService.settings.selectedTTSInstructionPresetId ?? "" },
-                        set: { settingsService.updateSelectedTTSInstruction(presetId: $0) }
-                    )) {
-                        ForEach(settingsService.availableTTSInstructions) { preset in
-                            VStack(alignment: .leading) {
-                                Text(preset.name).tag(preset.id)
-                                Text(preset.description).font(.caption).foregroundColor(.gray)
-                            }
+                    NavigationLink {
+                        TTSInstructionSelectionView(isParentTopLevelActive: $isTopLevelActive)
+                    } label: {
+                        HStack {
+                            Text("Preset")
+                            Spacer()
+                            Text(
+                                settingsService
+                                    .availableTTSInstructions
+                                    .first { $0.id == settingsService.settings.selectedTTSInstructionPresetId }?
+                                    .name
+                                ?? "Select…"
+                            )
+                            .foregroundColor(.secondary)
                         }
                     }
                 }
@@ -140,11 +146,17 @@ struct SettingsView: View {
             .onAppear {
                 logger.info("SettingsView appeared, pausing main activities.")
                 viewModel.pauseMainActivities()
+                isTopLevelActive = true // Reset flag when SettingsView appears/reappears
             }
             .onDisappear {
-                // Resume listening when leaving settings
-                logger.info("SettingsView disappeared, resuming listening.")
-                viewModel.startListening()
+                // Only resume listening if SettingsView is disappearing while it *thought*
+                // it was the top-level view (meaning we're not just navigating deeper).
+                if isTopLevelActive {
+                    logger.info("SettingsView disappeared (presumed exit), resuming listening.")
+                    viewModel.startListening()
+                } else {
+                     logger.info("SettingsView disappeared (navigating deeper), NOT resuming.")
+                }
             }
         }
         .navigationViewStyle(.stack) // Use stack style if needed
@@ -156,6 +168,7 @@ struct ModelSelectionView: View {
     @EnvironmentObject var settingsService: SettingsService
     @Environment(\.presentationMode) var presentationMode
     let provider: LLMProvider
+    @Binding var isParentTopLevelActive: Bool
 
     // filter down to only this provider's models
     var models: [ModelInfo] {
@@ -191,6 +204,99 @@ struct ModelSelectionView: View {
         }
         .navigationTitle(provider.rawValue)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Tell the parent it's no longer the top active view
+            isParentTopLevelActive = false
+        }
+    }
+}
+
+struct TTSInstructionSelectionView: View {
+    @EnvironmentObject var settingsService: SettingsService
+    @Environment(\.presentationMode) var presentationMode
+    @State private var searchText = ""
+    @Binding var isParentTopLevelActive: Bool
+
+    // Define categories and their preset IDs
+    private let categories: [(title: String, ids: [String])] = [
+        ("General / Supportive", ["default-happy", "critical-friend", "existential-crisis-companion", "morning-hype", "late-night-mode"]),
+        ("Informative / Storytelling", ["passionate-educator", "vintage-broadcaster", "temporal-archivist", "internet-historian", "spaceship-ai"]),
+        ("Fictional / Roleplay", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive"]),
+        ("Advanced", ["custom"]) // Keep custom separate
+    ]
+
+    // Filter presets based on search text
+    private var filteredPresets: [PromptPreset] {
+        if searchText.isEmpty {
+            return settingsService.availableTTSInstructions
+        } else {
+            return settingsService.availableTTSInstructions.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+    }
+    
+    // Helper to get presets for a specific category, considering the search filter
+    private func presets(for categoryIDs: [String]) -> [PromptPreset] {
+        filteredPresets.filter { categoryIDs.contains($0.id) }
+            // Keep the original order from SettingsService
+            .sorted { p1, p2 in
+                guard let index1 = settingsService.availableTTSInstructions.firstIndex(where: { $0.id == p1.id }),
+                      let index2 = settingsService.availableTTSInstructions.firstIndex(where: { $0.id == p2.id }) else {
+                    return false
+                }
+                return index1 < index2
+            }
+    }
+
+    var body: some View {
+        List {
+            // If searching, show a flat list
+            if !searchText.isEmpty {
+                ForEach(filteredPresets) { preset in
+                    presetRow(preset)
+                }
+            } else {
+                // Otherwise, show sections
+                ForEach(categories, id: \.title) { category in
+                    let categoryPresets = presets(for: category.ids)
+                    // Only show section if it contains presets (relevant for future filtering)
+                    if !categoryPresets.isEmpty {
+                        Section(header: Text(category.title)) {
+                            ForEach(categoryPresets) { preset in
+                                presetRow(preset)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .searchable(text: $searchText)
+        .navigationTitle("TTS Instructions")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Tell the parent it's no longer the top active view
+            isParentTopLevelActive = false
+        }
+    }
+
+    // Extracted row view for reuse
+    @ViewBuilder
+    private func presetRow(_ preset: PromptPreset) -> some View {
+        Button {
+            settingsService.updateSelectedTTSInstruction(presetId: preset.id)
+            presentationMode.wrappedValue.dismiss()
+        } label: {
+            HStack {
+                Text(preset.name)
+                Spacer()
+                if settingsService.settings.selectedTTSInstructionPresetId == preset.id {
+                    Image(systemName: "checkmark")
+                        .foregroundColor(.accentColor)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
