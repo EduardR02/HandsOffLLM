@@ -54,7 +54,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     let defaultTTSVoice = "nova"    // Default OpenAI TTS voice
     let availableTTSVoices = [
         "alloy", "ash", "ballad", "coral", "echo",
-        "fable", "nova", "onyx", "sage", "shimmer"
+        "fable", "nova", "onyx", "sage", "shimmer", "verse"
     ]   // All supported voices
 
     var openAITTSVoice: String {    // Dynamic: picks saved setting or falls back to default

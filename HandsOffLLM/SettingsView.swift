@@ -22,16 +22,17 @@ struct SettingsView: View {
                 // MARK: - Model Selection
                 Section("LLM Models") {
                     ForEach(LLMProvider.allCases) { provider in
-                        let available = settingsService.availableModels.filter { $0.provider == provider }
-                        // Use non-optional binding for Picker selection
-                        Picker(provider.rawValue, selection: Binding(
-                            get: { settingsService.settings.selectedModelIdPerProvider[provider] ?? "" },
-                            set: { settingsService.updateSelectedModel(provider: provider, modelId: $0) }
-                        )) {
-                            ForEach(available) { model in
-                                VStack(alignment: .leading) {
-                                    Text(model.name).tag(model.id)
-                                    Text(model.description).font(.caption).foregroundColor(.gray)
+                        NavigationLink {
+                            ModelSelectionView(provider: provider)
+                        } label: {
+                            HStack {
+                                Text(provider.rawValue)
+                                Spacer()
+                                // show the name of the currently selected model in secondary text
+                                if let selectedId = settingsService.settings.selectedModelIdPerProvider[provider],
+                                   let selModel = settingsService.availableModels.first(where: { $0.id == selectedId }) {
+                                    Text(selModel.name)
+                                      .foregroundColor(.secondary)
                                 }
                             }
                         }
@@ -147,6 +148,49 @@ struct SettingsView: View {
             }
         }
         .navigationViewStyle(.stack) // Use stack style if needed
+    }
+}
+
+// Subview to pick one model for a single provider
+struct ModelSelectionView: View {
+    @EnvironmentObject var settingsService: SettingsService
+    @Environment(\.presentationMode) var presentationMode
+    let provider: LLMProvider
+
+    // filter down to only this provider's models
+    var models: [ModelInfo] {
+        settingsService.availableModels.filter { $0.provider == provider }
+    }
+
+    var body: some View {
+        List {
+            ForEach(models) { model in
+                Button {
+                    // update & dismiss
+                    settingsService.updateSelectedModel(provider: provider, modelId: model.id)
+                    presentationMode.wrappedValue.dismiss()
+                } label: {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.name)
+                            Text(model.description)
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        // show a checkmark next to the current selection
+                        if settingsService.settings.selectedModelIdPerProvider[provider] == model.id {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                }
+                .buttonStyle(.plain) // keep the row tappable without default button styling
+            }
+        }
+        .navigationTitle(provider.rawValue)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
