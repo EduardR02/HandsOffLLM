@@ -67,6 +67,16 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section("TTS Voice") {
+                    Picker("Voice", selection: Binding(
+                        get: { settingsService.openAITTSVoice },
+                        set: { settingsService.updateSelectedTTSVoice(voice: $0) }
+                    )) {
+                        ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
+                            Text(voice.capitalized).tag(voice)
+                        }
+                    }
+                }
                 
                 // MARK: - Advanced Settings
                 DisclosureGroup("Advanced Settings", isExpanded: $showingAdvanced) {

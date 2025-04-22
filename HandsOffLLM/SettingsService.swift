@@ -50,9 +50,19 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
     let openAITTSModel = "gpt-4o-mini-tts"
-    let openAITTSVoice = "nova" // Or alloy, echo, fable, onyx, shimmer
-    let openAITTSFormat = "aac" // Other options: opus, aac, flac, pcm, mp3
-    let maxTTSChunkLength = 4000 // Keep hardcoded for now
+    
+    let defaultTTSVoice = "nova"    // Default OpenAI TTS voice
+    let availableTTSVoices = [
+        "alloy", "ash", "ballad", "coral", "echo",
+        "fable", "nova", "onyx", "sage", "shimmer"
+    ]   // All supported voices
+
+    var openAITTSVoice: String {    // Dynamic: picks saved setting or falls back to default
+        settings.selectedTTSVoice ?? defaultTTSVoice
+    }
+
+    let openAITTSFormat = "aac"     // Other options: opus, flac, pcm, mp3
+    let maxTTSChunkLength = 1000    // 1000 chars ≈ 1 minute of audio
     
     init() {
         loadSettings()
@@ -230,6 +240,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     func updateSelectedTTSInstruction(presetId: String?) {
         settings.selectedTTSInstructionPresetId = presetId
+        saveSettings()
+    }
+    
+    func updateSelectedTTSVoice(voice: String) {
+        settings.selectedTTSVoice = voice
         saveSettings()
     }
     

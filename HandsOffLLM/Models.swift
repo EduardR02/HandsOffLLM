@@ -55,6 +55,7 @@ struct SettingsData: Codable {
     var advancedMaxTokens: Int?
     var advancedSystemPrompt: String?
     var advancedTTSInstruction: String?
+    var selectedTTSVoice: String?    // New: stores the user's choice of OpenAI TTS voice
     
     // Default values can be set here or when initializing SettingsService
     init() {
