@@ -83,6 +83,8 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                 }
+                .buttonStyle(.borderless)
+                .tint(.white)
                 
                 // Settings Button
                 NavigationLink {
@@ -91,6 +93,8 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "gearshape.fill")
                 }
+                .buttonStyle(.borderless)
+                .tint(.white)
             }
             ToolbarItem(placement: .navigationBarLeading) {
                 // Button to explicitly start a new chat session
@@ -99,6 +103,8 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "plus.circle")
                 }
+                .buttonStyle(.borderless)
+                .tint(.white)
                 .disabled(viewModel.state != .idle && viewModel.state != .listening) // Allow reset when idle or listening
             }
         }

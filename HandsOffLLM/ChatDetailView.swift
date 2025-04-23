@@ -68,7 +68,7 @@ struct ChatDetailView: View {
                     .padding(10)
                     .background(messageBackgroundColor(role: message.role))
                     .foregroundColor(messageForegroundColor(role: message.role))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
                 
                 // Add buttons below assistant messages
                 if message.role.starts(with: "assistant") { // Covers assistant, assistant_partial, assistant_error
@@ -84,14 +84,12 @@ struct ChatDetailView: View {
                         } label: {
                             if replayingMessageId == message.id && audioService.isSpeaking {
                                 Image(systemName: "stop.fill")
-                                Text("Stop")
                             } else {
                                 Image(systemName: "speaker.wave.2.fill")
-                                Text("Replay")
                             }
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.blue)
+                        .buttonStyle(.borderless)
+                        .tint(.white)
                         .font(.caption)
                         .disabled(conversation.ttsAudioPaths?[message.id]?.isEmpty ?? true)
                         
@@ -99,13 +97,13 @@ struct ChatDetailView: View {
                             continueFromMessage(index: index)
                         } label: {
                             Image(systemName: "arrowshape.turn.up.right.fill")
-                            Text("Continue")
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.green)
+                        .buttonStyle(.borderless)
+                        .tint(.white)
                         .font(.caption)
                     }
                     .padding(.top, 2)
+                    .padding(.leading, 10)
                 }
             }
             .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.role == "user" ? .trailing : .leading) // Limit width
@@ -136,18 +134,15 @@ struct ChatDetailView: View {
     // --- Styling Helpers ---
     private func messageBackgroundColor(role: String) -> Color {
         switch role {
-        case "user": return Color.blue
-        case "assistant": return Color.gray.opacity(0.6)
-        case "assistant_partial": return Color.purple.opacity(0.4)
-        case "assistant_error": return Color.red.opacity(0.5)
-        default: return Color.secondary
+        case "user": return Color(red: 40/255.0, green: 44/255.0, blue: 52/255.0)
+        default: return Color.clear
         }
     }
     private func messageForegroundColor(role: String) -> Color {
         switch role {
         case "user": return Color.white
         case "assistant": return Color.white
-        case "assistant_partial", "assistant_error": return Color.white
+        case "assistant_partial", "assistant_error": return Color(red: 250/255.0, green: 170/255.0, blue: 170/255.0)
         default: return Color.primary
         }
     }

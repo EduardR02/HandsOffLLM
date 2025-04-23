@@ -53,6 +53,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         PromptPreset(id: "cosmic-horror-narrator", name: "Cosmic Horror Narrator", description: "", fullPrompt: Prompts.cosmicHorrorNarrator),
         PromptPreset(id: "oblivion-npc", name: "Oblivion NPC", description: "", fullPrompt: Prompts.oblivionNPC),
         PromptPreset(id: "passive-aggressive", name: "Passive Aggressive", description: "", fullPrompt: Prompts.passiveAggressive),
+        PromptPreset(id: "cowboy", name: "Cowboy", description: "", fullPrompt: Prompts.cowboy),
 
         // Custom Placeholder
         PromptPreset(id: "custom", name: "Custom", description: "Uses text from Advanced", fullPrompt: Prompts.spaceshipAI)

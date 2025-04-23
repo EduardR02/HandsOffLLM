@@ -55,7 +55,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section("TTS Instructions") {
+                Section("Speech Instructions") {
                     NavigationLink {
                         TTSInstructionSelectionView(isParentTopLevelActive: $isTopLevelActive)
                     } label: {
@@ -74,7 +74,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section("TTS Voice") {
+                Section("Voice") {
                     Picker("Voice", selection: Binding(
                         get: { settingsService.openAITTSVoice },
                         set: { settingsService.updateSelectedTTSVoice(voice: $0) }
@@ -245,7 +245,7 @@ struct TTSInstructionSelectionView: View {
     private let categories: [(title: String, ids: [String])] = [
         ("General / Supportive", ["default-happy", "critical-friend", "existential-crisis-companion", "morning-hype", "late-night-mode"]),
         ("Informative / Storytelling", ["passionate-educator", "vintage-broadcaster", "temporal-archivist", "internet-historian", "spaceship-ai"]),
-        ("Fun", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive"]),
+        ("Fun", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive", "cowboy"]),
         ("Advanced", ["custom"]) // Keep custom separate
     ]
 
