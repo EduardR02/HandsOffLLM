@@ -40,6 +40,7 @@ class ChatViewModel: ObservableObject {
     private var isProcessingLLM: Bool = false // Internal tracking
     private var isSpeaking: Bool = false     // Internal tracking
     private var isListening: Bool = false    // Internal tracking
+    private var expectingFinalSpeaking: Bool = false // ← NEW: mark when final chunk is coming
     
     init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService) {
         self.audioService = audioService
@@ -68,14 +69,16 @@ class ChatViewModel: ObservableObject {
         // Audio Service Events
         audioService.transcriptionSubject
             .sink { [weak self] transcription in
-                self?.logger.info("ViewModel received transcription: '\(transcription)'")
-                if let self = self {
-                    if self.state == .listening {
-                        self.updateState(.processingLLM)
-                        self.chatService.processTranscription(transcription, provider: self.selectedProvider)
-                    } else {
-                        self.logger.warning("Received transcription but not in listening state (\(String(describing: self.state))). Ignoring.")
-                    }
+                guard let self = self else { return }
+                // New run → clear the "final chunk" marker
+                self.expectingFinalSpeaking = false
+
+                self.logger.info("ViewModel received transcription: '\(transcription)'")
+                if self.state == .listening {
+                    self.updateState(.processingLLM)
+                    self.chatService.processTranscription(transcription, provider: self.selectedProvider)
+                } else {
+                    self.logger.warning("Received transcription but not in listening state (\(String(describing: self.state))). Ignoring.")
                 }
             }
             .store(in: &cancellables)
@@ -115,8 +118,11 @@ class ChatViewModel: ObservableObject {
         
         chatService.llmCompleteSubject
             .sink { [weak self] in
-                self?.logger.info("ViewModel received LLM completion signal.")
-                self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
+                guard let self = self else { return }
+                self.logger.info("ViewModel received LLM completion signal.")
+                // mark that this next playback end is the final one
+                self.expectingFinalSpeaking = true
+                self.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
             }
             .store(in: &cancellables)
         
@@ -198,32 +204,22 @@ class ChatViewModel: ObservableObject {
         self.isSpeaking = speaking
         logger.debug("Internal isSpeaking updated: \(speaking)")
         
-        // --- State Transition: processingLLM -> speakingTTS ---
+        // Transition into TTS mode exactly once, when the first buffer arrives
         if speaking && !wasSpeaking && state == .processingLLM {
             updateState(.speakingTTS)
         }
-        // --- State Transition: speakingTTS -> listening ---
+        // Only on the *final* playback end do we go back to listening
         else if !speaking && wasSpeaking && state == .speakingTTS {
-            logger.info("Speaking finished, scheduling automatic listening restart.")
-            Task { @MainActor in
-                // brief pause to let the TTS session tear down smoothly
-                try? await Task.sleep(for: .milliseconds(50))
-                self.startListening()
-            }
-        }
-        // --- Handle case where TTS finishes WITHOUT ever starting ---
-        // This might happen if the LLM response was empty or TTS failed immediately.
-        else if !speaking && wasSpeaking == false && state == .processingLLM {
-            // If speaking becomes false (or never became true) and we are still in processingLLM,
-            // and the LLM itself is also done, it means TTS finished/failed without playback.
-            // We should transition back to listening.
-            if !self.isProcessingLLM {
-                logger.warning("TTS completed/failed without starting playback while in processingLLM state. Transitioning to listening.")
-                // Don't reset completely, just try to go back to listening.
-                startListening()
+            if expectingFinalSpeaking {
+                expectingFinalSpeaking = false
+                logger.info("Final TTS playback finished, scheduling listening restart.")
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(50))
+                    self.startListening()
+                }
             } else {
-                // This case is less likely - isSpeaking becomes false while still processing LLM? Maybe an early TTS error.
-                logger.warning("isSpeaking became false while still processing LLM and in processingLLM state. Waiting for LLM completion.")
+                // intermediate TTS-chunk stops are ignored, stay in speakingTTS
+                logger.debug("Intermediate TTS pause; remaining in speakingTTS state.")
             }
         }
         else if !speaking && wasSpeaking && state == .listening {
