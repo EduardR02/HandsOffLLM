@@ -75,22 +75,23 @@ struct ChatDetailView: View {
                     HStack {
                         Button {
                             if replayingMessageId == message.id && audioService.isSpeaking {
-                                audioService.stopReplay()             // ← new stop
-                                replayingMessageId = nil
+                                audioService.stopReplay()
+                                replayingMessageId = nil // Will stop animation via state change
                             } else {
-                                replayingMessageId = message.id      // ← mark playing
+                                replayingMessageId = message.id // Will start animation via state change
                                 replayTTS(message: message)
                             }
                         } label: {
-                            if replayingMessageId == message.id && audioService.isSpeaking {
-                                Image(systemName: "stop.fill")
-                            } else {
-                                Image(systemName: "speaker.wave.2.fill")
-                            }
+                            // Determine if this specific message's audio is playing
+                            let isCurrentlyPlaying = replayingMessageId == message.id && audioService.isSpeaking
+                            
+                            Image(systemName: "waveform") // Always show waveform
+                                // Apply the wiggle symbol effect conditionally
+                                .symbolEffect(.wiggle.left.byLayer, options: .repeat(.continuous), isActive: isCurrentlyPlaying)
                         }
                         .buttonStyle(.borderless)
                         .tint(.white)
-                        .font(.caption)
+                        .font(.body) // Increased font size
                         .disabled(conversation.ttsAudioPaths?[message.id]?.isEmpty ?? true)
                         
                         Button {
@@ -100,7 +101,7 @@ struct ChatDetailView: View {
                         }
                         .buttonStyle(.borderless)
                         .tint(.white)
-                        .font(.caption)
+                        .font(.body) // Increased font size
                     }
                     .padding(.top, 2)
                     .padding(.leading, 10)

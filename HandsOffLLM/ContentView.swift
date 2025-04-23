@@ -7,6 +7,7 @@ struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     // Access environment objects if needed, e.g., for navigation data
     @EnvironmentObject var historyService: HistoryService
+    @EnvironmentObject var audioService: AudioService
     @State private var showHistory = false   // NEW: track the HistoryLink binding
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
@@ -91,21 +92,25 @@ struct ContentView: View {
                     // Destination: Settings View
                     SettingsView() // Needs access to SettingsService (via @EnvironmentObject)
                 } label: {
-                    Image(systemName: "gearshape.fill")
+                    Image(systemName: "gearshape")
                 }
                 .buttonStyle(.borderless)
                 .tint(.white)
             }
-            ToolbarItem(placement: .navigationBarLeading) {
-                // Button to explicitly start a new chat session
-                Button {
-                    viewModel.startNewChat()
-                } label: {
-                    Image(systemName: "plus.circle")
+            // Grouped leading items: new-chat + output toggle
+            ToolbarItemGroup(placement: .navigationBarLeading) {
+                Button { viewModel.startNewChat() } label: { Image(systemName: "plus.bubble") }
+                    .buttonStyle(.borderless).tint(.white)
+                    .disabled(viewModel.state != .idle && viewModel.state != .listening)
+
+                Button { audioService.toggleOutputDevice() } label: {
+                    Image(systemName:
+                        audioService.outputDevice == .speaker
+                            ? "speaker.wave.1"
+                            : "headphones"
+                    )
                 }
-                .buttonStyle(.borderless)
-                .tint(.white)
-                .disabled(viewModel.state != .idle && viewModel.state != .listening) // Allow reset when idle or listening
+                .buttonStyle(.borderless).tint(.white)
             }
         }
         .navigationBarTitleDisplayMode(.inline)

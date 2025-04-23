@@ -19,6 +19,45 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         didSet { updatePlayerRate() }
     }
     
+    // --- Added output‑device selection & routing ---
+    enum OutputDevice: String {
+        case speaker
+        case bluetooth
+    }
+    @Published var outputDevice: OutputDevice = .speaker
+
+    func toggleOutputDevice() {
+        outputDevice = (outputDevice == .speaker ? .bluetooth : .speaker)
+        applyAudioRouting()
+    }
+
+    private func applyAudioRouting() {
+        let session = AVAudioSession.sharedInstance()
+        var options: AVAudioSession.CategoryOptions = [.duckOthers]
+        switch outputDevice {
+        case .speaker:
+            options.insert(.defaultToSpeaker)
+        case .bluetooth:
+            options.insert(.allowBluetooth)
+            options.insert(.allowBluetoothA2DP)
+        }
+        do {
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
+            // If a Bluetooth mic is available, prefer it; otherwise stick to the built‑in mic
+            if outputDevice == .bluetooth,
+               let inputs = session.availableInputs,
+               let bt = inputs.first(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothLE }) {
+                try session.setPreferredInput(bt)
+            } else {
+                try session.setPreferredInput(nil)
+            }
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            logger.error("Failed to apply audio routing: \(error.localizedDescription)")
+        }
+    }
+    // --- end additions ---
+    
     // --- Combine Subjects for Communication ---
     let transcriptionSubject = PassthroughSubject<String, Never>() // Sends final transcription
     let errorSubject = PassthroughSubject<Error, Never>()         // Reports errors
@@ -175,18 +214,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         currentSpokenText = ""
         hasUserStartedSpeakingThisTurn = false
         listeningAudioLevel = -50.0
-        logger.notice("🎙️ Listening started...")
+        logger.notice("��️ Listening started…")
         
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {
-            logger.error("🚨 Audio session setup error: \(error.localizedDescription)")
-            errorSubject.send(AudioError.audioSessionError(error.localizedDescription))
-            isListening = false
-            return
-        }
+        applyAudioRouting()
         
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
@@ -660,12 +690,8 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             manageTTSPlayback()
             return
         }
+        applyAudioRouting()
         do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
-            try? audioSession.overrideOutputAudioPort(.speaker)
-            try audioSession.setActive(true)
-            
             currentAudioPlayer = try AVAudioPlayer(data: data)
             currentAudioPlayer?.delegate = self
             currentAudioPlayer?.enableRate = true
@@ -782,6 +808,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             return
         }
         let fileURL = docs.appendingPathComponent(relativePath)
+        applyAudioRouting()
         do {
             let data = try Data(contentsOf: fileURL)
             currentAudioPlayer?.stop()
