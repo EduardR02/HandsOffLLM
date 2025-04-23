@@ -138,7 +138,7 @@ struct VoiceIndicatorView: View {
           .frame(width: size, height: size)
       }
       // animate any change on "state" (which drives amp/colors)
-      .animation(.easeInOut(duration: 0.6), value: state)
+      .animation(.easeInOut(duration: 0.3), value: state)
     }
     .frame(width: size, height: size)
   }
