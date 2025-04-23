@@ -99,18 +99,15 @@ struct ContentView: View {
             }
             // Grouped leading items: new-chat + output toggle
             ToolbarItemGroup(placement: .navigationBarLeading) {
-                Button { viewModel.startNewChat() } label: { Image(systemName: "plus.bubble") }
-                    .buttonStyle(.borderless).tint(.white)
-                    .disabled(viewModel.state != .idle && viewModel.state != .listening)
-
-                Button { audioService.toggleOutputDevice() } label: {
-                    Image(systemName:
-                        audioService.outputDevice == .speaker
-                            ? "speaker.wave.1"
-                            : "headphones"
-                    )
+                Button {
+                    viewModel.startNewChat()
+                } label: {
+                    Image(systemName: "plus.circle")
                 }
                 .buttonStyle(.borderless).tint(.white)
+                .disabled(viewModel.state != .idle && viewModel.state != .listening)
+
+                RoutePickerView()
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -127,9 +124,9 @@ struct ContentView: View {
         }
         .onAppear {
             logger.info("ContentView appeared.")
-            // Start listening automatically only if idle? Or require first tap?
-            // Let's require first tap for now. cycleState handles Idle -> Listening
-            // viewModel.beginListeningOnStartup() // Remove if first tap is preferred
+            // Make sure audio session settings are applied on appear
+            audioService.applyAudioSessionSettings()
+            // Consider if viewModel.startListening() should be called here or require tap
         }
         .onDisappear {
             logger.info("ContentView disappeared.")

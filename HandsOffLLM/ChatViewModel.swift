@@ -264,7 +264,7 @@ class ChatViewModel: ObservableObject {
                 logger.info("Auto-restarting listening since state is .listening.")
                 // Delay slightly to avoid immediate re-stop
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(200))
+                    try? await Task.sleep(for: .milliseconds(50))
                     self.startListening()
                 }
             }
@@ -278,17 +278,17 @@ class ChatViewModel: ObservableObject {
         logger.debug("Internal isSpeaking updated: \(speaking)")
         
         // --- State Transition: processingLLM -> speakingTTS ---
-        // This is the correct place for this transition.
         if speaking && !wasSpeaking && state == .processingLLM {
             updateState(.speakingTTS)
         }
         // --- State Transition: speakingTTS -> listening ---
         else if !speaking && wasSpeaking && state == .speakingTTS {
-            // TTS finished, automatically start listening again
-            logger.info("Speaking finished, attempting to automatically start listening.")
-            // Reset internal flags before starting? isProcessingLLM should already be false if LLM completed normally.
-            // self.isProcessingLLM = false // Probably not needed here
-            startListening() // Directly attempt to start listening
+            logger.info("Speaking finished, scheduling automatic listening restart.")
+            Task { @MainActor in
+                // brief pause to let the TTS session tear down smoothly
+                try? await Task.sleep(for: .milliseconds(50))
+                self.startListening()
+            }
         }
         // --- Handle case where TTS finishes WITHOUT ever starting ---
         // This might happen if the LLM response was empty or TTS failed immediately.
@@ -378,7 +378,7 @@ class ChatViewModel: ObservableObject {
             logger.info("Cycle: \(fromState) -> Cancel -> Listening")
             isUserCancelling = true
             userCancelResetTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
+                //try? await Task.sleep(for: .seconds(1))
                 if self.isUserCancelling {
                     logger.info("Resetting isUserCancelling flag after timeout.")
                     self.isUserCancelling = false
