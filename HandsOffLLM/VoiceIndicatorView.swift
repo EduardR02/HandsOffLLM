@@ -140,7 +140,7 @@ struct VoiceIndicatorView: View {
             stateIdentifier = 2 // Matches gradientView case
             calculatedScale = baseScale * 0.9 // Slightly smaller for processing
             calculatedBlur = 15 // More blur for processing state
-        case .idle:
+        case .idle, .error:
             rotationSpeedMultiplier = 0.5 // Slow rotation
             stateIdentifier = 0 // Matches gradientView case
             calculatedScale = baseScale

@@ -572,10 +572,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         }
         
         if currentAudioPlayer == nil, let dataToPlay = nextAudioData {
-            logger.debug("TTS Manage: Found pre-fetched data, playing...")
-            self.nextAudioData = nil // Consume the data
+            logger.debug("TTS Manage: Found pre-fetched data, playing…")
+            self.nextAudioData = nil
             playAudioData(dataToPlay)
-            manageTTSPlayback()
+            Task { @MainActor [weak self] in
+                self?.manageTTSPlayback()
+            }
             return
         }
         
@@ -607,7 +609,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 logger.error("🚨 OpenAI API Key missing, cannot fetch TTS.")
                 self.isFetchingTTS = false
                 errorSubject.send(LlmError.apiKeyMissing(provider: "OpenAI TTS"))
-                manageTTSPlayback()
+                Task { @MainActor [weak self] in
+                    self?.manageTTSPlayback()
+                }
                 return
             }
             
@@ -654,7 +658,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                             logger.debug("TTS Manage: Player active, storing fetched data.")
                             self.nextAudioData = data
                         }
-                        self.manageTTSPlayback()
+                        Task { @MainActor [weak self] in
+                            self?.manageTTSPlayback()
+                        }
                     }
                 } catch is CancellationError {
                     await MainActor.run { [weak self] in
@@ -669,7 +675,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                         self.isFetchingTTS = false
                         self.ttsFetchTask = nil
                         self.errorSubject.send(AudioError.ttsFetchFailed(error))
-                        self.manageTTSPlayback()
+                        Task { @MainActor [weak self] in
+                            self?.manageTTSPlayback()
+                        }
                     }
                 }
             }
@@ -892,11 +900,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
             }
             
-            // ── NEW: if we're in a replay, continue the queue; otherwise fall back to TTS streaming
             if !self.replayQueue.isEmpty {
                 self.playNextReplay()
             } else {
-                self.manageTTSPlayback()
+                Task { @MainActor [weak self] in
+                    self?.manageTTSPlayback()
+                }
             }
         }
     }
@@ -918,8 +927,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 self.isSpeaking = false
                 if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
             }
-            // Try to continue with the next piece of audio if possible
-            self.manageTTSPlayback()
+            Task { @MainActor [weak self] in
+                self?.manageTTSPlayback()
+            }
         }
     }
     
@@ -927,19 +937,21 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     func cleanupOnDisappear() {
         logger.info("AudioService cleanup initiated.")
         stopListeningCleanup()
-        stopSpeaking() // This also cancels TTS fetch
-        // Invalidate any remaining timers just in case
+        stopSpeaking() // also cancels any in-flight TTS fetch
         invalidateAudioLevelTimer()
         invalidateSilenceTimer()
         invalidateTTSLevelTimer()
+
+        // Remove the AVAudioSession route-change observer
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
+        }
     }
     
     deinit {
         // deinit done by owner
         logger.info("AudioService deinit.")
-        if let observer = routeChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
     }
 
     // --- Route Change Handling ---

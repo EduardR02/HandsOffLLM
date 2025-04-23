@@ -164,8 +164,6 @@ class ChatService: ObservableObject {
     
     private func handleLLMCompletion(error: Error?) {
         isProcessingLLM = false
-        llmCompleteSubject.send()
-        isLLMStreamComplete = true // ← Set flag
         
         // Log final response if successful or partially successful
         if !currentFullResponse.isEmpty {
@@ -216,6 +214,9 @@ class ChatService: ObservableObject {
             }
         }
         // Error cases don't need a special save here, the state before error is likely saved.
+        
+        isLLMStreamComplete = true
+        llmCompleteSubject.send()
     }
     
     

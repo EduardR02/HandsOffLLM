@@ -10,6 +10,7 @@ enum ViewModelState: Equatable {
     case listening     // Actively listening for user input (Blue circle)
     case processingLLM // Waiting for LLM response (Purple blur)
     case speakingTTS   // Playing back TTS audio (Green circle)
+    case error         // New error case
     // Consider adding an explicit .error state if needed for UI feedback
 }
 
@@ -40,10 +41,6 @@ class ChatViewModel: ObservableObject {
     private var isSpeaking: Bool = false     // Internal tracking
     private var isListening: Bool = false    // Internal tracking
     
-    // Flag to indicate user-initiated cancellation
-    private var isUserCancelling: Bool = false
-    private var userCancelResetTask: Task<Void, Never>? = nil
-    
     init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService) {
         self.audioService = audioService
         self.chatService = chatService
@@ -55,43 +52,22 @@ class ChatViewModel: ObservableObject {
         
         // Audio Service States
         audioService.$isListening
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("AudioService isListening publisher completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] listening in
-                self?.handleIsListeningUpdate(listening)
-            }
+            .sink { [weak self] listening in self?.handleIsListeningUpdate(listening) }
             .store(in: &cancellables)
         
         audioService.$isSpeaking
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("AudioService isSpeaking publisher completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] speaking in
-                self?.handleIsSpeakingUpdate(speaking)
-            }
+            .sink { [weak self] speaking in self?.handleIsSpeakingUpdate(speaking) }
             .store(in: &cancellables)
         
         audioService.$listeningAudioLevel
-            .receive(on: DispatchQueue.main)
             .assign(to: &$listeningAudioLevel)
         
         audioService.$ttsOutputLevel
-            .receive(on: DispatchQueue.main)
             .assign(to: &$ttsOutputLevel)
         
         // Audio Service Events
         audioService.transcriptionSubject
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("AudioService transcriptionSubject completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] transcription in
+            .sink { [weak self] transcription in
                 self?.logger.info("ViewModel received transcription: '\(transcription)'")
                 if let self = self {
                     if self.state == .listening {
@@ -105,32 +81,8 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
         
         audioService.errorSubject
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("AudioService errorSubject completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] error in
+            .sink { [weak self] error in
                 guard let self = self else { return }
-                
-                // Check if this error occurred during a user cancellation sequence
-                if self.isUserCancelling {
-                    // Check if it's specifically a cancellation error (optional but good practice)
-                    let isCancellationError = (error as? URLError)?.code == .cancelled || error.localizedDescription.lowercased().contains("cancel")
-                    
-                    if isCancellationError {
-                        self.logger.info("Ignoring expected AudioService cancellation error during user action.")
-                        // Reset the flag immediately since the expected error arrived
-                        self.isUserCancelling = false
-                        self.userCancelResetTask?.cancel() // Cancel the fallback reset task
-                        self.userCancelResetTask = nil
-                        // DO NOT reset state here
-                        return // Stop further processing of this error
-                    } else {
-                        self.logger.warning("Received non-cancellation error during user cancellation window: \(error.localizedDescription)")
-                        // Proceed with normal error handling if it wasn't the expected cancellation error
-                    }
-                }
                 
                 // Normal error handling path (if not user cancelling)
                 self.logger.error("ViewModel received AudioService error: \(error.localizedDescription)")
@@ -143,25 +95,13 @@ class ChatViewModel: ObservableObject {
         
         // Chat Service States
         chatService.$isProcessingLLM
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("ChatService isProcessingLLM publisher completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] processing in
-                self?.handleIsProcessingLLMUpdate(processing)
-            }
+            .sink { [weak self] processing in self?.handleIsProcessingLLMUpdate(processing) }
             .store(in: &cancellables)
         
         // Chat Service Events
         // Subscribe to LLM text chunks to drive TTS processing and saving
         chatService.llmChunkSubject
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("ChatService llmChunkSubject completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] chunk in
+            .sink { [weak self] chunk in
                 guard let self = self else { return }
                 // Update TTS context for saving this message's audio
                 if let convID = self.chatService.currentConversation?.id,
@@ -174,24 +114,14 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
         
         chatService.llmCompleteSubject
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("ChatService llmCompleteSubject completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] in
+            .sink { [weak self] in
                 self?.logger.info("ViewModel received LLM completion signal.")
                 self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
             }
             .store(in: &cancellables)
         
         chatService.llmErrorSubject
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { [weak self] completion in
-                if case .failure(let error) = completion {
-                    self?.logger.error("ChatService llmErrorSubject completed with error: \(error.localizedDescription)")
-                }
-            }) { [weak self] error in
+            .sink { [weak self] error in
                 self?.logger.error("ViewModel received ChatService error: \(error.localizedDescription)")
                 self?.handleError(error)
                 self?.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
@@ -199,17 +129,8 @@ class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Forward initial TTS Rate to Audio Service
-        audioService.ttsRate = self.ttsRate
-        
-        // Apply initial provider selection from settings if possible
-        // Note: This assumes a default provider setting exists. Adapt if needed.
-        // This simple approach just sets the default visually; ChatService uses the setting directly.
-        self.selectedProvider = settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude // Example default
-        
         // --- NEW: Subscribe to saved audio chunk paths ---
         audioService.ttsChunkSavedSubject
-            .receive(on: DispatchQueue.main)
             .sink { [weak self] messageID, path in
                 // Update the ChatService's currentConversation object
                 self?.chatService.updateAudioPathInCurrentConversation(messageID: messageID, path: path)
@@ -361,36 +282,19 @@ class ChatViewModel: ObservableObject {
     
     // MARK: - User Actions
     func cycleState() {
-        logger.debug("cycleState called. Current state: \(String(describing: self.state))")
-        
-        // Cancel any pending flag reset task from a previous cycle
-        userCancelResetTask?.cancel()
-        userCancelResetTask = nil
-        
         switch state {
         case .listening:
-            logger.info("Cycle: Listening -> Idle")
             updateState(.idle)
             audioService.resetListening()
             
-        case .speakingTTS, .processingLLM: // Combine cancel logic
-            let fromState = state == .speakingTTS ? "Speaking" : "Processing LLM"
-            logger.info("Cycle: \(fromState) -> Cancel -> Listening")
-            isUserCancelling = true
-            userCancelResetTask = Task { @MainActor in
-                //try? await Task.sleep(for: .seconds(1))
-                if self.isUserCancelling {
-                    logger.info("Resetting isUserCancelling flag after timeout.")
-                    self.isUserCancelling = false
-                }
-            }
-            chatService.cancelProcessing()
-            audioService.stopSpeaking()
+        case .speakingTTS, .processingLLM:
+            cancelProcessingAndSpeaking()
             updateState(.listening)
             startListening()
             
-        case .idle:
-            logger.info("Cycle: Idle -> Listening")
+        case .idle, .error:
+            // on idle or after an error, just kick off listening
+            lastError = nil
             startListening()
         }
     }
@@ -465,6 +369,7 @@ class ChatViewModel: ObservableObject {
         } else {
             lastError = "An unexpected error occurred: \(error.localizedDescription)"
         }
+        updateState(.error) // Drive UI into "error" mode
     }
     
     // Method to trigger startup listening (if needed externally)
