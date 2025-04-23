@@ -1,266 +1,172 @@
 import SwiftUI
 
-// No need for import YourAppModuleName if ViewModelState is top-level
+// A Shape that draws a circle whose radius is modulated by two sine-waves.
+// phase and amplitude animate over time to create a fluid, wavy border.
+struct WaveCircle: Shape {
+  var phase: Double
+  var amplitude: Double
+  var segments: Int
+  var noiseOffset: Double
+
+  // Make phase & amplitude animatable
+  var animatableData: AnimatablePair<Double, Double> {
+    get { AnimatablePair(phase, amplitude) }
+    set { phase = newValue.first; amplitude = newValue.second }
+  }
+
+  func path(in rect: CGRect) -> Path {
+    let center = CGPoint(x: rect.midX, y: rect.midY)
+    let baseR = min(rect.width, rect.height) / 2
+    var path = Path()
+
+    for i in 0...segments {
+      let pct = Double(i) / Double(segments)
+      let θ   = pct * 2 * .pi
+      // two combined waves for a richer profile
+      let w1  = sin(4 * θ + phase + noiseOffset)
+      let w2  = 0.5 * sin(7 * θ - phase * 0.7 + noiseOffset)
+      let wave = w1 + w2
+
+      let r = baseR + CGFloat(wave) * CGFloat(amplitude) * baseR * 0.2
+      let x = center.x + r * cos(CGFloat(θ))
+      let y = center.y + r * sin(CGFloat(θ))
+      let pt = CGPoint(x: x, y: y)
+
+      if i == 0 { path.move(to: pt) }
+      else     { path.addLine(to: pt) }
+    }
+    path.closeSubpath()
+    return path
+  }
+}
 
 struct VoiceIndicatorView: View {
-    // Use the top-level ViewModelState
-    @Binding var state: ViewModelState
-    @Binding var audioLevel: Float // User mic level (dBFS)
-    @Binding var ttsLevel: Float   // TTS output level (normalized 0-1)
-    
-    // Constants
-    private let baseScale: CGFloat = 1.0
-    // Scale multipliers for mic input and TTS output - Increased for more reaction
-    private let listeningScaleMultiplier: CGFloat = 0.8 // Increased from 0.6
-    private let speakingScaleMultiplier: CGFloat = 0.5 // Increased from 0.2
-    private let minDB: Float = -50.0 // Assuming audioLevel is dBFS
-    private let maxDB: Float = 0.0
-    // Assuming ttsLevel is normalized 0-1
-    private let minTTSLevel: Float = 0.0
-    private let maxTTSLevel: Float = 1.0
-    
-    private let animationResponse: Double = 0.3
-    private let animationDamping: Double = 0.4 // Reduced damping for bouncier scale
-    
-    // --- Dreamier Color Palettes ---
-    // Updated gradients to accept an angle
-    private func idleGradient(angle: Angle) -> AngularGradient {
-        AngularGradient(
-            gradient: Gradient(colors: [
-                Color.gray.opacity(0.2), // Slightly increased base opacity
-                Color.gray.opacity(0.4),
-                Color.white.opacity(0.2),
-                Color.gray.opacity(0.4),
-                Color.gray.opacity(0.2)
-            ]),
-            center: .center,
-            angle: angle
-        )
-    }
-    
-    // Listening gradient remains largely the same, maybe slightly brighter highlights
-    private func listeningGradient(normalizedLevel: CGFloat, angle: Angle) -> AngularGradient {
-        let baseBlue = Color(hue: 0.6, saturation: 0.7, brightness: 0.9) // Slightly richer
-        let highlightPurple = Color(hue: 0.75, saturation: 0.8, brightness: 1.0) // Brighter highlight
-        let dynamicOpacity = 0.6 + (normalizedLevel * 0.4) // Start slightly more opaque
-        let dynamicBrightnessScale = 1.0 + (normalizedLevel * 0.20) // Slightly more brightness reaction
-        
-        // Inline brightness adjustment for simplicity here
-        func adjustBrightness(_ color: Color, scale: CGFloat) -> Color {
-            var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
-            UIColor(color).getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-            return Color(hue: hue, saturation: saturation, brightness: min(1.0, brightness * scale), opacity: alpha)
-        }
-        
-        return AngularGradient(
-            gradient: Gradient(colors: [
-                baseBlue.opacity(dynamicOpacity * 0.8),
-                adjustBrightness(highlightPurple, scale: dynamicBrightnessScale * 1.1).opacity(dynamicOpacity), // More pop
-                baseBlue.opacity(dynamicOpacity * 0.7),
-                adjustBrightness(highlightPurple, scale: dynamicBrightnessScale * 1.2).opacity(dynamicOpacity * 0.9), // More pop
-                baseBlue.opacity(dynamicOpacity * 0.8),
-            ]),
-            center: .center,
-            angle: angle
-        )
-    }
-    
-    // Processing gradient - add a subtle inner shimmer maybe? Using Radial for variation.
-    private func processingGradient(angle: Angle) -> RadialGradient {
-        RadialGradient(
-            gradient: Gradient(colors: [
-                Color.cyan.opacity(0.6), // Center color
-                Color.blue.opacity(0.4),
-                Color.purple.opacity(0.5),
-                Color.blue.opacity(0.3) // Outer edge
-            ]),
-            center: .center,
-            startRadius: 5, // Small start radius for the cyan center
-            endRadius: 100 // End radius covering the circle size
-        )
-        // Note: We lose the direct angle rotation here with RadialGradient.
-        // Could combine or overlay with an angular one if rotation is essential for processing.
-        // Let's try without rotation for processing for variety.
-    }
-    
-    
-    private func speakingGradient(angle: Angle) -> AngularGradient {
-        // Slightly softer, warmer speaking colors
-        AngularGradient(
-            gradient: Gradient(colors: [
-                Color(hue: 0.98, saturation: 0.7, brightness: 1.0).opacity(0.7), // Pink
-                Color(hue: 0.08, saturation: 0.6, brightness: 1.0).opacity(0.8), // Orange
-                Color(hue: 0.12, saturation: 0.7, brightness: 1.0).opacity(0.7), // Gold/Yellowish
-                Color(hue: 0.08, saturation: 0.6, brightness: 1.0).opacity(0.8), // Orange
-                Color(hue: 0.98, saturation: 0.7, brightness: 1.0).opacity(0.7), // Pink
-            ]),
-            center: .center,
-            angle: angle
-        )
-    }
-    
-    // StateProperties holds only the common dynamic values
-    private struct StateProperties: Equatable {
-        let scale: CGFloat
-        let blurRadius: CGFloat
-        let angle: Angle // Angle for rotation (used by Angular gradients)
-        let identifier: Int // Corresponds to ViewModelState hashValue or explicit mapping
-        let normalizedMicLevel: CGFloat
-        let normalizedTTSLevel: CGFloat
-    }
-    
-    // Calculate the state properties based on the ViewModelState
-    private func calculateStateProperties(currentAngle: Angle) -> StateProperties {
-        let micLevelNormalized = CGFloat(max(0, min(1, (audioLevel - minDB) / (maxDB - minDB))))
-        let ttsLevelNormalized = CGFloat(max(0, min(1, (ttsLevel - minTTSLevel) / (maxTTSLevel - minTTSLevel))))
-        
-        let micExponent: CGFloat = 1.5
-        let curvedMicLevel = pow(micLevelNormalized, micExponent)
-        let curvedTTSLevel = ttsLevelNormalized
-        
-        let rotationSpeedMultiplier: Double
-        let stateIdentifier: Int
-        let calculatedScale: CGFloat
-        let calculatedBlur: CGFloat
-        
-        // Determine visuals based on the state enum
+  @Binding var state: ViewModelState
+  @Binding var audioLevel: Float // in [-50 … 0]
+  @Binding var ttsLevel: Float   // in [0 … 1]
+
+  // Circle size
+  private let size: CGFloat = 200
+
+  var body: some View {
+    // TimelineView drives smooth animation at ~60fps
+    TimelineView(.animation) { context in
+      let t     = context.date.timeIntervalSinceReferenceDate
+      let phase = t * 2.0
+
+      // drive amplitude & palette by state + levels
+      let (amp, mainColors, strokeColors): (Double, [Color], [Color]) = {
         switch state {
-        case .speakingTTS:
-            rotationSpeedMultiplier = 2.5
-            stateIdentifier = 3 // Matches gradientView case
-            calculatedScale = baseScale + (curvedTTSLevel * speakingScaleMultiplier)
-            calculatedBlur = 3 + (curvedTTSLevel * 3)
         case .listening:
-            rotationSpeedMultiplier = 3.0
-            stateIdentifier = 1 // Matches gradientView case
-            calculatedScale = baseScale + (curvedMicLevel * listeningScaleMultiplier)
-            calculatedBlur = 2 + (curvedMicLevel * 4)
+          let norm = max(0, min(1, (audioLevel + 50) / 50))
+          // repeat first color at the end so AngularGradient wraps seamlessly
+          let colors = [Color.blue, Color.purple, Color.cyan, Color.blue]
+          return (Double(norm), colors, [Color.cyan, Color.purple, Color.blue, Color.cyan])
+
+        case .speakingTTS:
+          let norm = max(0, min(1, ttsLevel))
+          // now use the "loading" (processing) red/orange palette here
+          let colors = [Color.pink, Color.purple, Color.pink]
+          return (Double(norm), colors, [Color.purple, Color.pink, Color.purple])
+          
+
         case .processingLLM:
-            rotationSpeedMultiplier = 0 // No rotation for radial
-            stateIdentifier = 2 // Matches gradientView case
-            calculatedScale = baseScale * 0.9 // Slightly smaller for processing
-            calculatedBlur = 15 // More blur for processing state
-        case .idle, .error:
-            rotationSpeedMultiplier = 0.5 // Slow rotation
-            stateIdentifier = 0 // Matches gradientView case
-            calculatedScale = baseScale
-            calculatedBlur = 2
-        }
-        
-        let dynamicAngle = currentAngle * rotationSpeedMultiplier
-        
-        return StateProperties(
-            scale: calculatedScale,
-            blurRadius: calculatedBlur,
-            angle: dynamicAngle,
-            identifier: stateIdentifier,
-            normalizedMicLevel: curvedMicLevel,
-            normalizedTTSLevel: curvedTTSLevel
-        )
-    }
-    
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 0.016, paused: false)) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            let baseRotationSpeed: Double = 70
-            let currentAngle = Angle.degrees(fmod(time * baseRotationSpeed, 360))
-            
-            let determinedState = calculateStateProperties(currentAngle: currentAngle)
-            
-            ZStack {
-                // Background Glow Layer
-                gradientView(for: determinedState) // Use helper
-                    .frame(width: 200, height: 200)
-                    .scaleEffect(determinedState.scale * 1.05)
-                    .blur(radius: determinedState.blurRadius + 25)
-                    .opacity(0.6)
-                
-                // Main Foreground Layer
-                gradientView(for: determinedState) // Use helper
-                    .frame(width: 200, height: 200)
-                    .scaleEffect(determinedState.scale)
-                    .blur(radius: determinedState.blurRadius)
-                
-            }
-            .shadow(color: .black.opacity(0.4), radius: determinedState.blurRadius > 2 ? 20 : 10, x: 0, y: 10)
-            .animation(.spring(response: animationResponse * 0.8, dampingFraction: animationDamping), value: determinedState.identifier) // Animate based on state identifier
-            .animation(.spring(response: animationResponse, dampingFraction: animationDamping), value: determinedState.scale)
-            .animation(.spring(response: animationResponse, dampingFraction: animationDamping), value: determinedState.blurRadius)
-        }
-    }
-    
-    // Helper function to return the correctly filled Circle view based on state identifier
-    @ViewBuilder
-    private func gradientView(for stateProps: StateProperties) -> some View {
-        let shape = Circle()
-        switch stateProps.identifier {
-        case 0: // Idle
-            shape.fill(idleGradient(angle: stateProps.angle))
-        case 1: // Listening
-            shape.fill(listeningGradient(normalizedLevel: stateProps.normalizedMicLevel, angle: stateProps.angle))
-        case 2: // Processing
-            shape.fill(processingGradient(angle: stateProps.angle)) // Uses Radial, angle ignored internally
-        case 3: // Speaking
-            shape.fill(speakingGradient(angle: stateProps.angle))
+          // swap in the original TTS palette for processing
+          let norm: Double = 0.5
+          let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
+          return (norm, colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
         default:
-            shape.fill(idleGradient(angle: stateProps.angle))
+          let gray = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
+          return (0.1, gray, [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)])
         }
+      }()
+
+      ZStack {
+        // 1) Soft radial glow
+        WaveCircle(
+          phase: phase * 0.8,
+          amplitude: amp,
+          segments: 120,
+          noiseOffset: 0
+        )
+        .fill(
+          RadialGradient(
+            gradient: Gradient(colors: mainColors),
+            center: .center,
+            startRadius: 0,
+            endRadius: size/2
+          )
+        )
+        .frame(width: size, height: size)
+        .blur(radius: size * 0.1)
+        .opacity(0.5)
+
+        // 2) Main wavy fill
+        WaveCircle(
+          phase: -phase * 1.2,
+          amplitude: amp,
+          segments: 100,
+          noiseOffset: 1
+        )
+        .fill(
+          AngularGradient(
+            gradient: Gradient(colors: mainColors),
+            center: .center
+          )
+        )
+        .frame(width: size, height: size)
+
+        // 3) Wavy outline stroke
+        WaveCircle(
+          phase: phase,
+          amplitude: amp * 0.8,
+          segments: 80,
+          noiseOffset: 2
+        )
+        .stroke(
+          AngularGradient(
+            gradient: Gradient(colors: strokeColors),
+            center: .center
+          ),
+          lineWidth: size * 0.04
+        )
+        .frame(width: size * 0.9, height: size * 0.9)
+
+        // 4) Crisp outer ring
+        Circle()
+          .strokeBorder(Color.white.opacity(0.6), lineWidth: size * 0.02)
+          .frame(width: size, height: size)
+      }
+      // animate any change on "state" (which drives amp/colors)
+      .animation(.easeInOut(duration: 0.6), value: state)
     }
+    .frame(width: size, height: size)
+  }
 }
 
-// --- Previews ---
-// Update previews to use the state enum explicitly
-
-#Preview("Idle") {
-    VoiceIndicatorView(
-        state: .constant(ViewModelState.idle), // Explicit type
-        audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.0)
-    )
-    .preferredColorScheme(.dark)
+struct VoiceIndicatorView_Previews: PreviewProvider {
+  static var previews: some View {
+    StatefulPreviewWrapper(ViewModelState.listening) { state in
+      VoiceIndicatorView(
+        state: state,
+        audioLevel: .constant(-25),
+        ttsLevel:   .constant(0.6)
+      )
+    }
+  }
 }
 
-#Preview("Listening Low") {
-    VoiceIndicatorView(
-        state: .constant(ViewModelState.listening), // Explicit type
-        audioLevel: .constant(-30.0),
-        ttsLevel: .constant(0.0)
-    )
-    .preferredColorScheme(.dark)
-}
+// A helper struct to wrap a View that uses @Binding for previews
+struct StatefulPreviewWrapper<Value, Content: View>: View {
+    @State private var value: Value
+    private var content: (Binding<Value>) -> Content
 
-#Preview("Listening High") {
-    VoiceIndicatorView(
-        state: .constant(ViewModelState.listening), // Explicit type
-        audioLevel: .constant(-5.0),
-        ttsLevel: .constant(0.0)
-    )
-    .preferredColorScheme(.dark)
-}
+    init(_ value: Value, content: @escaping (Binding<Value>) -> Content) {
+        self._value = State(wrappedValue: value)
+        self.content = content
+    }
 
-#Preview("Processing") {
-    VoiceIndicatorView(
-        state: .constant(ViewModelState.processingLLM), // Explicit type
-        audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.0)
-    )
-    .preferredColorScheme(.dark)
-}
-
-#Preview("Speaking Low") {
-    VoiceIndicatorView(
-        state: .constant(ViewModelState.speakingTTS), // Explicit type
-        audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.1)
-    )
-    .preferredColorScheme(.dark)
-}
-
-#Preview("Speaking High") {
-    VoiceIndicatorView(
-        state: .constant(ViewModelState.speakingTTS), // Explicit type
-        audioLevel: .constant(-50.0),
-        ttsLevel: .constant(0.9)
-    )
-    .preferredColorScheme(.dark)
+    var body: some View {
+        content($value)
+    }
 }
