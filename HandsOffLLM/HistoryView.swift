@@ -36,8 +36,10 @@ struct HistoryView: View {
             viewModel.pauseMainActivities()
         }
         .onDisappear {
-            // Resume listening when leaving history
-            viewModel.startListening()
+            // Only resume listening when actually exiting history view (not when navigating deeper)
+            if !rootIsActive {
+                viewModel.startListening()
+            }
         }
     }
     
