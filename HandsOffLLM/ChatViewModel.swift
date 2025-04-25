@@ -40,7 +40,6 @@ class ChatViewModel: ObservableObject {
     private var isProcessingLLM: Bool = false // Internal tracking
     private var isSpeaking: Bool = false     // Internal tracking
     private var isListening: Bool = false    // Internal tracking
-    private var expectingFinalSpeaking: Bool = false // ← NEW: mark when final chunk is coming
     
     init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService) {
         self.audioService = audioService
@@ -70,15 +69,10 @@ class ChatViewModel: ObservableObject {
         audioService.transcriptionSubject
             .sink { [weak self] transcription in
                 guard let self = self else { return }
-                // New run → clear the "final chunk" marker
-                self.expectingFinalSpeaking = false
-
-                self.logger.info("ViewModel received transcription: '\(transcription)'")
+                self.logger.info("Received transcription: '\(transcription)'")
                 if self.state == .listening {
                     self.updateState(.processingLLM)
                     self.chatService.processTranscription(transcription, provider: self.selectedProvider)
-                } else {
-                    self.logger.warning("Received transcription but not in listening state (\(String(describing: self.state))). Ignoring.")
                 }
             }
             .store(in: &cancellables)
@@ -119,9 +113,7 @@ class ChatViewModel: ObservableObject {
         chatService.llmCompleteSubject
             .sink { [weak self] in
                 guard let self = self else { return }
-                self.logger.info("ViewModel received LLM completion signal.")
-                // mark that this next playback end is the final one
-                self.expectingFinalSpeaking = true
+                self.logger.info("LLM complete – enqueue final TTS chunk")
                 self.audioService.processTTSChunk(textChunk: "", isLastChunk: true)
             }
             .store(in: &cancellables)
@@ -143,6 +135,15 @@ class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         // --- END NEW ---
+        
+        // --- NEW: when audio service reports all TTS chunks finished, restart listening ---
+        audioService.ttsPlaybackCompleteSubject
+            .sink { [weak self] in
+                guard let self = self else { return }
+                self.logger.info("TTS playback fully complete, resuming listening.")
+                self.startListening()
+            }
+            .store(in: &cancellables)
         
         // --- Initial State Transition: idle -> listening ---
         // Start listening shortly after initialization
@@ -204,27 +205,9 @@ class ChatViewModel: ObservableObject {
         self.isSpeaking = speaking
         logger.debug("Internal isSpeaking updated: \(speaking)")
         
-        // Transition into TTS mode exactly once, when the first buffer arrives
+        // Transition into TTS mode on the first buffer
         if speaking && !wasSpeaking && state == .processingLLM {
             updateState(.speakingTTS)
-        }
-        // Only on the *final* playback end do we go back to listening
-        else if !speaking && wasSpeaking && state == .speakingTTS {
-            if expectingFinalSpeaking {
-                expectingFinalSpeaking = false
-                logger.info("Final TTS playback finished, scheduling listening restart.")
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(50))
-                    self.startListening()
-                }
-            } else {
-                // intermediate TTS-chunk stops are ignored, stay in speakingTTS
-                logger.debug("Intermediate TTS pause; remaining in speakingTTS state.")
-            }
-        }
-        else if !speaking && wasSpeaking && state == .listening {
-            // This can happen if user cancels TTS (cycleState: speakingTTS -> cancel -> listening)
-            logger.info("Speaking stopped while transitioning to listening state (\(String(describing: self.state))) (expected after cancel).")
         }
     }
     
@@ -432,7 +415,6 @@ class ChatViewModel: ObservableObject {
     // --- Helper for starting new chat ---
     func startNewChat() {
         logger.info("Starting new chat session.")
-        resetToIdleState(attemptRestart: false) // Resets context and goes to Idle
-        // User can then tap to start listening
+        resetToIdleState(attemptRestart: true) // Resets context and starts listening
     }
 }

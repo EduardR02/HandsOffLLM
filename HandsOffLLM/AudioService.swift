@@ -28,9 +28,10 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     @Published var outputDevice: OutputDevice = .speaker // Default, will update on init/route change
     
     // --- Combine Subjects for Communication ---
-    let transcriptionSubject = PassthroughSubject<String, Never>() // Sends final transcription
-    let errorSubject = PassthroughSubject<Error, Never>()         // Reports errors
+    let transcriptionSubject = PassthroughSubject<String, Never>()  // Sends final transcription
+    let errorSubject = PassthroughSubject<Error, Never>()          // Reports errors
     let ttsChunkSavedSubject = PassthroughSubject<(messageID: UUID, path: String), Never>()
+    let ttsPlaybackCompleteSubject = PassthroughSubject<Void, Never>() // NEW: fired when all TTS chunks have played
     
     // --- Internal State ---
     private var lastMeasuredAudioLevel: Float = -50.0
@@ -593,6 +594,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 logger.debug("TTS Manage: Found no suitable chunk to fetch yet.")
                 if isTextStreamComplete && currentTextProcessedIndex == currentTextToSpeakBuffer.count && currentAudioPlayer == nil && nextAudioData == nil {
                     logger.info("🏁 TTS processing and playback complete.")
+                    ttsPlaybackCompleteSubject.send()      // NEW: notify complete
                     if isSpeaking { isSpeaking = false }
                     self.currentTextToSpeakBuffer = ""
                     self.currentTextProcessedIndex = 0
@@ -643,9 +645,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                                     chunkIndex: self.currentTTSChunkIndex
                                 )
                                 self.logger.info("Saved TTS chunk #\(self.currentTTSChunkIndex) at \(relPath)")
-                                // --- NEW: Report path saved ---
                                 self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
-                                // --- END NEW ---
                             } catch {
                                 self.logger.error("Failed to save TTS audio chunk: \(error.localizedDescription)")
                             }
