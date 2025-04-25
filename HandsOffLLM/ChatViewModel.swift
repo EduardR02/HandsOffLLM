@@ -9,6 +9,7 @@ enum ViewModelState: Equatable {
     case idle          // Not listening, not processing, not speaking (Grey circle)
     case listening     // Actively listening for user input (Blue circle)
     case processingLLM // Waiting for LLM response (Purple blur)
+    case fetchingTTS   // Waiting on TTS fetch
     case speakingTTS   // Playing back TTS audio (Green circle)
     case error         // New error case
 }
@@ -138,17 +139,19 @@ class ChatViewModel: ObservableObject {
             ?? (settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude)
 
         Publishers
-            .CombineLatest3(
+            .CombineLatest4(
                 audioService.$isListening,
                 chatService.$isProcessingLLM,
+                audioService.$isFetchingTTS,
                 audioService.$isSpeaking
             )
             .receive(on: RunLoop.main)
-            .map { listening, processing, speaking in
-                if speaking            { return .speakingTTS }
-                else if processing      { return .processingLLM }
-                else if listening       { return .listening }
-                else                    { return .idle }
+            .map { listening, processing, fetching, speaking in
+                if speaking       { return .speakingTTS }
+                else if processing{ return .processingLLM }
+                else if fetching  { return .fetchingTTS }
+                else if listening { return .listening }
+                else              { return .idle }
             }
             .assign(to: &$state)
     }
@@ -183,7 +186,6 @@ class ChatViewModel: ObservableObject {
     }
 
     func startListening() {
-        // just start the service; the pipeline will set state = .listening
         audioService.startListening()
     }
     

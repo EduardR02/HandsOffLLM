@@ -70,8 +70,8 @@ struct ContentView: View {
                 .pickerStyle(SegmentedPickerStyle())
                 .padding(.horizontal)
                 .padding(.bottom)
-                .disabled(viewModel.state == .processingLLM || viewModel.state == .speakingTTS)
-                .opacity(viewModel.state == .processingLLM || viewModel.state == .speakingTTS ? 0.5 : 1.0) // Use opacity instead of hide
+                .disabled(viewModel.state == .processingLLM || viewModel.state == .speakingTTS || viewModel.state == .fetchingTTS)
+                .opacity(viewModel.state == .processingLLM || viewModel.state == .speakingTTS || viewModel.state == .fetchingTTS ? 0.5 : 1.0) // Use opacity instead of hide
                 .animation(.easeInOut(duration: 0.3), value: viewModel.state)
             }
         }

@@ -19,9 +19,6 @@ struct RoutePickerView: UIViewRepresentable {
         // picker.activeTintColor = .systemBlue // Example
         picker.backgroundColor = .clear // Make background transparent
 
-        // Set delegate if you need to know when the picker is presented/dismissed
-        // picker.delegate = context.coordinator
-
         return picker
     }
 
@@ -29,31 +26,6 @@ struct RoutePickerView: UIViewRepresentable {
         // Update tint color if the environment changes
         uiView.tintColor = (colorScheme == .dark) ? .white : .black
     }
-
-    // Optional: Add a Coordinator if you need delegate methods
-    /*
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, AVRoutePickerViewDelegate {
-        var parent: RoutePickerView
-
-        init(_ parent: RoutePickerView) {
-            self.parent = parent
-        }
-
-        func routePickerViewWillBeginPresentingRoutes(_ routePickerView: AVRoutePickerView) {
-            // Handle event before picker appears
-            print("Route picker will present")
-        }
-
-        func routePickerViewDidEndPresentingRoutes(_ routePickerView: AVRoutePickerView) {
-            // Handle event after picker dismisses
-            print("Route picker did dismiss")
-        }
-    }
-    */
 }
 
 #Preview {

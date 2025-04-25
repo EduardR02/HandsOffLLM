@@ -352,12 +352,10 @@ class ChatService: ObservableObject {
             system: systemPromptToUse,
             messages: history,
             stream: true,
-            max_tokens: maxTokens, // Use active max tokens
-            temperature: temperature // Use active temperature
+            max_tokens: maxTokens,
+            temperature: temperature
         )
-        // --- End Payload ---
         
-        // ... encode payload, make request, process stream (remains the same) ...
         do {
             request.httpBody = try JSONEncoder().encode(payload)
         } catch {
@@ -545,9 +543,7 @@ class ChatService: ObservableObject {
                 historyService?.addOrUpdateConversation(conversationToSave)
             }
         }
-        // --- END NEW ---
     }
-    // --- END NEW ---
     
     deinit {
         logger.info("ChatService deinit.")

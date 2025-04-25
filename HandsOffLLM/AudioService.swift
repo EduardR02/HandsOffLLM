@@ -43,7 +43,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private var llmDone: Bool = false
     private var audioQueue: [Data] = []
     private var ttsFetchTask: Task<Void, Never>? = nil
-    private var isFetchingTTS: Bool = false
+    @Published private(set) var isFetchingTTS: Bool = false
     
     // --- Audio Components ---
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
@@ -121,56 +121,23 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
 
     func applyAudioSessionSettings() {
         let session = AVAudioSession.sharedInstance()
-        var sessionNeedsActivation = !session.isOtherAudioPlaying
-        var categoryNeedsSetting = true
-
-        // --- Define desired options including Bluetooth ---
-        let desiredOptions: AVAudioSession.CategoryOptions = [.duckOthers, .allowBluetooth, .allowBluetoothA2DP]
-        // ---
-
-        // Check if category AND options are already correct
-        if session.category == .playAndRecord && session.categoryOptions == desiredOptions {
-            categoryNeedsSetting = false
-            logger.debug("Routing: Category and Options already correct.")
-        } else {
-             logger.debug("Routing: Category or Options need setting (Current Cat: \(session.category.rawValue), Opts: \(session.categoryOptions.rawValue), Desired Opts: \(desiredOptions.rawValue)).")
-        }
-
         do {
-            // Set Category & Options only if needed
-            if categoryNeedsSetting {
-                // --- Use desired options here ---
-                try session.setCategory(.playAndRecord, mode: .default, options: desiredOptions)
-                logger.debug("Routing: Set category to .playAndRecord with options: \(desiredOptions.rawValue).")
-                 // Setting the category might deactivate the session
-                 sessionNeedsActivation = true
-            }
-
-            // Activate Session only if needed
-            if sessionNeedsActivation {
-                 try session.setActive(true, options: .notifyOthersOnDeactivation)
-                 logger.debug("Routing: Audio session activated.")
-            } else {
-                 logger.debug("Routing: Audio session likely already active and category/options were correct.")
-            }
-
-            // Earpiece override check (remains the same logic)
-            let currentOutputs = session.currentRoute.outputs
-            let isUsingReceiver = currentOutputs.contains { $0.portType == .builtInReceiver }
-            if isUsingReceiver {
-                logger.info("Routing: Current route includes built-in receiver. Attempting override to speaker.")
-                try session.overrideOutputAudioPort(.speaker)
-            } else {
-                logger.info("Routing: Current route is not receiver (\(currentOutputs.map { $0.portName })), no override needed.")
-            }
-
-            updateOutputDeviceState(for: session.currentRoute)
-
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [
+                    .duckOthers,
+                    .allowBluetooth,
+                    .allowBluetoothA2DP,
+                    .defaultToSpeaker
+                ]
+            )
+            try session.setActive(true)
         } catch {
-            logger.error("🚨 Failed to apply audio session settings or override: \(error.localizedDescription)")
-            updateOutputDeviceState(for: session.currentRoute)
-            errorSubject.send(AudioError.audioSessionError("Failed to set session category/active/override: \(error.localizedDescription)"))
+            logger.error("Audio session configuration error: \(error.localizedDescription)")
+            errorSubject.send(AudioError.audioSessionError(error.localizedDescription))
         }
+        updateOutputDeviceState(for: session.currentRoute)
     }
     
     // MARK: - Permission Request
@@ -228,22 +195,19 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             logger.warning("Attempted to start listening while already active (Listening: \(self.isListening), Speaking: \(self.isSpeaking)).")
             return
         }
-        
         guard speechRecognizer.isAvailable else {
-            logger.error("🚨 Speech recognizer is not available right now.")
             errorSubject.send(AudioError.recognizerUnavailable)
-            isListening = false
             return
         }
-        
+        // Reset silence-detection state on every new listen session
+        hasUserStartedSpeakingThisTurn = false
+        invalidateSilenceTimer()
         isListening = true
         isSpeaking = false
         currentSpokenText = ""
         listeningAudioLevel = -50.0
         logger.notice("🎤 Listening started…")
-        
-        applyAudioSessionSettings()
-        
+
         let inputNode = audioEngine.inputNode
         
         guard !audioEngine.isRunning else {
@@ -360,15 +324,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     func stopListeningAndSendTranscription(transcription: String?) {
         // 1. Get the final text
         let textToSend = transcription ?? self.currentSpokenText
-        
-        // 2. Perform cleanup (stops engine, cancels tasks, sets isListening = false)
-        stopListeningCleanup()
-        
         // 3. Send the transcription if it's not empty
         let trimmedText = textToSend.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedText.isEmpty {
             logger.info("🎤 Sending final transcription to ViewModel: '\(trimmedText)'")
             transcriptionSubject.send(trimmedText)
+            stopListeningCleanup()
         } else {
             logger.info("🎤 No speech detected or transcription empty, not sending.")
             // Notify ViewModel or whoever is listening that listening stopped without result?
@@ -585,7 +546,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             fetchAudio(for: chunk)
         }
         // 3) If we're out of both text and queued audio, we're truly done
-        else if llmDone && audioQueue.isEmpty {
+        else if llmDone && audioQueue.isEmpty && !(currentAudioPlayer?.isPlaying ?? false){
             ttsPlaybackCompleteSubject.send()
             llmDone = false
         }
@@ -617,6 +578,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                     text: text,
                     instruction: self.settingsService.activeTTSInstruction
                 ) {
+                    // enqueue for playback
+                    logger.info("Enqueued TTS chunk for playback \(self.currentTTSChunkIndex).")
+                    self.audioQueue.append(data)
                     // save chunk to disk & notify
                     if let convID = self.currentTTSConversationID,
                        let msgID  = self.currentTTSMessageID
@@ -631,8 +595,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                         self.currentTTSChunkIndex += 1
                         self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
                     }
-                    // enqueue for playback
-                    self.audioQueue.append(data)
                 }
             } catch {
                 if !(error is CancellationError) {
@@ -917,25 +879,17 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     }
 
     private func handleRouteChange(notification: Notification) {
-        guard let userInfo    = notification.userInfo,
-              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason      = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
+        guard
+            let userInfo    = notification.userInfo,
+            let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            AVAudioSession.RouteChangeReason(rawValue: reasonValue) != nil
         else { return }
 
-        // Always update our published state
-        logger.info("🔊 Route changed. Reason: \(String(describing: reason))")
+        // Only update the published outputDevice for the UI.
         let currentRoute = AVAudioSession.sharedInstance().currentRoute
         updateOutputDeviceState(for: currentRoute)
 
-        // ── Only restart the engine on real device connect/disconnect ──
-        if isListening, reason == .newDeviceAvailable || reason == .oldDeviceUnavailable {
-            logger.info("🔄 Device connect/disconnect—restarting microphone engine.")
-            stopListeningCleanup()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                self.startListening()
-            }
-        }
-        // ── skip restarts on categoryChange, override, etc. ──
+        // Removed: any automatic restarts or overrides here
     }
 
     // Updates the @Published outputDevice based on the route's outputs

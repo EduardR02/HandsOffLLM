@@ -69,9 +69,8 @@ struct VoiceIndicatorView: View {
           let colors = [Color.pink, Color.purple, Color.pink]
           return (Double(norm), colors, [Color.purple, Color.pink, Color.purple])
           
-
-        case .processingLLM:
-          // swap in the original TTS palette for processing
+        case .processingLLM,
+             .fetchingTTS:           // ← treat TTS-fetch exactly like LLM-processing
           let norm: Double = 0.5
           let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
           return (norm, colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
