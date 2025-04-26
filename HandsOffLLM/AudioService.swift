@@ -126,6 +126,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                                     ])
             // try session.setPreferredSampleRate(48_000) // Optional: keep if needed
             try session.setActive(true)
+            // Default to speaker only if no Bluetooth device is connected
+            let btTypes: [AVAudioSession.Port] = [.bluetoothHFP, .bluetoothA2DP, .bluetoothLE]
+            let hasBT = session.currentRoute.outputs.contains { btTypes.contains($0.portType) }
+            if !hasBT {
+                try session.overrideOutputAudioPort(.speaker)
+            }
             // Initial route check can happen here or in handleRouteChange
         } catch {
             logger.error("Audio session configuration error: \(error.localizedDescription)")
@@ -835,10 +841,10 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             guard let userInfo = notification.userInfo,
                   let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
-                self?.handleRouteChange(reason: nil)
+                Task { await self?.handleRouteChange(reason: nil) }
                 return
             }
-            self?.handleRouteChange(reason: reason)
+            Task { await self?.handleRouteChange(reason: reason) }
         }
     }
     
