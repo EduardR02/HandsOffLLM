@@ -20,13 +20,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         didSet { updatePlayerRate() }
     }
     
-    // --- Output Device State (Now updated via Notifications) ---
-    enum OutputDevice: String {
-        case speaker
-        case bluetooth // Represents any non-speaker output selected by user
-    }
-    @Published var outputDevice: OutputDevice = .speaker // Default, will update on init/route change
-    
     // --- Combine Subjects for Communication ---
     let transcriptionSubject = PassthroughSubject<String, Never>()  // Sends final transcription
     let errorSubject = PassthroughSubject<Error, Never>()          // Reports errors
@@ -115,29 +108,29 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         super.init()
         speechRecognizer.delegate = self
         requestPermissions()
-        setupRouteChangeObserver()
-        applyAudioSessionSettings() // Ensure this call remains
+        applyAudioSessionSettings() // Configure session first
+        setupRouteChangeObserver()  // Then observe changes
+        configureAudioEngineTap()   // Then configure tap based on initial route
     }
 
     func applyAudioSessionSettings() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [
-                    .duckOthers,
-                    .allowBluetooth,
-                    .allowBluetoothA2DP,
-                    .defaultToSpeaker
-                ]
-            )
+            try session.setCategory(.playAndRecord,
+                                    mode: .default, // Use default mode
+                                    options: [
+                                        // No longer forcing speaker or overriding port
+                                        .allowBluetooth,
+                                        .allowBluetoothA2DP,
+                                        .allowAirPlay
+                                    ])
+            // try session.setPreferredSampleRate(48_000) // Optional: keep if needed
             try session.setActive(true)
+            // Initial route check can happen here or in handleRouteChange
         } catch {
             logger.error("Audio session configuration error: \(error.localizedDescription)")
             errorSubject.send(AudioError.audioSessionError(error.localizedDescription))
         }
-        updateOutputDeviceState(for: session.currentRoute)
     }
     
     // MARK: - Permission Request
@@ -191,42 +184,32 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     // MARK: - Listening Control
     func startListening() {
-        guard !isListening && !isSpeaking else {
-            logger.warning("Attempted to start listening while already active (Listening: \(self.isListening), Speaking: \(self.isSpeaking)).")
-            return
-        }
+        guard !isListening && !isSpeaking else { return }
         guard speechRecognizer.isAvailable else {
             errorSubject.send(AudioError.recognizerUnavailable)
             return
         }
-        // Reset silence-detection state on every new listen session
+        // reset per‐session state…
         hasUserStartedSpeakingThisTurn = false
         invalidateSilenceTimer()
         isListening = true
         isSpeaking = false
         currentSpokenText = ""
-        listeningAudioLevel = -50.0
+        listeningAudioLevel = -50
         logger.notice("🎤 Listening started…")
 
-        let inputNode = audioEngine.inputNode
-        
-        guard !audioEngine.isRunning else {
-            logger.warning("Audio engine is already running after applying session settings. Cannot start listening again yet.")
-            isListening = false
-            listeningAudioLevel = -50.0
-            return
-        }
-        
+        // Only create a new recognition request & task
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
-            logger.critical("Unable to create SFSpeechAudioBufferRecognitionRequest object")
             errorSubject.send(AudioError.recognitionRequestError)
             isListening = false
             return
         }
         recognitionRequest.shouldReportPartialResults = true
-        
-        recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+
+        recognitionTask = speechRecognizer.recognitionTask(
+            with: recognitionRequest
+        ) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 guard self.recognitionTask != nil else { return } // Task might have been cancelled
@@ -274,49 +257,25 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 }
             }
         }
-        
-        do {
-            let hardwareFormat = inputNode.outputFormat(forBus: 0)
-            logger.debug("🎤 Input node hardware format: \(hardwareFormat)")
-            
-            let tapFormat = hardwareFormat
-            
-            logger.debug("🎤 Installing tap with format: \(tapFormat)")
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] (buffer, time) in
-                guard let self = self else { return }
-                if self.isListening && !self.isSpeaking {
-                    self.recognitionRequest?.append(buffer)
-                }
-                self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
-            }
 
-            audioEngine.prepare()
-            try audioEngine.start()
-            startAudioLevelTimer()
-            logger.info("🎤 Audio engine started successfully.")
-
-        } catch {
-            logger.error("🚨 Audio engine/tap setup error: \(error.localizedDescription)")
-            errorSubject.send(AudioError.audioEngineError("Engine/Tap setup failed: \(error.localizedDescription)"))
-            recognitionTask?.cancel()
-            recognitionTask = nil
-            //self.recognitionRequest = nil
-            stopListeningCleanup()
-        }
+        // edit_3: engine & tap are already live – just begin level‐meter updates
+        startAudioLevelTimer()
+        logger.info("🎤 Listening using existing audio engine.")
     }
     
     func stopListeningCleanup() {
-        let wasListening = isListening // Check state before modification
-        stopAudioEngine()
+        let wasListening = isListening
+        // edit_4: leave engine & tap running, just stop the level timer
+        invalidateAudioLevelTimer()
         recognitionRequest?.endAudio()
-        recognitionTask?.cancel() // Use cancel instead of finish
+        recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
         invalidateSilenceTimer()
-        
-        if wasListening { // Only log and update state if we were actually listening
+
+        if wasListening {
             isListening = false
-            listeningAudioLevel = -50.0 // Reset level visually
+            listeningAudioLevel = -50
             logger.notice("🎙️ Listening stopped (Cleanup).")
         }
     }
@@ -377,15 +336,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     // MARK: - Audio Engine Management
     private func stopAudioEngine() {
-        // Always remove any existing tap so we never install twice
-        audioEngine.inputNode.removeTap(onBus: 0)
-        // Then stop the engine if it's actually running
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.reset() // Add reset after stopping
-        }
-        invalidateAudioLevelTimer() // Stop level updates when engine stops
-        logger.info("Audio engine stopped.")
+        // edit_5: no longer tear down the engine—only stop level updates if ever called
+        invalidateAudioLevelTimer()
+        logger.debug("Audio engine remains running.")
     }
     
     private func calculatePowerLevel(buffer: AVAudioPCMBuffer) -> Float {
@@ -848,12 +801,18 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     func cleanupOnDisappear() {
         logger.info("AudioService cleanup initiated.")
         stopListeningCleanup()
-        stopSpeaking() // also cancels any in-flight TTS fetch
+        stopSpeaking()
         invalidateAudioLevelTimer()
         invalidateSilenceTimer()
         invalidateTTSLevelTimer()
 
-        // Remove the AVAudioSession route-change observer
+        audioEngine.stop()
+        do {
+            try AVAudioSession.sharedInstance().setActive(false)
+        } catch {
+            logger.error("Failed to deactivate audio session: \(error.localizedDescription)")
+        }
+
         if let observer = routeChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             routeChangeObserver = nil
@@ -864,54 +823,88 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         // deinit done by owner
         logger.info("AudioService deinit.")
     }
-
-    // --- Route Change Handling ---
+    
+    // MARK: - Route Change Handling
     private func setupRouteChangeObserver() {
+        let session = AVAudioSession.sharedInstance()
         routeChangeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(),
-            queue: .main) { [weak self] notification in
-                Task { @MainActor [weak self] in
-                    self?.handleRouteChange(notification: notification)
-                }
-        }
-        logger.info("🔊 Route change observer set up.")
-    }
-
-    private func handleRouteChange(notification: Notification) {
-        guard
-            let userInfo    = notification.userInfo,
-            let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-            AVAudioSession.RouteChangeReason(rawValue: reasonValue) != nil
-        else { return }
-
-        // Only update the published outputDevice for the UI.
-        let currentRoute = AVAudioSession.sharedInstance().currentRoute
-        updateOutputDeviceState(for: currentRoute)
-
-        // Removed: any automatic restarts or overrides here
-    }
-
-    // Updates the @Published outputDevice based on the route's outputs
-    private func updateOutputDeviceState(for route: AVAudioSessionRouteDescription) {
-        // Consider it "speaker" only if the primary output is Speaker or Headphones (built-in)
-        // Treat any Bluetooth or other external audio as "bluetooth" for the icon state
-        let isSpeakerOutput = route.outputs.contains { output in
-            output.portType == .builtInSpeaker
-        }
-        // Note: .headphones refers to the *wired* headphone jack, treat as speaker for icon? Or separate? Let's group with speaker for simplicity.
-        let isWiredHeadphones = route.outputs.contains { $0.portType == .headphones }
-
-        if isSpeakerOutput || isWiredHeadphones {
-            if self.outputDevice != .speaker {
-                self.outputDevice = .speaker
-                logger.info("🔊 Output device state updated to: Speaker (Built-in or Wired)")
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            guard let userInfo = notification.userInfo,
+                  let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+                self?.handleRouteChange(reason: nil)
+                return
             }
-        } else {
-            // If any non-speaker/wired output exists (like Bluetooth A2DP/HFP/LE, AirPlay, CarAudio etc.)
-            if self.outputDevice != .bluetooth {
-                self.outputDevice = .bluetooth
-                logger.info("🔊 Output device state updated to: Bluetooth/External")
+            self?.handleRouteChange(reason: reason)
+        }
+    }
+    
+    private func handleRouteChange(reason: AVAudioSession.RouteChangeReason?) {
+        let session = AVAudioSession.sharedInstance()
+        let currentRoute = session.currentRoute
+        
+        logRouteDetails(route: currentRoute, reason: reason)
+        
+        // Introduce a small delay before reconfiguring the tap
+        Task {
+            // Give the system a moment (e.g., 100ms) to settle the route change
+            try? await Task.sleep(nanoseconds: 100_000_000) 
+            
+            // Now reconfigure the tap on the main thread
+            await MainActor.run {
+                 logger.info("🎤 Reconfiguring audio engine tap after delay.")
+                 // Important: removeTap must happen before installTap
+                 audioEngine.inputNode.removeTap(onBus: 0) 
+                 configureAudioEngineTap() // Re-install tap for the new (or same) route
+            }
+        }
+    }
+
+    /// Helper function to log route details and check for external mic
+    private func logRouteDetails(route: AVAudioSessionRouteDescription, reason: AVAudioSession.RouteChangeReason?) {
+        let reasonDesc = reason?.description ?? "Initial State or Unknown"
+        logger.debug("🔊 Route changed. Reason: \(reasonDesc)")
+        
+        // Check if an external output also provides input
+        if let output = route.outputs.first(where: { $0.portType != .builtInSpeaker && $0.portType != .builtInReceiver && $0.portType != .headphones }), // Consider headphones built-in for this check
+           let input = route.inputs.first(where: { $0.portType == output.portType || ($0.portType == .bluetoothHFP && output.portType == .bluetoothA2DP) }) {
+            logger.info("🔊 External output '\(output.portName)' provides input '\(input.portName)'.")
+        }
+    }
+
+    /// Re-installs tap, prepares and starts engine. Called on init and route change.
+    private func configureAudioEngineTap() {
+        let input = audioEngine.inputNode
+        let hardwareInputFormat = input.inputFormat(forBus: 0)
+
+        guard hardwareInputFormat.sampleRate > 0 else {
+            logger.error("🚨 Invalid hardware input format (sample rate 0).")
+            errorSubject.send(AudioError.audioEngineError("Invalid input format (sample rate 0)"))
+            if audioEngine.isRunning { audioEngine.stop() }
+            return
+        }
+
+        input.installTap(onBus: 0,
+                         bufferSize: 1024,
+                         format: hardwareInputFormat) { [weak self] buffer, _ in
+            guard let self = self else { return }
+            if self.isListening, let req = self.recognitionRequest {
+                req.append(buffer)
+            }
+            self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
+        }
+
+        if !audioEngine.isRunning {
+            audioEngine.prepare()
+            do {
+                try audioEngine.start()
+            } catch {
+                logger.error("🚨 Audio engine startup error: \(error.localizedDescription)")
+                errorSubject.send(AudioError.audioEngineError("Engine start failed: \(error.localizedDescription)"))
+                input.removeTap(onBus: 0)
             }
         }
     }

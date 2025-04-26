@@ -104,10 +104,12 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "plus.circle")
                 }
-                .buttonStyle(.borderless).tint(.white)
+                .buttonStyle(.borderless)
+                .tint(.white)
                 .disabled(viewModel.state != .idle && viewModel.state != .listening)
 
                 RoutePickerView()
+                    .frame(width: 48, height: 48)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -130,8 +132,9 @@ struct ContentView: View {
         }
         .onDisappear {
             logger.info("ContentView disappeared.")
+            audioService.cleanupOnDisappear()
             // Consider stopping listening/speaking if view disappears unexpectedly?
-            // viewModel.cancelProcessingAndSpeaking()
+            viewModel.cancelProcessingAndSpeaking()
         }
     }
 }
