@@ -121,19 +121,15 @@ struct ContentView: View {
             // If history view was dismissed (returned to main)
             if !current {
                 // Trigger listening cycle in ViewModel (guarded internally)
-                viewModel.startListening()
+                audioService.startListening()
             }
         }
         .onAppear {
             logger.info("ContentView appeared.")
-            // Make sure audio session settings are applied on appear
-            audioService.applyAudioSessionSettings()
-            // Consider if viewModel.startListening() should be called here or require tap
         }
         .onDisappear {
             logger.info("ContentView disappeared.")
             audioService.cleanupOnDisappear()
-            // Consider stopping listening/speaking if view disappears unexpectedly?
             viewModel.cancelProcessingAndSpeaking()
         }
     }

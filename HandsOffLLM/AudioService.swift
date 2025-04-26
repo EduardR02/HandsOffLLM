@@ -108,9 +108,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         super.init()
         speechRecognizer.delegate = self
         requestPermissions()
-        applyAudioSessionSettings() // Configure session first
-        setupRouteChangeObserver()  // Then observe changes
-        configureAudioEngineTap()   // Then configure tap based on initial route
+        applyAudioSessionSettings()
     }
 
     func applyAudioSessionSettings() {
@@ -124,7 +122,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                                         .allowBluetoothA2DP,
                                         .allowAirPlay
                                     ])
-            // try session.setPreferredSampleRate(48_000) // Optional: keep if needed
             try session.setActive(true)
             // Default to speaker only if no Bluetooth device is connected
             let btTypes: [AVAudioSession.Port] = [.bluetoothHFP, .bluetoothA2DP, .bluetoothLE]
@@ -137,6 +134,15 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             logger.error("Audio session configuration error: \(error.localizedDescription)")
             errorSubject.send(AudioError.audioSessionError(error.localizedDescription))
         }
+        
+        // Re-establish route observer if removed
+        if routeChangeObserver == nil {
+            setupRouteChangeObserver()
+        }
+        // Re-install audio engine tap and start engine
+        let input = audioEngine.inputNode
+        input.removeTap(onBus: 0)
+        configureAudioEngineTap()
     }
     
     // MARK: - Permission Request
@@ -803,15 +809,24 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         }
     }
     
-    // MARK: - Cleanup
+    // MARK: - Cleanup for in-app navigation (ContentView disappear)
     func cleanupOnDisappear() {
-        logger.info("AudioService cleanup initiated.")
+        logger.info("AudioService partial cleanup for in-app nav.")
         stopListeningCleanup()
         stopSpeaking()
         invalidateAudioLevelTimer()
         invalidateSilenceTimer()
         invalidateTTSLevelTimer()
+    }
 
+    // MARK: - Full cleanup for app background/termination
+    func cleanupForBackground() {
+        logger.info("AudioService full cleanup for background.")
+        stopListeningCleanup()
+        stopSpeaking()
+        invalidateAudioLevelTimer()
+        invalidateSilenceTimer()
+        invalidateTTSLevelTimer()
         audioEngine.stop()
         do {
             try AVAudioSession.sharedInstance().setActive(false)
@@ -849,12 +864,21 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     }
     
     private func handleRouteChange(reason: AVAudioSession.RouteChangeReason?) {
+        // Only handle initial (nil reason) or actual device plugs/unplugs
+        if let reason = reason {
+            switch reason {
+            case .newDeviceAvailable, .oldDeviceUnavailable, .override:
+                break  // proceed
+            default:
+                logger.debug("Ignoring route change: \(reason.description)")
+                return
+            }
+        }
         let session = AVAudioSession.sharedInstance()
         let currentRoute = session.currentRoute
         
         logRouteDetails(route: currentRoute, reason: reason)
         
-        // Introduce a small delay before reconfiguring the tap
         Task {
             // Give the system a moment (e.g., 100ms) to settle the route change
             try? await Task.sleep(nanoseconds: 100_000_000) 

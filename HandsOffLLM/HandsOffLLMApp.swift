@@ -19,6 +19,7 @@ struct HandsOffLLMApp: App {
     @StateObject private var chatService: ChatService
     // ViewModel needs all services
     @StateObject private var chatViewModel: ChatViewModel
+    @Environment(\.scenePhase) private var scenePhase
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "App")
     
@@ -53,6 +54,19 @@ struct HandsOffLLMApp: App {
             .environmentObject(audioService) // Make audio service available for potential replay in detail view
             .environmentObject(chatViewModel)
             .preferredColorScheme(.dark) // Keep dark mode
+        }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            switch newPhase {
+            case .background:
+                logger.info("App moved to background: full audio cleanup.")
+                audioService.cleanupForBackground()
+            case .active:
+                logger.info("App became active: reconfiguring audio.")
+                audioService.applyAudioSessionSettings()
+                audioService.startListening()
+            default:
+                break
+            }
         }
     }
 }
