@@ -44,50 +44,43 @@ struct VoiceIndicatorView: View {
   @Binding var state: ViewModelState
   @Binding var audioLevel: Float // in [-50 … 0]
   @Binding var ttsLevel: Float   // in [0 … 1]
+  @State private var phase1: Double = 0
+  @State private var phase2: Double = 0
+  @State private var phase3: Double = 0
 
   // Circle size
   private let size: CGFloat = 200
 
   var body: some View {
-    // TimelineView drives smooth animation at ~60fps
-    TimelineView(.animation) { context in
-      let t     = context.date.timeIntervalSinceReferenceDate
-      let phase = t * 2.0
+    // drive amplitude & palette by state + levels
+    let (amp, mainColors, strokeColors): (Double, [Color], [Color]) = {
+      switch state {
+      case .listening:
+        let norm = max(0, min(1, (audioLevel + 50) / 50))
+        // repeat first color at the end so AngularGradient wraps seamlessly
+        let colors = [Color.blue, Color.purple, Color.cyan, Color.blue]
+        return (Double(norm), colors, [Color.cyan, Color.purple, Color.blue, Color.cyan])
 
-      // drive amplitude & palette by state + levels
-      let (amp, mainColors, strokeColors): (Double, [Color], [Color]) = {
-        switch state {
-        case .listening:
-          let norm = max(0, min(1, (audioLevel + 50) / 50))
-          // repeat first color at the end so AngularGradient wraps seamlessly
-          let colors = [Color.blue, Color.purple, Color.cyan, Color.blue]
-          return (Double(norm), colors, [Color.cyan, Color.purple, Color.blue, Color.cyan])
+      case .speakingTTS:
+        let norm = max(0, min(1, ttsLevel))
+        // now use the "loading" (processing) red/orange palette here
+        let colors = [Color.pink, Color.purple, Color.pink]
+        return (Double(norm), colors, [Color.purple, Color.pink, Color.purple])
+        
+      case .processingLLM,
+           .fetchingTTS:           // ← treat TTS-fetch exactly like LLM-processing
+        let norm: Double = 0.5
+        let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
+        return (norm, colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
+      default:
+        let gray = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
+        return (0.1, gray, [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)])
+      }
+    }()
 
-        case .speakingTTS:
-          let norm = max(0, min(1, ttsLevel))
-          // now use the "loading" (processing) red/orange palette here
-          let colors = [Color.pink, Color.purple, Color.pink]
-          return (Double(norm), colors, [Color.purple, Color.pink, Color.purple])
-          
-        case .processingLLM,
-             .fetchingTTS:           // ← treat TTS-fetch exactly like LLM-processing
-          let norm: Double = 0.5
-          let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
-          return (norm, colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
-        default:
-          let gray = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
-          return (0.1, gray, [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)])
-        }
-      }()
-
-      ZStack {
-        // 1) Soft radial glow
-        WaveCircle(
-          phase: phase * 0.8,
-          amplitude: amp,
-          segments: 120,
-          noiseOffset: 0
-        )
+    ZStack {
+      // 1) Soft radial glow
+      WaveCircle(phase: phase1 * 0.8, amplitude: amp, segments: 60, noiseOffset: 0)
         .fill(
           RadialGradient(
             gradient: Gradient(colors: mainColors),
@@ -100,13 +93,8 @@ struct VoiceIndicatorView: View {
         .blur(radius: size * 0.1)
         .opacity(0.5)
 
-        // 2) Main wavy fill
-        WaveCircle(
-          phase: -phase * 1.2,
-          amplitude: amp,
-          segments: 100,
-          noiseOffset: 1
-        )
+      // 2) Main wavy fill
+      WaveCircle(phase: -phase2 * 1.2, amplitude: amp, segments: 50, noiseOffset: 1)
         .fill(
           AngularGradient(
             gradient: Gradient(colors: mainColors),
@@ -115,13 +103,8 @@ struct VoiceIndicatorView: View {
         )
         .frame(width: size, height: size)
 
-        // 3) Wavy outline stroke
-        WaveCircle(
-          phase: phase,
-          amplitude: amp * 0.8,
-          segments: 80,
-          noiseOffset: 2
-        )
+      // 3) Wavy outline stroke
+      WaveCircle(phase: phase3, amplitude: amp * 0.8, segments: 40, noiseOffset: 2)
         .stroke(
           AngularGradient(
             gradient: Gradient(colors: strokeColors),
@@ -131,15 +114,19 @@ struct VoiceIndicatorView: View {
         )
         .frame(width: size * 0.9, height: size * 0.9)
 
-        // 4) Crisp outer ring
-        Circle()
-          .strokeBorder(Color.white.opacity(0.6), lineWidth: size * 0.02)
-          .frame(width: size, height: size)
-      }
-      // animate any change on "state" (which drives amp/colors)
-      .animation(.easeInOut(duration: 0.3), value: state)
+      // 4) Crisp outer ring
+      Circle()
+        .strokeBorder(Color.white.opacity(0.6), lineWidth: size * 0.02)
+        .frame(width: size, height: size)
     }
+    .drawingGroup()
+    .animation(.easeInOut(duration: 0.3), value: state)
     .frame(width: size, height: size)
+    .onAppear {
+      withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) { phase1 = .pi * 2 }
+      withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) { phase2 = .pi * 2 }
+      withAnimation(.linear(duration: 5).repeatForever(autoreverses: false)) { phase3 = .pi * 2 }
+    }
   }
 }
 
