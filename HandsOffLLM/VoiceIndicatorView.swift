@@ -43,95 +43,104 @@ struct WaveCircle: Shape {
 struct VoiceIndicatorView: View {
   @Binding var state: ViewModelState
   @EnvironmentObject var audioService: AudioService
+  @State private var isVisible: Bool = false
 
   // Circle size
   private let size: CGFloat = 200
 
   var body: some View {
-    // TimelineView drives smooth animation at ~60fps
-    TimelineView(.animation) { context in
-      let t     = context.date.timeIntervalSinceReferenceDate
-      let phase = t * 2.0
-      let lvl   = audioService.rawAudioLevel
-      let norm  = max(0, min(1, (lvl + 50) / 50))
-      var amp   = Double(norm)
+    Group {
+      if isVisible {
+        // TimelineView drives smooth animation at ~60fps
+        TimelineView(.animation) { context in
+          let t     = context.date.timeIntervalSinceReferenceDate
+          let phase = t * 2.0
+          let lvl   = audioService.rawAudioLevel
+          let norm  = max(0, min(1, (lvl + 50) / 50))
+          var amp   = Double(norm)
 
-      // drive amplitude & palette by state + levels
-      let (mainColors, strokeColors): ([Color], [Color]) = {
-        switch state {
-        case .listening:
-          let colors = [Color.blue, Color.purple, Color.cyan, Color.blue]
-          return (colors, [Color.cyan, Color.purple, Color.blue, Color.cyan])
+          // drive amplitude & palette by state + levels
+          let (mainColors, strokeColors): ([Color], [Color]) = {
+            switch state {
+            case .listening:
+              let colors = [Color.blue, Color.purple, Color.cyan, Color.blue]
+              return (colors, [Color.cyan, Color.purple, Color.blue, Color.cyan])
 
-        case .speakingTTS:
-          let colors = [Color.pink, Color.purple, Color.pink]
-          return (colors, [Color.purple, Color.pink, Color.purple])
-        case .processingLLM, .fetchingTTS:
-          amp = 0.5 // hard coded loading amp
-          let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
-          return (colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
-        default:
-          amp = 0.05  // hard coded idle amp
-          let gray = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
-          return (gray, [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)])
+            case .speakingTTS:
+              let colors = [Color.pink, Color.purple, Color.pink]
+              return (colors, [Color.purple, Color.pink, Color.purple])
+            case .processingLLM, .fetchingTTS:
+              amp = 0.5 // hard coded loading amp
+              let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
+              return (colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
+            default:
+              amp = 0.05  // hard coded idle amp
+              let gray = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
+              return (gray, [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)])
+            }
+          }()
+
+          ZStack {
+            // 1) Soft radial glow
+            WaveCircle(
+              phase: phase * 0.8,
+              amplitude: amp,
+              segments: 60,
+              noiseOffset: 0
+            )
+            .fill(
+              RadialGradient(
+                gradient: Gradient(colors: mainColors),
+                center: .center,
+                startRadius: 0,
+                endRadius: size/2
+              )
+            )
+            .frame(width: size, height: size)
+            .blur(radius: size * 0.1)
+            .opacity(0.5)
+
+            // 2) Main wavy fill
+            WaveCircle(
+              phase: -phase * 1.2,
+              amplitude: amp,
+              segments: 50,
+              noiseOffset: 1
+            )
+            .fill(
+              AngularGradient(
+                gradient: Gradient(colors: mainColors),
+                center: .center
+              )
+            )
+            .frame(width: size, height: size)
+
+            // 3) Wavy outline stroke
+            WaveCircle(
+              phase: phase,
+              amplitude: amp * 0.8,
+              segments: 40,
+              noiseOffset: 2
+            )
+            .stroke(
+              AngularGradient(
+                gradient: Gradient(colors: strokeColors),
+                center: .center
+              ),
+              lineWidth: size * 0.04
+            )
+            .frame(width: size * 0.9, height: size * 0.9)
+          }
+          .drawingGroup()
+          .animation(.easeInOut(duration: 0.3), value: state)
         }
-      }()
-
-      ZStack {
-        // 1) Soft radial glow
-        WaveCircle(
-          phase: phase * 0.8,
-          amplitude: amp,
-          segments: 60,
-          noiseOffset: 0
-        )
-        .fill(
-          RadialGradient(
-            gradient: Gradient(colors: mainColors),
-            center: .center,
-            startRadius: 0,
-            endRadius: size/2
-          )
-        )
-        .frame(width: size, height: size)
-        .blur(radius: size * 0.1)
-        .opacity(0.5)
-
-        // 2) Main wavy fill
-        WaveCircle(
-          phase: -phase * 1.2,
-          amplitude: amp,
-          segments: 50,
-          noiseOffset: 1
-        )
-        .fill(
-          AngularGradient(
-            gradient: Gradient(colors: mainColors),
-            center: .center
-          )
-        )
-        .frame(width: size, height: size)
-
-        // 3) Wavy outline stroke
-        WaveCircle(
-          phase: phase,
-          amplitude: amp * 0.8,
-          segments: 40,
-          noiseOffset: 2
-        )
-        .stroke(
-          AngularGradient(
-            gradient: Gradient(colors: strokeColors),
-            center: .center
-          ),
-          lineWidth: size * 0.04
-        )
-        .frame(width: size * 0.9, height: size * 0.9)
+      } else {
+        Color.clear
       }
-      .drawingGroup()
-      .animation(.easeInOut(duration: 0.3), value: state)
     }
     .frame(width: size, height: size)
+    .onAppear { isVisible = true }
+    .onDisappear { isVisible = false }
   }
 }
 
