@@ -46,7 +46,7 @@ struct VoiceIndicatorView: View {
   @State private var isVisible: Bool = false
 
   // Circle size
-  private let size: CGFloat = 200
+  private let size: CGFloat = 240
 
   var body: some View {
     Group {
@@ -81,30 +81,11 @@ struct VoiceIndicatorView: View {
           }()
 
           ZStack {
-            // 1) Soft radial glow
-            WaveCircle(
-              phase: phase * 0.8,
-              amplitude: amp,
-              segments: 60,
-              noiseOffset: 0
-            )
-            .fill(
-              RadialGradient(
-                gradient: Gradient(colors: mainColors),
-                center: .center,
-                startRadius: 0,
-                endRadius: size/2
-              )
-            )
-            .frame(width: size, height: size)
-            .blur(radius: size * 0.1)
-            .opacity(0.5)
-
             // 2) Main wavy fill
             WaveCircle(
               phase: -phase * 1.2,
               amplitude: amp,
-              segments: 50,
+              segments: 100,
               noiseOffset: 1
             )
             .fill(
@@ -113,13 +94,13 @@ struct VoiceIndicatorView: View {
                 center: .center
               )
             )
-            .frame(width: size, height: size)
+            .padding(size * 0.08)
 
             // 3) Wavy outline stroke
             WaveCircle(
               phase: phase,
               amplitude: amp * 0.8,
-              segments: 40,
+              segments: 100,
               noiseOffset: 2
             )
             .stroke(
@@ -129,7 +110,7 @@ struct VoiceIndicatorView: View {
               ),
               lineWidth: size * 0.04
             )
-            .frame(width: size * 0.9, height: size * 0.9)
+            .padding(size * 0.08)
           }
           .drawingGroup()
           .animation(.easeInOut(duration: 0.3), value: state)
