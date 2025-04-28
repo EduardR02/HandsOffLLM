@@ -23,7 +23,9 @@ class ChatViewModel: ObservableObject {
     @Published var selectedProvider: LLMProvider = .claude // Default provider
     @Published var ttsRate: Float = 2.0 { // Keep slider binding here for now
         didSet {
-            audioService.ttsRate = ttsRate // Forward rate change to AudioService
+            if oldValue != ttsRate {
+                audioService.ttsRate = ttsRate // Forward rate change to AudioService
+            }
         }
     }
     @Published var lastError: String? = nil // For displaying errors (optional)

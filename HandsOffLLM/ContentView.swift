@@ -45,7 +45,20 @@ struct ContentView: View {
                 HStack {
                     Text("Speed:")
                         .foregroundColor(.white)
-                    Slider(value: $viewModel.ttsRate, in: 0.2...4.0, step: 0.1)
+                    Slider(
+                        value: Binding<Float>(
+                            get: { viewModel.ttsRate },
+                            set: { newValue in
+                                // Round to nearest 0.1 and only update when changed
+                                let quant = (newValue * 10).rounded() / 10
+                                if viewModel.ttsRate != quant {
+                                    viewModel.ttsRate = quant
+                                }
+                            }
+                        ),
+                        in: 0.2...4.0,
+                        step: 0.1
+                    )
                     Text(String(format: "%.1fx", viewModel.ttsRate))
                         .foregroundColor(.white)
                         .frame(width: 40, alignment: .leading)

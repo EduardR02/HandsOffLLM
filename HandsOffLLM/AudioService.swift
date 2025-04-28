@@ -29,7 +29,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         return -50
     }
     @Published var ttsRate: Float = 2.0 {
-        didSet { updatePlayerRate() }
+        didSet {
+            if oldValue != ttsRate {
+                updatePlayerRate()
+            }
+        }
     }
     
     // --- Combine Subjects for Communication ---
@@ -411,22 +415,31 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private func scheduleNext() {
         guard !isFetchingTTS else { return }
 
-        // 1) If there's queued audio and no replay in progress, play it
+        // 1) Play queued audio and then fetch next chunk
         if !audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true && replayQueue.isEmpty {
             let data = audioQueue.removeFirst()
+            let (nextChunk, nextIdx) = findNextTTSChunk(text: textBuffer, startIndex: 0, isComplete: llmDone)
+            if !nextChunk.isEmpty {
+                logger.debug("Fetching next TTS chunk: \(nextChunk)")
+                textBuffer.removeFirst(nextIdx)
+                fetchAudio(for: nextChunk)
+            }
             playAudioData(data)
-            // don't return here—allow fetch logic to run immediately after
+            return
         }
 
-        // 2) If the textBuffer still has un‐requested text, fetch the next chunk
-        let (chunk, nextIndex) = findNextTTSChunk(text: textBuffer, startIndex: 0, isComplete: llmDone)
-        if !chunk.isEmpty {
-            // consume the prefix we're about to fetch
-            textBuffer.removeFirst(nextIndex)
-            fetchAudio(for: chunk)
+        // 2) Initial fetch when nothing is queued or playing
+        let (initialChunk, initialIdx) = findNextTTSChunk(text: textBuffer, startIndex: 0, isComplete: llmDone)
+        if !initialChunk.isEmpty {
+            // also fires on last chunk it seems due to scheduleNext being called when llmDone is true
+            logger.debug("Fetching initial TTS chunk: \(initialChunk)")
+            textBuffer.removeFirst(initialIdx)
+            fetchAudio(for: initialChunk)
+            return
         }
-        // 3) If we're out of both text and queued audio, we're truly done
-        else if llmDone && audioQueue.isEmpty && !(currentAudioPlayer?.isPlaying ?? false){
+
+        // 3) All done
+        if llmDone && audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
             ttsPlaybackCompleteSubject.send()
             llmDone = false
         }
@@ -439,7 +452,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
               apiKey != "YOUR_OPENAI_API_KEY"
         else {
             logger.error("OpenAI API key missing")
-            scheduleNext()  // try next immediately
             return
         }
 
@@ -633,13 +645,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     }
     
     // MARK: - Public TTS Synthesis & Playback Helpers
-    /// Synthesize full audio for given text (non‑streaming) and return raw Data
-    func synthesizeFullAudio(text: String) async throws -> Data? {
-        guard let apiKey = settingsService.openaiAPIKey, !apiKey.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "OpenAI TTS")
-        }
-        return try await fetchOpenAITTSAudio(apiKey: apiKey, text: text, instruction: settingsService.activeTTSInstruction)
-    }
     
     /// Play an audio file previously saved at the given relative path under Documents
     func playAudioFile(relativePath: String) {
