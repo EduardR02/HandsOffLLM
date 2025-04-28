@@ -85,23 +85,33 @@ struct VoiceIndicatorView: View {
                     let phase = t * 2.0
                     let lvl = Double(audioService.rawAudioLevel)
                     let norm = max(0.0, min(1.0, (lvl + 50.0) / 50.0))
-                    var amp = norm
-                    
-                    // adjust amplitude only by state
+
+                    // Smoothing factor: closer to 1 = faster response, closer to 0 = slower/smoother
+                    let smoothingFactor = 0.2
+                    let minAmplitude = 0.15
+
+                    // Determine target amplitude and enforce global minimum
+                    var targetAmp = max(norm, minAmplitude)
                     switch state {
                     case .processingLLM, .fetchingTTS:
-                        amp = 0.5
+                        targetAmp = 0.5
                     case .idle, .error:
-                        amp = 0.15
+                        targetAmp = minAmplitude
                     default:
-                        break
+                        // Use minAmplitude as baseline, add dynamic part above it
+                        targetAmp = minAmplitude + (1 - minAmplitude) * norm
                     }
-                    
+
+                    // Use static to persist amplitude between frames
+                    struct Holder { static var displayedAmp: Double = 0.15 }
+                    Holder.displayedAmp += (targetAmp - Holder.displayedAmp) * smoothingFactor
+                    let ampToUse = Holder.displayedAmp
+
                     return ZStack {
                         // 2) Main wavy fill
                         WaveCircle(
                             phase: -phase * 1.2,
-                            amplitude: amp,
+                            amplitude: ampToUse,
                             noiseOffset: 1
                         )
                         .fill(
@@ -111,11 +121,12 @@ struct VoiceIndicatorView: View {
                             )
                         )
                         .padding(size * 0.08)
-                        
+                        .animation(.easeInOut(duration: 0.3), value: mainColors)
+
                         // 3) Wavy outline stroke
                         WaveCircle(
                             phase: phase,
-                            amplitude: amp * 0.8,
+                            amplitude: ampToUse * 0.8,
                             noiseOffset: 2
                         )
                         .stroke(
@@ -126,9 +137,9 @@ struct VoiceIndicatorView: View {
                             lineWidth: size * 0.04
                         )
                         .padding(size * 0.08)
+                        .animation(.easeInOut(duration: 0.3), value: strokeColors)
                     }
                     .drawingGroup()
-                    .animation(.easeInOut(duration: 0.3), value: state)
                 }
             } else {
                 Color.clear
