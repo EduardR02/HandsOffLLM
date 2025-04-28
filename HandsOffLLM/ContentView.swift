@@ -35,9 +35,7 @@ struct ContentView: View {
                 
                 
                 VoiceIndicatorView(
-                    state: $viewModel.state,
-                    audioLevel: $viewModel.listeningAudioLevel,
-                    ttsLevel: $viewModel.ttsOutputLevel
+                    state: $viewModel.state
                 )
                 .onTapGesture {
                     viewModel.cycleState()

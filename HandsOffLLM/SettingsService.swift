@@ -27,7 +27,8 @@ class SettingsService: ObservableObject { // Make ObservableObject
         PromptPreset(id: "default-helpful", name: "Helpful Assistant", description: "Standard helpful, concise", fullPrompt: "You are a helpful voice assistant. Keep your responses concise and conversational."),
         PromptPreset(id: "casual-friend", name: "Casual Friend", description: "Informal, friendly chat", fullPrompt: "You are a friendly, casual AI assistant. Talk like you're chatting with a friend."),
         PromptPreset(id: "expert-coder", name: "Coding Expert", description: "Focused on code assistance", fullPrompt: "You are an expert programmer AI. Provide clear, accurate code examples and explanations."),
-        PromptPreset(id: "custom", name: "Custom", description: "Use prompt from Advanced section", fullPrompt: ""), // Placeholder for custom
+        PromptPreset(id: "remove-later", name: "Remove Later", description: "Focused on code assistance", fullPrompt: Prompts.chatPrompt),
+        PromptPreset(id: "custom", name: "Custom", description: "Use prompt from Advanced section", fullPrompt: Prompts.chatPrompt), // Placeholder for custom
     ]
     
     let availableTTSInstructions: [PromptPreset] = [

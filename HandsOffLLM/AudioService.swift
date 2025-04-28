@@ -14,8 +14,8 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // --- Published State ---
     @Published var isListening: Bool = false
     @Published var isSpeaking: Bool = false
-    @Published var listeningAudioLevel: Float = -50.0 // Audio level dBFS (-50 silence, 0 max)
-    @Published var ttsOutputLevel: Float = 0.0      // Normalized TTS output level (0-1)
+    /// Raw audio level in dBFS (-50 silence, 0 max), updated in the audioEngine tap.
+    var rawAudioLevel: Float = -50.0
     @Published var ttsRate: Float = 2.0 {
         didSet { updatePlayerRate() }
     }
@@ -27,8 +27,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     let ttsPlaybackCompleteSubject = PassthroughSubject<Void, Never>() // NEW: fired when all TTS chunks have played
     
     // --- Internal State for simplified TTS queue/SM ---
-        // --- Internal State ---
-    private var lastMeasuredAudioLevel: Float = -50.0
     private var currentSpokenText: String = ""
     private var hasUserStartedSpeakingThisTurn: Bool = false
 
@@ -49,9 +47,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // --- Configuration & Timers ---
     private var silenceTimer: Timer?
     private let silenceThreshold: TimeInterval = 1.5
-    private let audioLevelUpdateRate: TimeInterval = 0.1
-    private var audioLevelTimer: Timer?
-    private let ttsLevelUpdateRate: TimeInterval = 0.05
     
     // --- Dependencies ---
     private let settingsService: SettingsService
@@ -207,7 +202,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         isListening = true
         isSpeaking = false
         currentSpokenText = ""
-        listeningAudioLevel = -50
         logger.notice("🎤 Listening started…")
 
         // Only create a new recognition request & task
@@ -270,15 +264,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             }
         }
 
-        // edit_3: engine & tap are already live – just begin level‐meter updates
-        startAudioLevelTimer()
         logger.info("🎤 Listening using existing audio engine.")
     }
     
     func stopListeningCleanup() {
         let wasListening = isListening
-        // edit_4: leave engine & tap running, just stop the level timer
-        invalidateAudioLevelTimer()
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionTask = nil
@@ -287,7 +277,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
 
         if wasListening {
             isListening = false
-            listeningAudioLevel = -50
             logger.notice("🎙️ Listening stopped (Cleanup).")
         }
     }
@@ -315,7 +304,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         currentSpokenText = ""
         // Ensure other states are consistent (stopListeningCleanup handles isListening)
         if isSpeaking { stopSpeaking() } // Also stop speaking if reset happens during overlap
-        listeningAudioLevel = -50.0
     }
     
     // MARK: - Silence Detection
@@ -347,11 +335,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     }
     
     // MARK: - Audio Engine Management
-    private func stopAudioEngine() {
-        // edit_5: no longer tear down the engine—only stop level updates if ever called
-        invalidateAudioLevelTimer()
-        logger.debug("Audio engine remains running.")
-    }
     
     private func calculatePowerLevel(buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData?[0] else { return -50.0 }
@@ -364,83 +347,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         let maxDb: Float = 0.0
         // Clamp the value to the range [-50, 0]
         return max(minDb, min(dbValue, maxDb))
-    }
-    
-    // MARK: - Audio Level Timers
-    private func startAudioLevelTimer() {
-        invalidateAudioLevelTimer()
-        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: audioLevelUpdateRate, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.isListening else {
-                    self?.invalidateAudioLevelTimer(); return // Stop timer if not listening
-                }
-                // Update published property directly
-                self.listeningAudioLevel = self.lastMeasuredAudioLevel
-            }
-        }
-    }
-    
-    private func invalidateAudioLevelTimer() {
-        audioLevelTimer?.invalidate()
-        audioLevelTimer = nil
-    }
-    
-    private func startTTSLevelTimer() {
-        invalidateTTSLevelTimer()
-        ttsLevelTimer = Timer.scheduledTimer(withTimeInterval: ttsLevelUpdateRate, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.updateTTSLevel() }
-        }
-    }
-    
-    private func invalidateTTSLevelTimer() {
-        if ttsLevelTimer != nil {
-            ttsLevelTimer?.invalidate()
-            ttsLevelTimer = nil
-            // Reset level only if player is truly stopped/nil
-            if self.currentAudioPlayer == nil && self.ttsOutputLevel != 0.0 {
-                self.ttsOutputLevel = 0.0
-            }
-        }
-    }
-    
-    @MainActor private func updateTTSLevel() {
-        guard let player = self.currentAudioPlayer, player.isPlaying else {
-            if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
-            invalidateTTSLevelTimer() // Stop timer if player stopped
-            return
-        }
-        player.updateMeters()
-        let averagePower = player.averagePower(forChannel: 0) // dBFS
-        
-        let minDBFS: Float = -50.0 // Visual silence threshold
-        let maxDBFS: Float = 0.0   // Max level
-        var normalizedLevel: Float = 0.0
-        
-        // Map dBFS range [-50, 0] to [0, 1] linearly
-        if averagePower > minDBFS {
-            let dbRange = maxDBFS - minDBFS // Should be 50
-            if dbRange > 0 {
-                // Clamp power to the range before normalization
-                let clampedPower = max(minDBFS, min(averagePower, maxDBFS))
-                normalizedLevel = (clampedPower - minDBFS) / dbRange
-            }
-        } // Else: normalizedLevel remains 0 if below -50 dBFS
-        
-        // Apply a curve for better visual perception (optional)
-        let exponent: Float = 1.5 // Makes lower levels appear slightly higher
-        let curvedLevel = pow(normalizedLevel, exponent)
-        
-        // Ensure the final level is strictly between 0 and 1
-        let finalLevel = max(0.0, min(curvedLevel, 1.0))
-        
-        // Apply smoothing for smoother visual updates
-        let smoothingFactor: Float = 0.2 // Adjust for more/less smoothing
-        let smoothedLevel = self.ttsOutputLevel * (1.0 - smoothingFactor) + finalLevel * smoothingFactor
-        
-        // Update published property only if change is significant or resetting to zero
-        if abs(self.ttsOutputLevel - smoothedLevel) > 0.01 || (smoothedLevel == 0 && self.ttsOutputLevel != 0) {
-            self.ttsOutputLevel = smoothedLevel
-        }
     }
     
     // MARK: - TTS Playback Control
@@ -475,7 +381,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         }
         
         // Cleanup Timer and Audio Data Buffer
-        self.invalidateTTSLevelTimer() // Also resets level if player is nil
         self.audioQueue.removeAll()
         self.textBuffer = ""
         self.llmDone = false
@@ -486,8 +391,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         // Update State only if it was actively speaking
         if wasSpeaking {
             self.isSpeaking = false
-            // Ensure level resets visually immediately if it wasn't already done by timer invalidation
-            if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
             logger.notice("⏹️ TTS interrupted/stopped by request.")
         }
     }
@@ -610,8 +513,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
 
     
-    @MainActor
-    private func playAudioData(_ data: Data) {
+    @MainActor private func playAudioData(_ data: Data) {
         guard !data.isEmpty else {
             logger.warning("Attempted to play empty audio data.")
             scheduleNext()
@@ -628,7 +530,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             if currentAudioPlayer?.play() == true {
                 isSpeaking = true
                 logger.info("▶️ Playback started.")
-                startTTSLevelTimer()
             } else {
                 logger.error("🚨 Failed to start audio playback (play() returned false).")
                 currentAudioPlayer = nil
@@ -747,7 +648,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             if currentAudioPlayer?.play() == true {
                 isSpeaking = true
                 logger.info("▶️ Playback started for file: \(relativePath)")
-                startTTSLevelTimer()
             } else {
                 logger.error("Failed to play audio file at: \(relativePath)")
                 isSpeaking = false
@@ -768,12 +668,10 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             }
             
             self.logger.info("⏹️ Playback finished (success: \(flag)).")
-            self.invalidateTTSLevelTimer()
             self.currentAudioPlayer = nil
             
             if self.isSpeaking {
                 self.isSpeaking = false
-                if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
             }
             
             if !self.replayQueue.isEmpty {
@@ -795,13 +693,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 self.logger.warning("Decode error delegate called for an unknown or outdated player.")
                 return
             }
-            self.invalidateTTSLevelTimer()
             self.currentAudioPlayer = nil // Release the player
             self.errorSubject.send(AudioError.audioPlaybackError(error ?? NSError(domain: "AudioService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown decode error"])))
             
             if self.isSpeaking {
                 self.isSpeaking = false
-                if self.ttsOutputLevel != 0.0 { self.ttsOutputLevel = 0.0 }
             }
             Task { @MainActor [weak self] in
                 self?.scheduleNext()
@@ -814,9 +710,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         logger.info("AudioService partial cleanup for in-app nav.")
         stopListeningCleanup()
         stopSpeaking()
-        invalidateAudioLevelTimer()
         invalidateSilenceTimer()
-        invalidateTTSLevelTimer()
     }
 
     // MARK: - Full cleanup for app background/termination
@@ -824,9 +718,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         logger.info("AudioService full cleanup for background.")
         stopListeningCleanup()
         stopSpeaking()
-        invalidateAudioLevelTimer()
         invalidateSilenceTimer()
-        invalidateTTSLevelTimer()
         audioEngine.stop()
         do {
             try AVAudioSession.sharedInstance().setActive(false)
@@ -924,7 +816,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             if self.isListening, let req = self.recognitionRequest {
                 req.append(buffer)
             }
-            self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
+            self.rawAudioLevel = self.calculatePowerLevel(buffer: buffer)
         }
 
         if !audioEngine.isRunning {

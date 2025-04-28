@@ -20,8 +20,6 @@ class ChatViewModel: ObservableObject {
     
     // --- UI State ---
     @Published var state: ViewModelState = .idle // Single source of truth for UI state
-    @Published var listeningAudioLevel: Float = -50.0
-    @Published var ttsOutputLevel: Float = 0.0
     @Published var selectedProvider: LLMProvider = .claude // Default provider
     @Published var ttsRate: Float = 2.0 { // Keep slider binding here for now
         didSet {
@@ -44,14 +42,6 @@ class ChatViewModel: ObservableObject {
         self.settingsService = settingsService
         self.historyService = historyService
         logger.info("ChatViewModel initialized.")
-        
-        // --- Subscribe to Service Publishers ---
-        
-        audioService.$listeningAudioLevel
-            .assign(to: &$listeningAudioLevel)
-        
-        audioService.$ttsOutputLevel
-            .assign(to: &$ttsOutputLevel)
         
         // Audio Service Events
         // Transcription → only forwards to ChatService (state flip happens in CombineLatest)
