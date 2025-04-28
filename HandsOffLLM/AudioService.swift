@@ -14,8 +14,20 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // --- Published State ---
     @Published var isListening: Bool = false
     @Published var isSpeaking: Bool = false
-    /// Raw audio level in dBFS (-50 silence, 0 max), updated in the audioEngine tap.
-    var rawAudioLevel: Float = -50.0
+    /// Computed: dBFS [-50, 0]. Returns mic level in listening, playback level in speaking, -50 otherwise.
+    private var lastMeasuredAudioLevel: Float = -50
+    @MainActor
+    var rawAudioLevel: Float {
+        if isListening {
+            return lastMeasuredAudioLevel
+        }
+        if isSpeaking, let player = currentAudioPlayer {
+            player.updateMeters()
+            let db = player.averagePower(forChannel: 0)
+            return max(-50, min(db, 0))
+        }
+        return -50
+    }
     @Published var ttsRate: Float = 2.0 {
         didSet { updatePlayerRate() }
     }
@@ -816,7 +828,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             if self.isListening, let req = self.recognitionRequest {
                 req.append(buffer)
             }
-            self.rawAudioLevel = self.calculatePowerLevel(buffer: buffer)
+            self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
         }
 
         if !audioEngine.isRunning {

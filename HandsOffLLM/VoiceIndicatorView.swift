@@ -71,6 +71,7 @@ struct VoiceIndicatorView: View {
           let colors = [Color.orange, Color.red, Color.yellow, Color.orange]
           return (colors, [Color.yellow, Color.red, Color.orange, Color.yellow])
         default:
+          amp = 0.05  // hard coded idle amp
           let gray = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
           return (gray, [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)])
         }
