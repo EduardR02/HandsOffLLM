@@ -58,7 +58,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
     private var currentAudioPlayer: AVAudioPlayer?
-    private var ttsLevelTimer: Timer?
     
     // --- Configuration & Timers ---
     private var silenceTimer: Timer?
@@ -72,6 +71,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private var currentTTSConversationID: UUID?
     private var currentTTSMessageID: UUID?
     private var currentTTSChunkIndex: Int = 0
+    
+    // --- TTS Chunk Growth State ---
+    private let baseMinChunkLength: Int = 60
+    private let ttsChunkGrowthFactor: Double = 2.25
+    private var prevTTSChunkSize: Int? = nil
     
     func setTTSContext(conversationID: UUID, messageID: UUID) {
         if currentTTSConversationID != conversationID || currentTTSMessageID != messageID {
@@ -208,10 +212,13 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // MARK: - Listening Control
     func startListening() {
         guard !isListening && !isSpeaking else { return }
+        // Reinstall audio engine tap and start engine for listening
+        if !audioEngine.isRunning { configureAudioEngineTap() }
         guard speechRecognizer.isAvailable else {
             errorSubject.send(AudioError.recognizerUnavailable)
             return
         }
+        
         // reset per‐session state…
         hasUserStartedSpeakingThisTurn = false
         invalidateSilenceTimer()
@@ -294,6 +301,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         if wasListening {
             isListening = false
             logger.notice("🎙️ Listening stopped (Cleanup).")
+            // Teardown audio engine to reduce overhead during processing
+            audioEngine.inputNode.removeTap(onBus: 0)
+            if audioEngine.isRunning { 
+                logger.info("Audio engine stopped.")
+                audioEngine.stop() 
+            }
         }
     }
     
@@ -400,6 +413,8 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         self.audioQueue.removeAll()
         self.textBuffer = ""
         self.llmDone = false
+        self.prevTTSChunkSize = nil
+        
         
         // Reset Text Buffer State for TTS
         self.currentTTSChunkIndex = 0
@@ -418,23 +433,25 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         // 1) Play queued audio and then fetch next chunk
         if !audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true && replayQueue.isEmpty {
             let data = audioQueue.removeFirst()
-            let (nextChunk, nextIdx) = findNextTTSChunk(text: textBuffer, startIndex: 0, isComplete: llmDone)
-            if !nextChunk.isEmpty {
-                logger.debug("Fetching next TTS chunk: \(nextChunk)")
+            let nextIdx = findNextTTSChunk()
+            if nextIdx > 0 {
+                logger.debug("Fetching next TTS chunk: \(nextIdx) chars")
+                let chunk = String(textBuffer.prefix(nextIdx))
                 textBuffer.removeFirst(nextIdx)
-                fetchAudio(for: nextChunk)
+                fetchAudio(for: chunk)
             }
             playAudioData(data)
             return
         }
 
         // 2) Initial fetch when nothing is queued or playing
-        let (initialChunk, initialIdx) = findNextTTSChunk(text: textBuffer, startIndex: 0, isComplete: llmDone)
-        if !initialChunk.isEmpty {
+        let idx = findNextTTSChunk()
+        if idx > 0 {
             // also fires on last chunk it seems due to scheduleNext being called when llmDone is true
-            logger.debug("Fetching initial TTS chunk: \(initialChunk)")
-            textBuffer.removeFirst(initialIdx)
-            fetchAudio(for: initialChunk)
+            logger.debug("Fetching initial TTS chunk: \(idx) chars")
+            let chunk = String(textBuffer.prefix(idx))
+            textBuffer.removeFirst(idx)
+            fetchAudio(for: chunk)
             return
         }
 
@@ -442,6 +459,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         if llmDone && audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
             ttsPlaybackCompleteSubject.send()
             llmDone = false
+            prevTTSChunkSize = nil
         }
     }
 
@@ -473,66 +491,74 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                     // enqueue for playback
                     logger.info("Enqueued TTS chunk for playback \(self.currentTTSChunkIndex).")
                     self.audioQueue.append(data)
-                    // save chunk to disk & notify
-                    if let convID = self.currentTTSConversationID,
-                       let msgID  = self.currentTTSMessageID
-                    {
-                        let relPath = try self.historyService.saveAudioData(
-                            conversationID: convID,
-                            messageID: msgID,
-                            data: data,
-                            ext: self.settingsService.openAITTSFormat,
-                            chunkIndex: self.currentTTSChunkIndex
-                        )
-                        self.currentTTSChunkIndex += 1
-                        self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
+                    // Batch disk writes off the main actor to reduce UI I/O
+                    let chunkIndex = self.currentTTSChunkIndex
+                    self.currentTTSChunkIndex += 1
+                    if let convID = self.currentTTSConversationID, let msgID = self.currentTTSMessageID {
+                        let dataCopy = data
+                        Task.detached(priority: .utility) { [weak self] in
+                            guard let self = self else { return }
+                            do {
+                                let relPath = try await self.historyService.saveAudioData(
+                                    conversationID: convID,
+                                    messageID: msgID,
+                                    data: dataCopy,
+                                    ext: self.settingsService.openAITTSFormat,
+                                    chunkIndex: chunkIndex
+                                )
+                                await MainActor.run {
+                                    self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
+                                }
+                            } catch {
+                                self.logger.error("🗄️ Failed to save TTS chunk \(chunkIndex): \(error.localizedDescription)")
+                            }
+                        }
                     }
                 }
             } catch {
-                if !(error is CancellationError) {
-                    self.errorSubject.send(AudioError.ttsFetchFailed(error))
-                }
+                logger.error("🚨 OpenAI TTS Error: \(error.localizedDescription)")
             }
         }
     }
     
-    private func findNextTTSChunk(text: String, startIndex: Int, isComplete: Bool) -> (String, Int) {
-        let remainingText = text.suffix(from: text.index(text.startIndex, offsetBy: startIndex))
-        if remainingText.isEmpty { return ("", startIndex) }
-        
-        let maxChunkLength = settingsService.maxTTSChunkLength
-        
-        if remainingText.count <= maxChunkLength && isComplete {
-            return (String(remainingText), startIndex + remainingText.count)
+    private func findNextTTSChunk() -> Int {
+        let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, ttsRate))
+        if textBuffer.isEmpty || (!llmDone && textBuffer.count < scaledMinChunkLength) {
+            return 0
         }
-        
-        let potentialChunk = remainingText.prefix(maxChunkLength)
-        var bestSplitIndex = potentialChunk.endIndex
-        if !isComplete {
-            let lookaheadMargin = 75
-            if let searchRange = potentialChunk.index(potentialChunk.endIndex, offsetBy: -min(lookaheadMargin, potentialChunk.count), limitedBy: potentialChunk.startIndex) {
-                if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
-                    bestSplitIndex = lastSentenceEnd
-                } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
-                    bestSplitIndex = lastComma
-                } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange..<potentialChunk.endIndex)?.upperBound {
-                    if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
-                        bestSplitIndex = lastSpace
-                    }
+
+        let maxSetting = settingsService.maxTTSChunkLength
+        let maxChunkLength = prevTTSChunkSize.map { min(Int(Double($0) * ttsChunkGrowthFactor), maxSetting) } ?? maxSetting
+
+        if textBuffer.count <= maxChunkLength && llmDone {
+            prevTTSChunkSize = textBuffer.count
+            return textBuffer.count
+        }
+
+        let potentialChunk = textBuffer.prefix(maxChunkLength)
+        var splitIdx = potentialChunk.count // Default: use all possible
+
+        if !llmDone {
+            let lookaheadMargin = min(75, potentialChunk.count)
+            let searchStart = potentialChunk.index(potentialChunk.endIndex, offsetBy: -lookaheadMargin)
+            let searchRange = searchStart..<potentialChunk.endIndex
+
+            if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange)?.upperBound {
+                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSentenceEnd)
+            } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange)?.upperBound {
+                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastComma)
+            } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange)?.upperBound {
+                if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
+                    splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
                 }
             }
         }
-        
-        let chunkLength = potentialChunk.distance(from: potentialChunk.startIndex, to: bestSplitIndex)
-        let baseMinChunkLength: Int = 60
-        let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, self.ttsRate))
-        
-        if chunkLength < baseMinChunkLength && !isComplete { return ("", startIndex) }
-        if chunkLength < scaledMinChunkLength && chunkLength >= baseMinChunkLength && !isComplete { return ("", startIndex) }
-        if chunkLength == remainingText.count && chunkLength < scaledMinChunkLength && !isComplete { return ("", startIndex) }
-        
-        let finalChunk = String(potentialChunk[..<bestSplitIndex])
-        return (finalChunk, startIndex + finalChunk.count)
+
+        if splitIdx < scaledMinChunkLength && !llmDone {
+            return 0
+        }
+        prevTTSChunkSize = splitIdx
+        return splitIdx
     }
     
 
@@ -678,25 +704,20 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // MARK: - AVAudioPlayerDelegate
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            guard player === self.currentAudioPlayer else {
-                self.logger.warning("Unknown/outdated player finished.")
+            guard let self = self, player === self.currentAudioPlayer else {
+                self?.logger.warning("Unknown/outdated player finished.")
                 return
             }
-            
             self.logger.info("⏹️ Playback finished (success: \(flag)).")
             self.currentAudioPlayer = nil
-            
-            if self.isSpeaking {
-                self.isSpeaking = false
-            }
-            
+
             if !self.replayQueue.isEmpty {
                 self.playNextReplay()
             } else {
-                Task { @MainActor [weak self] in
-                    self?.scheduleNext()
+                if self.audioQueue.isEmpty {
+                    self.isSpeaking = false
                 }
+                self.scheduleNext()
             }
         }
     }
@@ -705,20 +726,17 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             self.logger.error("🚨 Audio player decode error: \(error?.localizedDescription ?? "Unknown error")")
-            // Ensure the failed player is the one we know about
             guard player === self.currentAudioPlayer else {
                 self.logger.warning("Decode error delegate called for an unknown or outdated player.")
                 return
             }
-            self.currentAudioPlayer = nil // Release the player
+            self.currentAudioPlayer = nil
             self.errorSubject.send(AudioError.audioPlaybackError(error ?? NSError(domain: "AudioService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown decode error"])))
-            
+
             if self.isSpeaking {
                 self.isSpeaking = false
             }
-            Task { @MainActor [weak self] in
-                self?.scheduleNext()
-            }
+            self.scheduleNext()
         }
     }
     

@@ -152,8 +152,8 @@ class ChatViewModel: ObservableObject {
         if audioService.isListening {
             audioService.resetListening()
         }
-        if chatService.isProcessingLLM {
-            chatService.cancelProcessing()
+        if chatService.isProcessingLLM || audioService.isFetchingTTS {
+            cancelProcessingAndSpeaking()
         }
         if audioService.isSpeaking {
             audioService.stopSpeaking()
