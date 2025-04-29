@@ -443,39 +443,45 @@ class ChatService: ObservableObject {
         parentId: UUID? = nil,
         initialAudioPaths: [UUID: [String]]? = nil // ← New parameter
     ) {
-        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0)")
-        
-        currentFullResponse = ""
-        llmTask?.cancel()
-        llmTask = nil
-        isProcessingLLM = false
-        isLLMStreamComplete = false // Reset completion flag too
-        
-        var conversationToSet: Conversation?
-        
-        if let existingId = existingConversationId,
-           let loadedConv = historyService?.conversations.first(where: { $0.id == existingId }) {
-            conversationToSet = loadedConv
+        // Perform async load inside Task to keep API sync
+        Task { @MainActor in
+            logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0)")
+            
+            currentFullResponse = ""
+            llmTask?.cancel()
+            llmTask = nil
+            isProcessingLLM = false
+            isLLMStreamComplete = false // Reset completion flag too
+            
+            var conversationToSet: Conversation?
+            
+            if let existingId = existingConversationId {
+                if let loadedConv = await historyService?.loadConversationDetail(id: existingId) {
+                    conversationToSet = loadedConv
+                }
+            }
+            
             // Overwrite messages if provided
             if let messages = messagesToLoad {
                 conversationToSet?.messages = messages
             }
-            // Inject audio paths if provided (might merge later if needed, but overwrite is fine for now)
+            
+            // Inject audio paths if provided
             if let audioPaths = initialAudioPaths {
                 conversationToSet?.ttsAudioPaths = audioPaths
             }
-        } else {
-            // Create a completely new conversation
-            conversationToSet = Conversation(
-                id: UUID(), // Always new ID if not loading existing
-                messages: messagesToLoad ?? [],
-                createdAt: Date(),
-                parentConversationId: parentId,
-                ttsAudioPaths: initialAudioPaths // ← Use new parameter
-            )
+            
+            if conversationToSet == nil {
+                conversationToSet = Conversation(
+                    id: UUID(),
+                    messages: messagesToLoad ?? [],
+                    createdAt: Date(),
+                    parentConversationId: parentId,
+                    ttsAudioPaths: initialAudioPaths
+                )
+            }
+            currentConversation = conversationToSet
         }
-        currentConversation = conversationToSet
-        // No immediate save needed here; subsequent actions will trigger saves.
     }
     
     // --- Update message handling ---

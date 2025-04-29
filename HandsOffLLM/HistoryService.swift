@@ -11,7 +11,10 @@ import OSLog
 @MainActor
 class HistoryService: ObservableObject {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "HistoryService")
-    @Published var conversations: [Conversation] = []   // Full conversation objects
+    // Published metadata index (for list views)
+    @Published var indexEntries: [ConversationIndexEntry] = []
+    // In-memory store for SwiftUI previews
+    private var previewStore: [UUID: Conversation] = [:]
     
     // MARK: - Storage Locations
     private let indexFileName = "conversations_index.json"
@@ -27,8 +30,6 @@ class HistoryService: ObservableObject {
     private var audioFolderURL: URL? {
         documentsURL?.appendingPathComponent("Audio")
     }
-    // In-memory metadata index
-    private var indexEntries: [ConversationIndexEntry] = []
     
     init() {
         // Ensure directories exist
@@ -38,25 +39,14 @@ class HistoryService: ObservableObject {
         if let audioURL = audioFolderURL {
             try? FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
         }
-        // Load index and full conversations
         loadIndex()
-        conversations = indexEntries.compactMap { entry in
-            if let conv = loadFullConversation(id: entry.id) {
-                return conv
-            } else {
-                var conv = Conversation(id: entry.id, messages: [], createdAt: entry.createdAt, parentConversationId: nil)
-                conv.title = entry.title
-                return conv
-            }
-        }
-        conversations.sort { $0.createdAt > $1.createdAt }
-        logger.info("HistoryService initialized. Loaded \(self.conversations.count) conversations.")
     }
     
     // MARK: - Index Persistence
     private func loadIndex() {
         guard let url = indexFileURL, FileManager.default.fileExists(atPath: url.path) else {
-            indexEntries = []
+            // No index file: rebuild from conversation JSON files
+            rebuildIndexFromFiles()
             return
         }
         do {
@@ -66,7 +56,8 @@ class HistoryService: ObservableObject {
             indexEntries = try decoder.decode([ConversationIndexEntry].self, from: data)
         } catch {
             logger.error("Failed to load index: \(error.localizedDescription)")
-            indexEntries = []
+            // On error, also attempt rebuild
+            rebuildIndexFromFiles()
         }
     }
     
@@ -127,24 +118,12 @@ class HistoryService: ObservableObject {
     // MARK: - Conversation Management
     
     func addOrUpdateConversation(_ conversation: Conversation) {
-        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
-            // Update existing
-            conversations[index] = conversation
-            logger.info("Updated conversation \(conversation.id)")
-        } else {
-            // Add new
-            conversations.insert(conversation, at: 0) // Insert at beginning for date sorting
-            logger.info("Added new conversation \(conversation.id)")
-        }
-        // Ensure sorting after modification
-        conversations.sort { $0.createdAt > $1.createdAt }
-        // Persist full conversation to its own file
+        // Persist full conversation to file and update indexEntries
         saveConversationFile(conversation)
-        // Update metadata index
         let entry = ConversationIndexEntry(id: conversation.id,
                                            title: conversation.title,
                                            createdAt: conversation.createdAt)
-        if let idx = indexEntries.firstIndex(where: { $0.id == conversation.id }) {
+        if let idx = indexEntries.firstIndex(where: { $0.id == entry.id }) {
             indexEntries[idx] = entry
         } else {
             indexEntries.insert(entry, at: 0)
@@ -152,45 +131,34 @@ class HistoryService: ObservableObject {
         saveIndex()
     }
     
-    func deleteConversation(at offsets: IndexSet) {
-        let idsToDelete = offsets.compactMap { idx in
-            conversations.indices.contains(idx) ? conversations[idx].id : nil
-        }
-        for id in idsToDelete {
-            // remove JSON
-            if let fileURL = conversationFileURL(for: id) {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-            // remove audio folder
-            if let audioDir = audioFolderURL?.appendingPathComponent(id.uuidString) {
-                try? FileManager.default.removeItem(at: audioDir)
-            }
-            // update indexEntries…
-            if let idx = indexEntries.firstIndex(where: { $0.id == id }) {
-                indexEntries.remove(at: idx)
-            }
-        }
-        saveIndex()
-        conversations.remove(atOffsets: offsets)
-        logger.info("Deleted conversations at offsets \(offsets).")
-    }
-    
-    func deleteConversation(id: UUID) {
-        // remove JSON
+    private func removeConversationAssets(id: UUID) {
         if let fileURL = conversationFileURL(for: id) {
             try? FileManager.default.removeItem(at: fileURL)
         }
-        // remove audio folder
         if let audioDir = audioFolderURL?.appendingPathComponent(id.uuidString) {
             try? FileManager.default.removeItem(at: audioDir)
         }
-        // update indexEntries…
         if let idx = indexEntries.firstIndex(where: { $0.id == id }) {
             indexEntries.remove(at: idx)
-            saveIndex()
         }
-        conversations.removeAll { $0.id == id }
+    }
+    
+    func deleteConversation(id: UUID) {
+        removeConversationAssets(id: id)
+        saveIndex()
         logger.info("Deleted conversation with id \(id).")
+    }
+    
+    func loadConversationDetail(id: UUID) async -> Conversation? {
+        // If set for preview, return from memory
+        if let conv = previewStore[id] { return conv }
+        guard let url = conversationFileURL(for: id) else { return nil }
+        return await Task.detached {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try? decoder.decode(Conversation.self, from: data)
+        }.value
     }
     
     func generateTitleIfNeeded(for conversation: Conversation) -> Conversation {
@@ -214,66 +182,28 @@ class HistoryService: ObservableObject {
     }
     
     // MARK: - Utility for Views
-    func groupConversationsByDate() -> [(String, [Conversation])] {
+    
+    func groupIndexByDate() -> [(String, [ConversationIndexEntry])] {
         let calendar = Calendar.current
         let now = Date()
-        var groupedDict: [String: [Conversation]] = [:]
-        
-        let dateFormatter = DateFormatter()
-        
-        for conversation in conversations {
-            let date = conversation.createdAt
-            var key: String
-            
-            if calendar.isDateInToday(date) {
-                key = "Today"
-            } else if calendar.isDateInYesterday(date) {
-                key = "Yesterday"
-            } else if let weekAgo = calendar.date(byAdding: .day, value: -7, to: now), date >= weekAgo {
-                key = "Last Week"
-            } else if let monthAgo = calendar.date(byAdding: .month, value: -1, to: now), date >= monthAgo {
-                key = "Last Month"
-            } else {
-                // Format by Month and Year for older chats
-                dateFormatter.dateFormat = "MMMM yyyy" // e.g., "July 2024"
-                key = dateFormatter.string(from: date)
-            }
-            
-            if groupedDict[key] == nil { groupedDict[key] = [] }
-            groupedDict[key]?.append(conversation)
+        var grouped: [String: [ConversationIndexEntry]] = [:]
+        let df = DateFormatter()
+        for entry in indexEntries {
+            let date = entry.createdAt
+            let key: String
+            if calendar.isDateInToday(date) { key = "Today" }
+            else if calendar.isDateInYesterday(date) { key = "Yesterday" }
+            else if let wk = calendar.date(byAdding: .day, value: -7, to: now), date >= wk { key = "Last Week" }
+            else if let mo = calendar.date(byAdding: .month, value: -1, to: now), date >= mo { key = "Last Month" }
+            else { df.dateFormat = "MMMM yyyy"; key = df.string(from: date) }
+            grouped[key, default: []].append(entry)
         }
-        
-        // Define the order of sections
-        let sectionOrder = ["Today", "Yesterday", "Last Week", "Last Month"]
-        
-        // Create sorted array, respecting the defined order first, then chronological for months/years
-        var sortedGroups: [(String, [Conversation])] = []
-        
-        // Add the fixed sections in order
-        for key in sectionOrder {
-            if let conversations = groupedDict[key] {
-                // Conversations within these sections are already sorted newest first by the initial load sort
-                sortedGroups.append((key, conversations))
-                groupedDict.removeValue(forKey: key) // Remove from dict
-            }
-        }
-        
-        // Add the remaining month/year sections, sorted chronologically descending by month/year
-        let remainingKeys = groupedDict.keys.sorted { (key1, key2) -> Bool in
-            dateFormatter.dateFormat = "MMMM yyyy"
-            guard let date1 = dateFormatter.date(from: key1), let date2 = dateFormatter.date(from: key2) else {
-                return false // Should not happen if keys are correct
-            }
-            return date1 > date2 // Newest month/year first
-        }
-        
-        for key in remainingKeys {
-            if let conversations = groupedDict[key] {
-                sortedGroups.append((key, conversations))
-            }
-        }
-        
-        return sortedGroups
+        let order = ["Today","Yesterday","Last Week","Last Month"]
+        var result: [(String, [ConversationIndexEntry])] = []
+        for k in order { if let arr = grouped.removeValue(forKey: k) { result.append((k, arr)) }}
+        let rest = grouped.keys.sorted { df.dateFormat = "MMMM yyyy"; return df.date(from: $0)! > df.date(from: $1)! }
+        for k in rest { result.append((k, grouped[k]!)) }
+        return result
     }
     
     // MARK: - Audio Saving
@@ -299,5 +229,49 @@ class HistoryService: ObservableObject {
         
         return relPath // Just return the path
     }
+    
+    /// SwiftUI preview factory: sets indexEntries and in-memory conversations
+    static func preview(with conversations: [Conversation]) -> HistoryService {
+        let service = HistoryService()
+        let entries = conversations.map { ConversationIndexEntry(id: $0.id,
+                                                                 title: $0.title,
+                                                                 createdAt: $0.createdAt) }
+        service.indexEntries = entries.sorted { $0.createdAt > $1.createdAt }
+        service.previewStore = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+        return service
+    }
+    
+    /// Rebuilds the index by scanning stored conversation files.
+    private func rebuildIndexFromFiles() {
+        guard let folder = convFolderURL else {
+            indexEntries = []
+            return
+        }
+        do {
+            let files = try FileManager.default.contentsOfDirectory(at: folder,
+                                                                   includingPropertiesForKeys: nil,
+                                                                   options: .skipsHiddenFiles)
+                .filter { $0.pathExtension == "json" }
+            var entries: [ConversationIndexEntry] = []
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            for fileURL in files {
+                if let data = try? Data(contentsOf: fileURL),
+                   let conv = try? decoder.decode(Conversation.self, from: data) {
+                    entries.append(ConversationIndexEntry(id: conv.id,
+                                                         title: conv.title,
+                                                         createdAt: conv.createdAt))
+                    // Optionally keep in previewStore
+                    previewStore[conv.id] = conv
+                }
+            }
+            // Sort and persist
+            indexEntries = entries.sorted { $0.createdAt > $1.createdAt }
+            saveIndex()
+            logger.info("Rebuilt index from \(entries.count) files.")
+        } catch {
+            logger.error("Failed to rebuild index: \(error.localizedDescription)")
+            indexEntries = []
+        }
+    }
 }
-

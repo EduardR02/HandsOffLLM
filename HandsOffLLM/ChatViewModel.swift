@@ -186,9 +186,12 @@ class ChatViewModel: ObservableObject {
         if audioService.isListening {
             audioService.resetListening()
         }
-        chatService.resetConversationContext()
-        if attemptRestart {
-            audioService.startListening()
+        // Async reset of chat context
+        Task { @MainActor in
+            chatService.resetConversationContext()
+            if attemptRestart {
+                audioService.startListening()
+            }
         }
     }
     
@@ -211,49 +214,36 @@ class ChatViewModel: ObservableObject {
     // Called from ChatDetailView's "Continue from here" button
     func loadConversationHistory(_ conversation: Conversation, upTo messageIndex: Int) {
         logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
-        cancelProcessingAndSpeaking() // Stop current LLM/TTS activity
+        cancelProcessingAndSpeaking()
+        audioService.resetListening()
         
-        // --- CHANGE START ---
-        // Always reset the audio service fully when loading history,
-        // as we intend to start listening immediately after in ChatDetailView.
-        // This ensures consistent cleanup regardless of the previous listening state.
-        logger.info("Performing full AudioService reset before loading history.")
-        audioService.resetListening() // Call reset unconditionally
-        
-        
-        guard messageIndex >= 0 && messageIndex < conversation.messages.count else {
-            logger.error("Invalid message index \(messageIndex) for conversation.")
-            return
-        }
-        
-        // Get messages up to the specified index (inclusive)
-        let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
-        
-        var audioPathsToLoad: [UUID: [String]]? = nil
-        // Ensure we actually have the full parent conversation data from history service
-        // Note: 'conversation' passed in might be stale if history changed; fetch fresh.
-        if let fullParentConversation = historyService.conversations.first(where: { $0.id == conversation.id }) {
-            if let parentAudioPaths = fullParentConversation.ttsAudioPaths {
-                audioPathsToLoad = [:]
-                for message in messagesToLoad {
-                    // If the parent had audio for this message, copy the paths
-                    if let paths = parentAudioPaths[message.id] {
-                        audioPathsToLoad?[message.id] = paths
+        // Perform history lookup and reset in background
+        Task { @MainActor in
+            let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
+            var audioPathsToLoad: [UUID: [String]]? = nil
+            
+            // Fetch full parent conversation
+            if let fullParentConversation = await historyService.loadConversationDetail(id: conversation.id) {
+                if let parentAudioPaths = fullParentConversation.ttsAudioPaths {
+                    audioPathsToLoad = [:]
+                    for msg in messagesToLoad {
+                        if let paths = parentAudioPaths[msg.id] {
+                            audioPathsToLoad?[msg.id] = paths
+                        }
                     }
+                    logger.info("Copied \(audioPathsToLoad?.count ?? 0) audio path entries from parent conversation.")
                 }
-                logger.info("Copied \(audioPathsToLoad?.count ?? 0) audio path entries from parent conversation.")
+            } else {
+                logger.warning("Could not load full parent conversation \(conversation.id)")
             }
-        } else {
-            logger.warning("Could not find full parent conversation \(conversation.id) in HistoryService to copy audio paths.")
+            
+            chatService.resetConversationContext(
+                messagesToLoad: messagesToLoad,
+                existingConversationId: nil,
+                parentId: conversation.id,
+                initialAudioPaths: audioPathsToLoad
+            )
         }
-        
-        // Start a *new* conversation context in ChatService, linking to the parent
-        chatService.resetConversationContext(
-            messagesToLoad: messagesToLoad,
-            existingConversationId: nil, // Force new ID
-            parentId: conversation.id, // Link to original
-            initialAudioPaths: audioPathsToLoad // ← Pass the copied paths
-        )
     }
     
     // --- Helper for starting new chat ---

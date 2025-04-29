@@ -16,43 +16,50 @@ struct ChatDetailView: View {
     
     let conversationId: UUID                                     // ← changed from `Conversation`
     
-    // Always read the latest from HistoryService
-    private var conversation: Conversation {
-        historyService.conversations.first { $0.id == conversationId }!
-    }
-    
+    @State private var conversationDetail: Conversation?         // Loaded on demand
     @State private var replayingMessageId: UUID? = nil           // ← added
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatDetailView")
     
     var body: some View {
-        ScrollViewReader { proxy in // To scroll to bottom
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
-                        MessageView(message: message, index: index, conversationId: conversation.id)
-                            .id(message.id) // Add ID for scrolling
+        Group {
+            if let conversation = conversationDetail {
+                ScrollViewReader { proxy in // To scroll to bottom
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
+                                MessageView(message: message, index: index, conversationId: conversation.id)
+                                    .id(message.id) // Add ID for scrolling
+                            }
+                        }
+                        .padding()
+                    }
+                    .navigationTitle(conversation.title ?? "Chat Details")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .onAppear {
+                        // Scroll to the bottom on appear
+                        if let lastMessageId = conversation.messages.last?.id {
+                            DispatchQueue.main.async { // Ensure UI updates are done
+                                proxy.scrollTo(lastMessageId, anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onDisappear {
+                        // Stop any ongoing replay when the view disappears
+                        if replayingMessageId != nil {
+                            logger.info("ChatDetailView disappearing, stopping audio replay.")
+                            audioService.stopReplay()
+                            replayingMessageId = nil // Also clear the state
+                        }
                     }
                 }
-                .padding()
+            } else {
+                ProgressView("Loading conversation…")
             }
-            .navigationTitle(conversation.title ?? "Chat Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                // Scroll to the bottom on appear
-                if let lastMessageId = conversation.messages.last?.id {
-                    DispatchQueue.main.async { // Ensure UI updates are done
-                        proxy.scrollTo(lastMessageId, anchor: .bottom)
-                    }
-                }
-            }
-            .onDisappear {
-                // Stop any ongoing replay when the view disappears
-                if replayingMessageId != nil {
-                    logger.info("ChatDetailView disappearing, stopping audio replay.")
-                    audioService.stopReplay()
-                    replayingMessageId = nil // Also clear the state
-                }
+        }
+        .task {
+            if conversationDetail == nil {
+                conversationDetail = await historyService.loadConversationDetail(id: conversationId)
             }
         }
     }
@@ -92,7 +99,7 @@ struct ChatDetailView: View {
                         .buttonStyle(.borderless)
                         .tint(.white)
                         .font(.body) // Increased font size
-                        .disabled(conversation.ttsAudioPaths?[message.id]?.isEmpty ?? true)
+                        .disabled(conversationDetail?.ttsAudioPaths?[message.id]?.isEmpty ?? true)
                         
                         Button {
                             continueFromMessage(index: index)
@@ -116,7 +123,7 @@ struct ChatDetailView: View {
     
     // --- Action Handlers ---
     private func replayTTS(message: ChatMessage) {
-        if let paths = conversation.ttsAudioPaths?[message.id], !paths.isEmpty {
+        if let conversation = conversationDetail, let paths = conversation.ttsAudioPaths?[message.id], !paths.isEmpty {
             logger.info("Replay TTS for message \(message.id), files: \(paths)")
             audioService.replayAudioFiles(paths)
         } else {
@@ -125,9 +132,11 @@ struct ChatDetailView: View {
     }
     
     private func continueFromMessage(index: Int) {
-        logger.info("Continue tapped at \(index) for \(conversation.id).")
+        logger.info("Continue tapped at \(index) for \(conversationId).")
         // Load up to the selected message and reset context; listening will resume when returning to main view
-        viewModel.loadConversationHistory(conversation, upTo: index)
+        if let conversation = conversationDetail {
+            viewModel.loadConversationHistory(conversation, upTo: index)
+        }
         // Pop back to the main view; ContentView.onChange will trigger listening start
         rootIsActive = false
     }
@@ -151,7 +160,6 @@ struct ChatDetailView: View {
 
 #Preview {
     // Mock data for preview
-    let history = HistoryService()
     var convo = Conversation(messages: [
         ChatMessage(id: UUID(), role: "user", content: "Tell me a joke."),
         ChatMessage(id: UUID(), role: "assistant", content: "Why don't scientists trust atoms? Because they make up everything!"),
@@ -159,7 +167,7 @@ struct ChatDetailView: View {
         ChatMessage(id: UUID(), role: "assistant_partial", content: "I'm glad you think"),
     ], createdAt: Date())
     convo.title = "Joke Chat"
-    history.conversations = [convo]
+    let history = HistoryService.preview(with: [convo])
     
     let settings = SettingsService()
     let audio = AudioService(settingsService: settings, historyService: history)
@@ -175,4 +183,3 @@ struct ChatDetailView: View {
     .environmentObject(history)
     .preferredColorScheme(.dark)
 }
-

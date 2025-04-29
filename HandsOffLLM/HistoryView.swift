@@ -12,16 +12,16 @@ struct HistoryView: View {
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
     
-    var groupedConversations: [(String, [Conversation])] {
-        historyService.groupConversationsByDate()
+    var groupedConversations: [(String, [ConversationIndexEntry])] {
+        historyService.groupIndexByDate()
     }
     
     var body: some View {
         List {
-            ForEach(groupedConversations, id: \.0) { sectionTitle, conversationsInSection in
+            ForEach(groupedConversations, id: \.0) { sectionTitle, entries in
                 Section(header: Text(sectionTitle).foregroundColor(.gray)) {
-                    ForEach(conversationsInSection) { conversation in
-                        ConversationRow(conversation: conversation, rootIsActive: $rootIsActive)
+                    ForEach(entries) { entry in
+                        ConversationRow(entry: entry, rootIsActive: $rootIsActive)
                     }
                     .onDelete { indexSet in
                         // Find the actual conversations to delete based on the section and indexSet
@@ -44,10 +44,10 @@ struct HistoryView: View {
     }
     
     private func deleteConversations(in section: String, at offsets: IndexSet) {
-        guard let conversationsInSection = groupedConversations.first(where: { $0.0 == section })?.1 else {
+        guard let entriesInSection = groupedConversations.first(where: { $0.0 == section })?.1 else {
             return
         }
-        let idsToDelete = offsets.map { conversationsInSection[$0].id }
+        let idsToDelete = offsets.map { entriesInSection[$0].id }
         for id in idsToDelete {
             historyService.deleteConversation(id: id)
         }
@@ -55,9 +55,6 @@ struct HistoryView: View {
 }
 
 #Preview {
-    // Mock data for preview
-    let history = HistoryService()
-    
     // --- Make Dummy Conversations Multi-Turn ---
     var convo1 = Conversation(
         messages: [
@@ -67,7 +64,7 @@ struct HistoryView: View {
         ],
         createdAt: Date()
     )
-    convo1.title = history.generateTitleIfNeeded(for: convo1).title // Generate title after adding messages
+    convo1.title = "Hello there, how are you?"
     
     var convo2 = Conversation(
         messages: [
@@ -78,7 +75,7 @@ struct HistoryView: View {
         ],
         createdAt: Calendar.current.date(byAdding: .day, value: -1, to: Date())!
     )
-    convo2.title = history.generateTitleIfNeeded(for: convo2).title
+    convo2.title = "Explain quantum physics simply."
     
     var convo3 = Conversation(
         messages: [
@@ -87,10 +84,10 @@ struct HistoryView: View {
         ],
         createdAt: Calendar.current.date(byAdding: .month, value: -1, to: Date())!
     )
-    convo3.title = history.generateTitleIfNeeded(for: convo3).title
+    convo3.title = "What was the weather like last month?"
     // --- End Multi-Turn Data ---
     
-    history.conversations = [convo1, convo2, convo3].sorted { $0.createdAt > $1.createdAt } // Ensure initial sort
+    let history = HistoryService.preview(with: [convo1, convo2, convo3].sorted { $0.createdAt > $1.createdAt })
     
     // Mock other services needed by environment
     let settings = SettingsService()
@@ -112,20 +109,18 @@ struct HistoryView: View {
 
 // MARK: – Tiny helper to speed up compilation
 private struct ConversationRow: View {
-    let conversation: Conversation
+    let entry: ConversationIndexEntry
     @Binding var rootIsActive: Bool
     
     var body: some View {
-        NavigationLink(
-            destination: ChatDetailView(
-                rootIsActive: $rootIsActive,
-                conversationId: conversation.id
-            )
-        ) {
+        NavigationLink(destination: ChatDetailView(
+            rootIsActive: $rootIsActive,
+            conversationId: entry.id
+        )) {
             VStack(alignment: .leading) {
-                Text(conversation.title ?? "Untitled Chat")
+                Text(entry.title ?? "Untitled Chat")
                     .font(.headline)
-                Text("Messages: \(conversation.messages.count)")
+                Text(entry.createdAt, style: .date)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -133,4 +128,3 @@ private struct ConversationRow: View {
         .isDetailLink(false)
     }
 }
-
