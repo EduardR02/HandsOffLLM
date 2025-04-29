@@ -60,7 +60,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private var currentAudioPlayer: AVAudioPlayer?
     
     // --- Configuration & Timers ---
-    private var silenceTimer: Timer?
+    private var silenceTimer: DispatchSourceTimer?
     private let silenceThreshold: TimeInterval = 1.5
     
     // --- Dependencies ---
@@ -212,8 +212,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // MARK: - Listening Control
     func startListening() {
         guard !isListening && !isSpeaking else { return }
-        // Reinstall audio engine tap and start engine for listening
-        if !audioEngine.isRunning { configureAudioEngineTap() }
         guard speechRecognizer.isAvailable else {
             errorSubject.send(AudioError.recognizerUnavailable)
             return
@@ -301,12 +299,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         if wasListening {
             isListening = false
             logger.notice("🎙️ Listening stopped (Cleanup).")
-            // Teardown audio engine to reduce overhead during processing
-            audioEngine.inputNode.removeTap(onBus: 0)
-            if audioEngine.isRunning { 
-                logger.info("Audio engine stopped.")
-                audioEngine.stop() 
-            }
         }
     }
     
@@ -337,30 +329,28 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     // MARK: - Silence Detection
     private func resetSilenceTimer() {
-        if let timer = silenceTimer, timer.isValid {
-            timer.fireDate = Date(timeIntervalSinceNow: silenceThreshold)
-        }
+        startSilenceTimer()
     }
     
     private func startSilenceTimer() {
-        invalidateSilenceTimer()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: self.silenceThreshold, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                guard self.isListening else { return } // Only process if still listening
-                self.logger.notice("⏳ Silence detected by timer. Processing...")
-                self.stopListeningAndSendTranscription(transcription: self.currentSpokenText)
-            }
+        // cancel existing
+        silenceTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + silenceThreshold)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.isListening else { return }
+            self.logger.notice("⏳ Silence detected by timer. Processing...")
+            self.stopListeningAndSendTranscription(transcription: self.currentSpokenText)
         }
+        timer.resume()
+        silenceTimer = timer
         logger.debug("Silence timer started.")
     }
     
     private func invalidateSilenceTimer() {
-        if silenceTimer != nil {
-            silenceTimer?.invalidate()
-            silenceTimer = nil
-            logger.debug("Silence timer invalidated.")
-        }
+        silenceTimer?.cancel()
+        silenceTimer = nil
+        logger.debug("Silence timer invalidated.")
     }
     
     // MARK: - Audio Engine Management
@@ -428,27 +418,20 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     // New: single scheduler driving both play + fetch
     private func scheduleNext() {
-        guard !isFetchingTTS else { return }
-
-        // 1) Play queued audio and then fetch next chunk
-        if !audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true && replayQueue.isEmpty {
+        // 1) Play queued audio and then fetch next chunk even if a fetch is in flight
+        if !audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
+            // start playing immediately
             let data = audioQueue.removeFirst()
-            let nextIdx = findNextTTSChunk()
-            if nextIdx > 0 {
-                logger.debug("Fetching next TTS chunk: \(nextIdx) chars")
-                let chunk = String(textBuffer.prefix(nextIdx))
-                textBuffer.removeFirst(nextIdx)
-                fetchAudio(for: chunk)
-            }
             playAudioData(data)
-            return
         }
 
-        // 2) Initial fetch when nothing is queued or playing
+        // 2) If still fetching, wait
+        guard !isFetchingTTS else { return }
+
+        // 3) Initial fetch when nothing is queued or playing
         let idx = findNextTTSChunk()
         if idx > 0 {
-            // also fires on last chunk it seems due to scheduleNext being called when llmDone is true
-            logger.debug("Fetching initial TTS chunk: \(idx) chars")
+            logger.debug("Fetching next TTS chunk: \(idx) chars")
             let chunk = String(textBuffer.prefix(idx))
             textBuffer.removeFirst(idx)
             fetchAudio(for: chunk)
@@ -563,6 +546,13 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
 
     
+    private func configurePlayer(_ player: AVAudioPlayer) {
+        player.delegate = self
+        player.enableRate = true
+        player.isMeteringEnabled = true
+        player.rate = ttsRate
+    }
+    
     @MainActor private func playAudioData(_ data: Data) {
         guard !data.isEmpty else {
             logger.warning("Attempted to play empty audio data.")
@@ -571,12 +561,10 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         }
 
         do {
-            currentAudioPlayer = try AVAudioPlayer(data: data)
-            currentAudioPlayer?.delegate = self
-            currentAudioPlayer?.enableRate = true
-            currentAudioPlayer?.isMeteringEnabled = true
-            currentAudioPlayer?.rate = self.ttsRate
-            
+            let player = try AVAudioPlayer(data: data)
+            configurePlayer(player)
+            currentAudioPlayer = player
+
             if currentAudioPlayer?.play() == true {
                 isSpeaking = true
                 logger.info("▶️ Playback started.")
@@ -683,11 +671,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         do {
             let data = try Data(contentsOf: fileURL)
             currentAudioPlayer?.stop()
-            currentAudioPlayer = try AVAudioPlayer(data: data)
-            currentAudioPlayer?.delegate = self
-            currentAudioPlayer?.enableRate = true
-            currentAudioPlayer?.rate = ttsRate
-            currentAudioPlayer?.isMeteringEnabled = true
+            let player = try AVAudioPlayer(data: data)
+            configurePlayer(player)
+            currentAudioPlayer = player
             if currentAudioPlayer?.play() == true {
                 isSpeaking = true
                 logger.info("▶️ Playback started for file: \(relativePath)")
@@ -850,8 +836,8 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             guard let self = self else { return }
             if self.isListening, let req = self.recognitionRequest {
                 req.append(buffer)
+                self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
             }
-            self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
         }
 
         if !audioEngine.isRunning {
