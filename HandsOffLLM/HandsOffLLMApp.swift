@@ -7,6 +7,7 @@
 
 import SwiftUI
 import OSLog
+import UIKit
 
 @main
 struct HandsOffLLMApp: App {
@@ -58,9 +59,11 @@ struct HandsOffLLMApp: App {
         .onChange(of: scenePhase) { oldPhase, newPhase in
             switch newPhase {
             case .background:
+                UIApplication.shared.isIdleTimerDisabled = false
                 logger.info("App moved to background: full audio cleanup.")
                 audioService.cleanupForBackground()
             case .active:
+                UIApplication.shared.isIdleTimerDisabled = true
                 logger.info("App became active: reconfiguring audio.")
                 audioService.applyAudioSessionSettings()
                 audioService.startListening()
