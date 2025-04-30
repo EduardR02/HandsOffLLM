@@ -7,13 +7,14 @@ struct WaveCircle: Shape {
     var amplitude: Double
     var noiseOffset: Double
     
-    // Static trig lookup tables for 100 segments
+    // Precomputed angle steps
     static let segmentCount = 100
     static let theta: [Double]      = (0...segmentCount).map { Double($0)/Double(segmentCount) * 2 * .pi }
-    static let sin4theta: [Double]  = theta.map { sin(4 * $0) }
-    static let cos4theta: [Double]  = theta.map { cos(4 * $0) }
-    static let sin7theta: [Double]  = theta.map { sin(7 * $0) }
-    static let cos7theta: [Double]  = theta.map { cos(7 * $0) }
+    // Precomputed sin/cos as CGFloat to avoid per-frame casts
+    static let sin4theta: [CGFloat] = theta.map { CGFloat(sin(4 * $0)) }
+    static let cos4theta: [CGFloat] = theta.map { CGFloat(cos(4 * $0)) }
+    static let sin7theta: [CGFloat] = theta.map { CGFloat(sin(7 * $0)) }
+    static let cos7theta: [CGFloat] = theta.map { CGFloat(cos(7 * $0)) }
     static let cosTheta: [CGFloat]  = theta.map { CGFloat(cos($0)) }
     static let sinTheta: [CGFloat]  = theta.map { CGFloat(sin($0)) }
     
@@ -24,20 +25,21 @@ struct WaveCircle: Shape {
     }
     
     func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let baseR  = min(rect.width, rect.height) / 2
-        var path   = Path()
-        
-        // Precompute phase+offset trig
-        let p1 = phase + noiseOffset, c1 = cos(p1), s1 = sin(p1)
-        let p2 = -phase * 0.7 + noiseOffset, c2 = cos(p2), s2 = sin(p2)
+        // Precompute constants
+        let centerX = rect.midX, centerY = rect.midY
+        let baseR = min(rect.width, rect.height) / 2
+        let p1 = phase + noiseOffset, p2 = -phase * 0.7 + noiseOffset
+        let c1f = CGFloat(cos(p1)), s1f = CGFloat(sin(p1))
+        let c2f = CGFloat(cos(p2)), s2f = CGFloat(sin(p2))
+        let scale = CGFloat(amplitude) * baseR * 0.2
+        var path = Path()
         
         for i in 0...WaveCircle.segmentCount {
-            // combine precomputed waves via angle-addition
-            let waveVal = WaveCircle.sin4theta[i]*c1 + WaveCircle.cos4theta[i]*s1
-            + 0.5*(WaveCircle.sin7theta[i]*c2 + WaveCircle.cos7theta[i]*s2)
-            let r    = baseR + CGFloat(waveVal) * CGFloat(amplitude) * baseR * 0.2
-            let pt   = CGPoint(x: center.x + r * WaveCircle.cosTheta[i], y: center.y + r * WaveCircle.sinTheta[i])
+            // combine waves and compute radius
+            let waveVal = WaveCircle.sin4theta[i]*c1f + WaveCircle.cos4theta[i]*s1f
+            + 0.5*(WaveCircle.sin7theta[i]*c2f + WaveCircle.cos7theta[i]*s2f)
+            let r = baseR + waveVal * scale
+            let pt = CGPoint(x: centerX + r * WaveCircle.cosTheta[i], y: centerY + r * WaveCircle.sinTheta[i])
             
             if i == 0 { path.move(to: pt) }
             else     { path.addLine(to: pt) }
@@ -120,7 +122,6 @@ struct VoiceIndicatorView: View {
                                 center: .center
                             )
                         )
-                        .padding(size * 0.1)
                         .animation(.easeInOut(duration: 0.15), value: mainColors)
 
                         // 3) Wavy outline stroke
@@ -136,10 +137,10 @@ struct VoiceIndicatorView: View {
                             ),
                             lineWidth: size * 0.04
                         )
-                        .padding(size * 0.1)
                         .animation(.easeInOut(duration: 0.15), value: strokeColors)
                     }
-                    .drawingGroup()
+                    .padding(size * 0.1)
+                    .drawingGroup(opaque: true, colorMode: .linear)
                 }
             } else {
                 Color.clear
