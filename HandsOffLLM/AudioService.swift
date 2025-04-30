@@ -76,6 +76,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private let baseMinChunkLength: Int = 60
     private let ttsChunkGrowthFactor: Double = 2.25
     private var prevTTSChunkSize: Int? = nil
+    private var listeningSessionId: UUID?  // ignore stale callbacks
     
     func setTTSContext(conversationID: UUID, messageID: UUID) {
         if currentTTSConversationID != conversationID || currentTTSMessageID != messageID {
@@ -216,7 +217,11 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             errorSubject.send(AudioError.recognizerUnavailable)
             return
         }
-        
+
+        // mark a new session
+        let sessionId = UUID()
+        listeningSessionId = sessionId
+
         // reset per‐session state…
         hasUserStartedSpeakingThisTurn = false
         invalidateSilenceTimer()
@@ -238,7 +243,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             with: recognitionRequest
         ) { [weak self] result, error in
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.listeningSessionId == sessionId else { return }
                 guard self.recognitionTask != nil else { return } // Task might have been cancelled
                 
                 var isFinal = false
@@ -294,6 +299,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
+        listeningSessionId = nil  // clear session
         invalidateSilenceTimer()
 
         if wasListening {
@@ -316,15 +322,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             // Notify ViewModel or whoever is listening that listening stopped without result?
             // For now, the state change of isListening to false handles this.
         }
-    }
-    
-    // Called by ViewModel on user tap during listening
-    func resetListening() {
-        logger.notice("🎙️ Listening reset requested by user.")
-        stopListeningCleanup()
-        currentSpokenText = ""
-        // Ensure other states are consistent (stopListeningCleanup handles isListening)
-        if isSpeaking { stopSpeaking() } // Also stop speaking if reset happens during overlap
     }
     
     // MARK: - Silence Detection
@@ -381,14 +378,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     func stopSpeaking() {
         let wasSpeaking = self.isSpeaking
-        
-        // Cancel any ongoing TTS Fetch Task
-        if let task = self.ttsFetchTask {
-            task.cancel()
-            self.ttsFetchTask = nil
-            self.isFetchingTTS = false
-            logger.info("TTS fetch task cancelled.")
-        }
+        cancelTTSFetch()
         
         // Stop Audio Player
         if let player = self.currentAudioPlayer {
@@ -648,9 +638,9 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             if !available {
                 self.logger.error("🚨 Speech recognizer became unavailable.")
                 self.errorSubject.send(AudioError.recognizerUnavailable)
-                // If listening, stop it.
+                // If listening, teardown completely
                 if self.isListening {
-                    self.stopListeningCleanup()
+                    self.teardown()
                 }
             } else {
                 self.logger.info("✅ Speech recognizer is available.")
@@ -729,17 +719,13 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     // MARK: - Cleanup for in-app navigation (ContentView disappear)
     func cleanupOnDisappear() {
         logger.info("AudioService partial cleanup for in-app nav.")
-        stopListeningCleanup()
-        stopSpeaking()
-        invalidateSilenceTimer()
+        teardown()
     }
 
     // MARK: - Full cleanup for app background/termination
     func cleanupForBackground() {
         logger.info("AudioService full cleanup for background.")
-        stopListeningCleanup()
-        stopSpeaking()
-        invalidateSilenceTimer()
+        teardown()
         audioEngine.stop()
         do {
             try AVAudioSession.sharedInstance().setActive(false)
@@ -850,6 +836,24 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 input.removeTap(onBus: 0)
             }
         }
+    }
+    
+    /// Completely tears down speech-to-text, TTS fetch & playback.
+    func teardown() {
+        // 1) stop listening
+        if isListening { stopListeningCleanup() }
+        // 2) cancel any TTS fetch
+        cancelTTSFetch()
+        // 3) stop playback
+        if isSpeaking { stopSpeaking() }
+    }
+
+    func cancelTTSFetch() {
+        guard isFetchingTTS else { return }
+        ttsFetchTask?.cancel()
+        ttsFetchTask = nil
+        isFetchingTTS = false
+        logger.info("TTS fetch task cancelled.")
     }
 }
 

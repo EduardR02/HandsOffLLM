@@ -120,8 +120,8 @@ struct VoiceIndicatorView: View {
                                 center: .center
                             )
                         )
-                        .padding(size * 0.08)
-                        .animation(.easeInOut(duration: 0.3), value: mainColors)
+                        .padding(size * 0.1)
+                        .animation(.easeInOut(duration: 0.15), value: mainColors)
 
                         // 3) Wavy outline stroke
                         WaveCircle(
@@ -136,8 +136,8 @@ struct VoiceIndicatorView: View {
                             ),
                             lineWidth: size * 0.04
                         )
-                        .padding(size * 0.08)
-                        .animation(.easeInOut(duration: 0.3), value: strokeColors)
+                        .padding(size * 0.1)
+                        .animation(.easeInOut(duration: 0.15), value: strokeColors)
                     }
                     .drawingGroup()
                 }

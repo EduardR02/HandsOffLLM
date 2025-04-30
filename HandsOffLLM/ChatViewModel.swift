@@ -58,9 +58,10 @@ class ChatViewModel: ObservableObject {
         audioService.errorSubject
             .sink { [weak self] error in
                 guard let self = self else { return }
-                self.logger.error("ViewModel received AudioService error: \(error.localizedDescription)")
-                self.handleError(error) // Update lastError
-                self.resetToIdleState(attemptRestart: true)
+                self.logger.error("AudioService error: \(error.localizedDescription)")
+                self.handleError(error)
+                self.cancelProcessingAndSpeaking()
+                self.audioService.startListening()
             }
             .store(in: &cancellables)
         
@@ -89,9 +90,11 @@ class ChatViewModel: ObservableObject {
         
         chatService.llmErrorSubject
             .sink { [weak self] error in
-                self?.logger.error("ViewModel received ChatService error: \(error.localizedDescription)")
-                self?.handleError(error)
-                self?.resetToIdleState(attemptRestart: true)
+                guard let self = self else { return }
+                self.logger.error("LLM error: \(error.localizedDescription)")
+                self.handleError(error)
+                self.cancelProcessingAndSpeaking()
+                self.audioService.startListening()
             }
             .store(in: &cancellables)
         
@@ -105,11 +108,7 @@ class ChatViewModel: ObservableObject {
         
         // --- NEW: when audio service reports all TTS chunks finished, restart listening ---
         audioService.ttsPlaybackCompleteSubject
-            .sink { [weak self] in
-                guard let self = self else { return }
-                self.logger.info("TTS playback fully complete, resuming listening.")
-                self.startListening()
-            }
+            .sink { [weak self] in self?.audioService.startListening() }
             .store(in: &cancellables)
         
         // --- Initial State Transition: idle -> listening ---
@@ -147,52 +146,28 @@ class ChatViewModel: ObservableObject {
             }
             .assign(to: &$state)
     }
-    
-    func pauseMainActivities() {
-        if audioService.isListening {
-            audioService.resetListening()
-        }
-        if chatService.isProcessingLLM || audioService.isFetchingTTS {
-            cancelProcessingAndSpeaking()
-        }
-        if audioService.isSpeaking {
-            audioService.stopSpeaking()
-        }
-    }
-    
+
     // MARK: - User Actions
     func cycleState() {
         if audioService.isListening {
-            audioService.resetListening()
+            // User tap during listening: teardown to idle
+            audioService.teardown()
         } else {
+            // Cancel current and restart listening
             cancelProcessingAndSpeaking()
             audioService.startListening()
         }
     }
     
-    // Cancels ongoing operations - now mostly handled within cycleState or resetToIdleState
+    // Cancels LLM processing and tears down all audio (listening, TTS, playback)
     func cancelProcessingAndSpeaking() {
-        logger.notice("⏹️ Cancel requested (likely internal or reset).")
+        logger.notice("⏹️ Cancel requested, tearing down processing and audio.")
         chatService.cancelProcessing()
-        audioService.stopSpeaking()
+        audioService.teardown()
     }
 
     func startListening() {
         audioService.startListening()
-    }
-    
-    func resetToIdleState(attemptRestart: Bool = false) {
-        cancelProcessingAndSpeaking()
-        if audioService.isListening {
-            audioService.resetListening()
-        }
-        // Async reset of chat context
-        Task { @MainActor in
-            chatService.resetConversationContext()
-            if attemptRestart {
-                audioService.startListening()
-            }
-        }
     }
     
     // MARK: - Error Handling
@@ -214,8 +189,8 @@ class ChatViewModel: ObservableObject {
     // Called from ChatDetailView's "Continue from here" button
     func loadConversationHistory(_ conversation: Conversation, upTo messageIndex: Int) {
         logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
+        // Teardown any in-flight processing or audio
         cancelProcessingAndSpeaking()
-        audioService.resetListening()
         
         // Perform history lookup and reset in background
         Task { @MainActor in
@@ -249,6 +224,8 @@ class ChatViewModel: ObservableObject {
     // --- Helper for starting new chat ---
     func startNewChat() {
         logger.info("Starting new chat session.")
-        resetToIdleState(attemptRestart: true) // Resets context and starts listening
+        cancelProcessingAndSpeaking()
+        chatService.resetConversationContext()
+        audioService.startListening()
     }
 }

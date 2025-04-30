@@ -169,7 +169,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .onAppear {
                 logger.info("SettingsView appeared, pausing main activities.")
-                viewModel.pauseMainActivities()
+                viewModel.cancelProcessingAndSpeaking()
                 isTopLevelActive = true // Reset flag when SettingsView appears/reappears
             }
             .onDisappear {

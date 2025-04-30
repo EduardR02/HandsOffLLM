@@ -33,7 +33,7 @@ struct HistoryView: View {
         .navigationTitle("History")
         .listStyle(.insetGrouped) // Or plain, grouped, etc.
         .onAppear {
-            viewModel.pauseMainActivities()
+            viewModel.cancelProcessingAndSpeaking()
         }
         .onDisappear {
             // Only resume listening when actually exiting history view (not when navigating deeper)

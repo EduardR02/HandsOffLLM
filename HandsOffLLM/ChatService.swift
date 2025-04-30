@@ -73,8 +73,7 @@ class ChatService: ObservableObject {
         logger.notice("⏹️ LLM Processing cancellation requested.")
         llmTask?.cancel()
         llmTask = nil
-        // isProcessingLLM will be set to false within the fetchLLMResponse cancellation handling block.
-        // The final (potentially partial) message is added there too.
+        isProcessingLLM = false
     }
     
     // MARK: - LLM Fetching Logic
@@ -443,16 +442,14 @@ class ChatService: ObservableObject {
         parentId: UUID? = nil,
         initialAudioPaths: [UUID: [String]]? = nil // ← New parameter
     ) {
+        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0)")
+        
+        // Cancel any in-flight LLM processing
+        cancelProcessing()
+        isLLMStreamComplete = false
+        
         // Perform async load inside Task to keep API sync
         Task { @MainActor in
-            logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0)")
-            
-            currentFullResponse = ""
-            llmTask?.cancel()
-            llmTask = nil
-            isProcessingLLM = false
-            isLLMStreamComplete = false // Reset completion flag too
-            
             var conversationToSet: Conversation?
             
             if let existingId = existingConversationId {
