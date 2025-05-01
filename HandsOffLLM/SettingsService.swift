@@ -209,6 +209,19 @@ class SettingsService: ObservableObject { // Make ObservableObject
         return settings.advancedMaxTokens ?? 4096 // Default max tokens (adjust as needed)
     }
     
+    // Web search toggle
+    var webSearchEnabled: Bool {
+        settings.webSearchEnabled ?? false
+    }
+    
+    // Max/min caps from API definitions
+    static let maxTempOpenAI: Float = 2.0
+    static let maxTokensOpenAI: Int = 16384
+    static let maxTempAnthropic: Float = 1.0
+    static let maxTokensAnthropic: Int = 8192
+    static let maxTempGemini: Float = 2.0
+    static let maxTokensGemini: Int = 8192
+    
     // MARK: - Persistence
     func loadSettings() {
         guard let url = persistenceURL else {

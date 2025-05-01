@@ -62,44 +62,13 @@ struct SettingsData: Codable {
     // New: default playback speed for the main‑screen slider
     var selectedDefaultPlaybackSpeed: Float?
     
+    // New: enable web search for supported OpenAI models
+    var webSearchEnabled: Bool? = false
+    
     // Default values can be set here or when initializing SettingsService
     init() {
         // Sensible defaults if needed
     }
-}
-
-// MARK: - Claude API Structures
-struct ClaudeRequest: Codable {
-    let model: String
-    let system: String?
-    let messages: [MessageParam]
-    let stream: Bool
-    let max_tokens: Int
-    let temperature: Float
-}
-
-struct MessageParam: Codable {
-    let role: String
-    let content: String
-}
-
-struct ClaudeStreamEvent: Decodable {
-    let type: String
-    let delta: Delta?
-    let message: ClaudeResponseMessage? // For message_stop event
-}
-struct Delta: Decodable {
-    let type: String?
-    let text: String?
-}
-struct ClaudeResponseMessage: Decodable {
-    let id: String
-    let role: String
-    let usage: UsageData?
-}
-struct UsageData: Decodable {
-    let input_tokens: Int
-    let output_tokens: Int
 }
 
 // MARK: - OpenAI TTS API Structures
@@ -111,25 +80,30 @@ struct OpenAITTSRequest: Codable {
     let instructions: String?
 }
 
-// MARK: - Gemini API Structures
-struct GeminiRequest: Codable {
-    let contents: [GeminiContent]
+// MARK: - API response structures
+
+struct GeminiResponse: Decodable {
+    struct Candidate: Decodable {
+        struct Content: Decodable {
+            struct Part: Decodable {
+                let text: String?
+            }
+            let parts: [Part]?
+        }
+        let content: Content?
+    }
+    let candidates: [Candidate]?
 }
 
-struct GeminiContent: Codable {
-    let role: String
-    let parts: [GeminiPart]
+struct OpenAIResponseEvent: Decodable {
+    let type: String
+    let delta: String?
 }
 
-struct GeminiPart: Codable {
-    let text: String
-}
-
-struct GeminiResponseChunk: Decodable {
-    let candidates: [GeminiCandidate]?
-}
-struct GeminiCandidate: Decodable {
-    let content: GeminiContent?
+struct ClaudeEvent: Decodable {
+    let type: String
+    struct Delta: Decodable { let text: String? }
+    let delta: Delta?
 }
 
 // MARK: - Error Enum

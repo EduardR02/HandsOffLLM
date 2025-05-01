@@ -98,29 +98,13 @@ class ChatService: ObservableObject {
             let activeMaxTokens = settingsService.activeMaxTokens
             // --- End Get ACTIVE settings ---
             
-            
-            // 1. Select API Key and prepare stream based on provider
-            let stream: AsyncThrowingStream<String, Error>
-            switch provider {
-            case .gemini:
-                guard let apiKey = settingsService.geminiAPIKey, !apiKey.isEmpty, apiKey != "YOUR_GEMINI_API_KEY" else {
-                    throw LlmError.apiKeyMissing(provider: "Gemini")
-                }
-                logger.info("Using Gemini provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
-                stream = try await fetchGeminiStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
-            case .claude:
-                guard let apiKey = settingsService.anthropicAPIKey, !apiKey.isEmpty, apiKey != "YOUR_ANTHROPIC_API_KEY" else {
-                    throw LlmError.apiKeyMissing(provider: "Claude")
-                }
-                logger.info("Using Claude provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
-                stream = try await fetchClaudeStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
-            case .openai:
-                guard let apiKey = settingsService.openaiAPIKey, !apiKey.isEmpty, apiKey != "YOUR_OPENAI_API_KEY" else {
-                    throw LlmError.apiKeyMissing(provider: "OpenAI")
-                }
-                logger.info("Using OpenAI provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
-                stream = try await fetchOpenAIStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
-            }
+            // 1. Build request and unified stream
+            let request = try buildRequest(for: provider,
+                                           modelId: activeModelId,
+                                           systemPrompt: activeSystemPrompt,
+                                           temperature: activeTemperature,
+                                           maxTokens: activeMaxTokens)
+            let stream = try await makeStream(for: provider, request: request)
             
             var firstChunkReceived = false
             // 2. Process the stream
@@ -149,18 +133,14 @@ class ChatService: ObservableObject {
             // 3. Stream finished successfully
             logger.info("🤖 LLM stream completed successfully (\(providerString)).")
             
-            
-        } catch is CancellationError {
-            logger.notice("⏹️ LLM Task Cancelled.")
-            llmError = CancellationError()
-        } catch let error as LlmError {
-            logger.error("🚨 LLM Service Error (\(providerString)): \(error.localizedDescription)")
+        } catch let error {
+            if error is CancellationError {
+                logger.notice("⏹️ LLM Task Cancelled.")
+            } else {
+                logger.error("🚨 LLM Error (\(providerString)): \(error.localizedDescription)")
+                llmErrorSubject.send(error)
+            }
             llmError = error
-            llmErrorSubject.send(error)
-        } catch {
-            logger.error("🚨 Unknown LLM Error during stream (\(providerString)): \(error.localizedDescription)")
-            llmError = error
-            llmErrorSubject.send(error)
         }
         
         // 4. Cleanup and Final State Update
@@ -178,15 +158,11 @@ class ChatService: ObservableObject {
             logger.info("🤖 LLM response was empty.")
         } else if !(error is CancellationError) {
             logger.error("🚨 LLM fetch failed completely. Error: \(error!.localizedDescription)")
-        } // Cancellation logging happened in the catch block
-        
+        }
         
         // Update the final assistant message in the history
         if !currentFullResponse.isEmpty {
-            let messageRole: String
-            if error == nil { messageRole = "assistant" }
-            else if error is CancellationError { messageRole = "assistant_partial" }
-            else { messageRole = "assistant_error" }
+            let messageRole = error == nil ? "assistant" : (error is CancellationError ? "assistant_partial" : "assistant_error")
             
             if var conversation = currentConversation,
                let lastMsgIndex = conversation.messages.lastIndex(where: { $0.role == "assistant_partial" }) {
@@ -224,278 +200,32 @@ class ChatService: ObservableObject {
         llmCompleteSubject.send()
     }
     
-    
-    // MARK: - Gemini Implementation (Updated Signature)
-    private func fetchGeminiStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
-        // Use modelId from settings
-        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(modelId):streamGenerateContent?key=\(apiKey)&alt=sse") else {
-            throw LlmError.invalidURL
+    // MARK: - Unified SSE & Decoding Helpers
+    private func makeStream(for provider: LLMProvider, request: URLRequest) async throws -> AsyncThrowingStream<String, Error> {
+        let (bytesSequence, response) = try await urlSession.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let (data, _) = try await urlSession.data(for: request)
+            let errorBody = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+            logger.error("❌ HTTP Error : \(errorBody)")
+            throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1, body: errorBody)
         }
-        // ... request setup ...
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        // --- Build Payload ---
-        var conversationHistory: [GeminiContent] = []
-        // Use activeSystemPrompt from settings
-        if let sysPrompt = systemPrompt, !sysPrompt.isEmpty {
-            conversationHistory.append(GeminiContent(role: "user", parts: [GeminiPart(text: sysPrompt)]))
-            conversationHistory.append(GeminiContent(role: "model", parts: [GeminiPart(text: "OK.")])) // Keep Gemini's required alternation
-        }
-        // Use current live messages
-        let history = currentConversation?.messages.map { msg -> GeminiContent in
-            let geminiRole = (msg.role == "user") ? "user" : "model"
-            return GeminiContent(role: geminiRole, parts: [GeminiPart(text: msg.content)])
-        } ?? []
-        conversationHistory.append(contentsOf: history)
-        
-        // TODO: Add temperature and max_tokens to Gemini request if API supports them in this structure
-        // Currently, the GeminiRequest struct doesn't have them. Need to check Gemini API docs
-        // for generationConfig settings within the request.
-        let payload = GeminiRequest(contents: conversationHistory)
-        // --- End Payload ---
-        
-        // ... encode payload, make request, process stream (remains the same) ...
-        do {
-            request.httpBody = try JSONEncoder().encode(payload)
-        } catch {
-            throw LlmError.requestEncodingError(error)
-        }
-        
-        logger.debug("Sending Gemini Request to \(modelId)...")
-        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
-        do {
-            (bytes, response) = try await urlSession.bytes(for: request)
-        } catch {
-            throw LlmError.networkError(error) // Catch network errors during connection
-        }
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LlmError.networkError(URLError(.badServerResponse))
-        }
-        
-        guard (200...299).contains(httpResponse.statusCode) else {
-            var errorBody = ""
-            do {
-                for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
-            } catch {
-                logger.warning("Could not read Gemini error response body: \(error)")
-            }
-            logger.error("Gemini HTTP Error: \(httpResponse.statusCode). Body: \(errorBody)")
-            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorBody.isEmpty ? nil : errorBody)
-        }
-        
-        // --- Create AsyncThrowingStream ---
+        let decode = sseDecoders[provider]!
         return AsyncThrowingStream { continuation in
             Task {
-                var streamError: Error? = nil
                 do {
-                    logger.debug("Starting to process Gemini stream...")
-                    for try await line in bytes.lines {
-                        try Task.checkCancellation() // Allow cancellation during line iteration
-                        if line.hasPrefix("data: ") {
-                            let jsonDataString = String(line.dropFirst(6))
-                            if jsonDataString.isEmpty || jsonDataString == "[DONE]" { continue } // Skip empty data lines
-                            
-                            guard let jsonData = jsonDataString.data(using: .utf8) else {
-                                logger.warning("Could not convert Gemini JSON string to Data: \(jsonDataString)")
-                                continue
-                            }
-                            
-                            do {
-                                let chunk = try JSONDecoder().decode(GeminiResponseChunk.self, from: jsonData)
-                                if let text = chunk.candidates?.first?.content?.parts.first?.text {
-                                    continuation.yield(text)
-                                } else {
-                                    logger.debug("Gemini chunk decoded but contained no text.")
+                    var buffer = Data()
+                    for try await b in bytesSequence {
+                        try Task.checkCancellation()
+                        buffer.append(b)
+                        if b == UInt8(ascii: "\n") {
+                            guard let text = String(data: buffer, encoding: .utf8) else { buffer.removeAll(); continue }
+                            if text.hasPrefix("data:") {
+                                let payload = text.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let chunk = decode(payload) {
+                                    continuation.yield(chunk)
                                 }
-                            } catch {
-                                logger.warning("Failed to decode Gemini JSON chunk: \(error.localizedDescription). JSON: \(jsonDataString)")
                             }
-                        }
-                    }
-                    logger.debug("Gemini stream finished processing lines.")
-                } catch is CancellationError {
-                    logger.debug("Gemini stream processing cancelled.")
-                    streamError = CancellationError() // Propagate cancellation
-                } catch {
-                    logger.error("Error processing Gemini byte stream: \(error.localizedDescription)")
-                    streamError = LlmError.networkError(error)
-                }
-                continuation.finish(throwing: streamError)
-            }
-        }
-    }
-    
-    // MARK: - Claude Implementation (Updated Signature)
-    private func fetchClaudeStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
-        // ... URL setup ...
-        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
-            throw LlmError.invalidURL
-        }
-        
-        // ... request setup ...
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        
-        
-        // --- Build Payload ---
-        let history = currentConversation?.messages.map { msg -> MessageParam in
-            let claudeRole = (msg.role == "user") ? "user" : "assistant"
-            return MessageParam(role: claudeRole, content: msg.content)
-        } ?? []
-        // Use active system prompt
-        let systemPromptToUse: String? = (systemPrompt?.isEmpty ?? true) ? nil : systemPrompt
-        
-        let payload = ClaudeRequest(
-            model: modelId, // Use active model ID
-            system: systemPromptToUse,
-            messages: history,
-            stream: true,
-            max_tokens: maxTokens,
-            temperature: temperature
-        )
-        
-        do {
-            request.httpBody = try JSONEncoder().encode(payload)
-        } catch {
-            throw LlmError.requestEncodingError(error)
-        }
-        
-        logger.debug("Sending Claude Request to \(modelId)...")
-        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
-        do {
-            (bytes, response) = try await urlSession.bytes(for: request)
-        } catch {
-            throw LlmError.networkError(error)
-        }
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LlmError.networkError(URLError(.badServerResponse))
-        }
-        
-        guard (200...299).contains(httpResponse.statusCode) else {
-            var errorBody = ""
-            do {
-                for try await byte in bytes { errorBody += String(UnicodeScalar(byte)) }
-            } catch {
-                logger.warning("Could not read Claude error response body: \(error)")
-            }
-            logger.error("Claude HTTP Error: \(httpResponse.statusCode). Body: \(errorBody)")
-            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorBody.isEmpty ? nil : errorBody)
-        }
-        
-        // --- Create AsyncThrowingStream ---
-        return AsyncThrowingStream { continuation in
-            Task {
-                var streamError: Error? = nil
-                do {
-                    logger.debug("Starting to process Claude stream...")
-                    var currentEventBuffer = ""
-                    for try await line in bytes.lines {
-                        try Task.checkCancellation()
-                        
-                        if line.hasPrefix("data:") {
-                            let jsonDataString = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-                            if jsonDataString.isEmpty { continue }
-                            
-                            guard let jsonData = jsonDataString.data(using: .utf8) else {
-                                logger.warning("Could not convert Claude JSON string to Data: \(jsonDataString)")
-                                continue
-                            }
-                            
-                            do {
-                                let event = try JSONDecoder().decode(ClaudeStreamEvent.self, from: jsonData)
-                                if event.type == "content_block_delta" {
-                                    if let text = event.delta?.text { continuation.yield(text) }
-                                } else if event.type == "message_delta" {
-                                    if let text = event.delta?.text { continuation.yield(text) }
-                                } else if event.type == "message_stop" {
-                                    logger.debug("Claude stream received message_stop event.")
-                                } else if event.type == "ping" { /* Ignore */ }
-                                else { logger.debug("Received unhandled Claude event type: \(event.type)") }
-                            } catch {
-                                logger.warning("Failed to decode Claude JSON event: \(error.localizedDescription). JSON: \(jsonDataString)")
-                            }
-                        } else if line.isEmpty {
-                            currentEventBuffer = ""
-                        } else {
-                            currentEventBuffer += line
-                        }
-                    }
-                    logger.debug("Claude stream finished processing lines.")
-                } catch is CancellationError {
-                    logger.debug("Claude stream processing cancelled.")
-                    streamError = CancellationError()
-                } catch {
-                    logger.error("Error processing Claude byte stream: \(error.localizedDescription)")
-                    streamError = LlmError.networkError(error)
-                }
-                continuation.finish(throwing: streamError)
-            }
-        }
-    }
-    
-    // MARK: - OpenAI Streaming Implementation
-    private struct OpenAIStreamResponse: Decodable {
-        struct Choice: Decodable {
-            struct Delta: Decodable { let content: String? }
-            let delta: Delta
-        }
-        let choices: [Choice]
-    }
-    
-    private func fetchOpenAIStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
-        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
-            throw LlmError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        // Build messages array including system prompt and conversation history
-        var messages: [[String: String]] = []
-        if let sys = systemPrompt, !sys.isEmpty {
-            messages.append(["role": "developer", "content": sys])
-        }
-        for msg in currentConversation?.messages ?? [] {
-            var role = msg.role
-            if role == "assistant_partial" || role == "assistant_error" { role = "assistant" }
-            messages.append(["role": role, "content": msg.content])
-        }
-        let payload: [String: Any] = [
-            "model": modelId,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": maxTokens,
-            "stream": true
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        
-        let (bytes, response) = try await urlSession.bytes(for: request)
-        guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
-            var errBody = ""
-            for try await b in bytes { errBody += String(UnicodeScalar(b)) }
-            throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? 0, body: errBody)
-        }
-        
-        return AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    for try await line in bytes.lines {
-                        try Task.checkCancellation()
-                        guard line.hasPrefix("data: ") else { continue }
-                        let jsonString = String(line.dropFirst(6))
-                        if jsonString == "[DONE]" { break }
-                        guard let data = jsonString.data(using: .utf8) else { continue }
-                        let resp = try JSONDecoder().decode(OpenAIStreamResponse.self, from: data)
-                        if let content = resp.choices.first?.delta.content {
-                            continuation.yield(content)
+                            buffer.removeAll()
                         }
                     }
                     continuation.finish()
@@ -505,6 +235,194 @@ class ChatService: ObservableObject {
             }
         }
     }
+
+    // MARK: - Request Builders
+
+    /// Build URLRequest for the given provider
+    private func buildRequest(for provider: LLMProvider,
+                              modelId: String,
+                              systemPrompt: String?,
+                              temperature: Float,
+                              maxTokens: Int) throws -> URLRequest {
+        switch provider {
+        case .gemini:
+            return try makeGeminiRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
+        case .claude:
+            return try makeClaudeRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
+        case .openai:
+            return try makeOpenAIRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
+        }
+    }
+
+    /// Construct OpenAI /v1/responses request
+    private func makeOpenAIRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
+        guard let key = settingsService.openaiAPIKey, !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "OpenAI")
+        }
+        guard let url = URL(string: "https://api.openai.com/v1/responses") else {
+            throw LlmError.invalidURL
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // Prepare input messages with input_text/output_text content
+        let input = currentConversation?.messages.map { msg -> [String: Any] in
+            let type = (msg.role == "assistant") ? "output_text" : "input_text"
+            return ["role": msg.role, "content": [["type": type, "text": msg.content]]]
+        } ?? []
+
+        var body: [String: Any] = [
+            "model": modelId,
+            "input": input,
+            "stream": true,
+            "temperature": min(temperature, SettingsService.maxTempOpenAI),
+            "max_output_tokens": min(maxTokens, SettingsService.maxTokensOpenAI)
+        ]
+        // Include web search if enabled and supported model
+        if settingsService.webSearchEnabled,
+           ["gpt-4.1", "gpt-4.1-mini"].contains(where: modelId.contains) {
+            body["tools"] = [["type": "web_search_preview"]]
+        }
+
+        // Include instructions if provided
+        if let sys = systemPrompt, !sys.isEmpty {
+            body["instructions"] = sys
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
+
+    /// Construct Anthropic /v1/messages request
+    private func makeClaudeRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
+        guard let key = settingsService.anthropicAPIKey, !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "Claude")
+        }
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw LlmError.invalidURL
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue(key, forHTTPHeaderField: "x-api-key")
+        req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+        // Prepare messages payload (no separate system message in history)
+        let messagesPayload = currentConversation?.messages.map { message in
+            [
+                "role": message.role == "user" ? "user" : "assistant",
+                "content": message.content
+            ]
+        } ?? []
+
+        // Thinking not supported
+        var payload: [String: Any] = [
+            "model": modelId,
+            "messages": messagesPayload,
+            "max_tokens": min(maxTokens, SettingsService.maxTokensAnthropic),
+            "temperature": min(temperature, SettingsService.maxTempAnthropic),
+            "stream": true
+        ]
+        // Include instructions if provided
+        if let sys = systemPrompt, !sys.isEmpty {
+            payload["system"] = sys
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        return req
+    }
+
+    /// Construct Gemini request with safety and generationConfig
+    private func makeGeminiRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
+        guard let key = settingsService.geminiAPIKey, !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "Gemini")
+        }
+        // Use stable API version for text-only voice app
+        let apiVersion = "v1beta"
+        let responseType = "streamGenerateContent"
+        let urlString = "https://generativelanguage.googleapis.com/\(apiVersion)/models/\(modelId):\(responseType)?alt=sse&key=\(key)"
+        guard let url = URL(string: urlString) else { throw LlmError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // Prepare contents array (only messages)
+        let contents = currentConversation?.messages.map { message in
+            [
+                "role": message.role == "user" ? "user" : "model",
+                "parts": [["text": message.content]]
+            ]
+        } ?? []
+
+        // Build generationConfig, disabling thinking for flash model
+        var generationConfig: [String: Any] = [
+            "temperature": min(temperature, SettingsService.maxTempGemini),
+            "maxOutputTokens": min(maxTokens, SettingsService.maxTokensGemini),
+            "responseMimeType": "text/plain"
+        ]
+        if modelId.contains("2.5-flash") {
+            generationConfig["thinking_config"] = ["thinkingBudget": 0]
+        }
+        var body: [String: Any] = [
+            "contents": contents,
+            "safetySettings": getGeminiSafetySettings(),
+            "generationConfig": generationConfig
+        ]
+
+        if let sys = systemPrompt, !sys.isEmpty {
+            body["systemInstruction"] = ["parts": [["text": sys]]]
+        }
+        
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
+
+    /// Provide Gemini safety settings
+    private func getGeminiSafetySettings() -> [[String: String]] {
+        [
+            ["category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"],
+            ["category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"],
+            ["category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"],
+            ["category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"]
+        ]
+    }
+    
+    // MARK: - SSE Decoding
+
+    /// Decode a raw SSE chunk from Gemini into text
+    private func decodeGeminiChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+            let response = try? JSONDecoder().decode(GeminiResponse.self, from: data),
+              let text = response.candidates?.first?.content?.parts?.first?.text
+        else { return nil }
+        return text
+    }
+
+    /// Decode a raw SSE chunk from Claude into text
+    private func decodeClaudeChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let event = try? JSONDecoder().decode(ClaudeEvent.self, from: data),
+              (event.type == "content_block_delta" || event.type == "message_delta"),
+              let text = event.delta?.text
+        else { return nil }
+        return text
+    }
+
+    /// Decode a raw SSE chunk from OpenAI into text
+    private func decodeOpenAIChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+            let event = try? JSONDecoder().decode(OpenAIResponseEvent.self, from: data),
+            event.type == "response.output_text.delta"
+        else { return nil }
+        return event.delta
+    }
+
+    /// Map each provider to its SSE decoder
+    private lazy var sseDecoders: [LLMProvider: (String) -> String?] = [
+        .gemini: decodeGeminiChunk,
+        .claude: decodeClaudeChunk,
+        .openai: decodeOpenAIChunk
+    ]
     
     // MARK: - Conversation Management
     func resetConversationContext(

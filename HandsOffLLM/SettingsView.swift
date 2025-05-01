@@ -85,6 +85,21 @@ struct SettingsView: View {
                     }
                 }
                 
+                // MARK: - Experimental Features
+                Section("Experimental Features") {
+                    Toggle(isOn: Binding(
+                        get: { settingsService.webSearchEnabled },
+                        set: { settingsService.updateAdvancedSetting(keyPath: \.webSearchEnabled, value: $0) }
+                    )) {
+                        VStack(alignment: .leading) {
+                            Text("Web Search (Experimental)")
+                            Text("Only works with GPT-4.1 models")
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                        }
+                    }
+                }
+
                 // MARK: - App Defaults
                 Section("App Defaults") {
                     Picker("Default Provider", selection: Binding(
@@ -335,4 +350,3 @@ struct TTSInstructionSelectionView: View {
     .environmentObject(settings)
     .preferredColorScheme(.dark)
 }
-
