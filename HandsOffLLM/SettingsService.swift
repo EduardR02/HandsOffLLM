@@ -25,7 +25,6 @@ class SettingsService: ObservableObject { // Make ObservableObject
         ModelInfo(id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Fast, everyday tasks", provider: .openai),
         ModelInfo(id: "o4-mini", name: "o4 mini", description: "Thinks before responding, most capable", provider: .openai),
         ModelInfo(id: "chatgpt-4o-latest", name: "ChatGPT 4o", description: "Default model in ChatGPT", provider: .openai),
-        // Add OpenAI models if needed
     ]
     
     let availableSystemPrompts: [PromptPreset] = [
@@ -206,12 +205,17 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // Get the currently active max tokens
     var activeMaxTokens: Int {
         // Prioritize advanced override
-        return settings.advancedMaxTokens ?? 4096 // Default max tokens (adjust as needed)
+        return settings.advancedMaxTokens ?? 8000 // Default max tokens (adjust as needed)
     }
     
     // Web search toggle
     var webSearchEnabled: Bool {
         settings.webSearchEnabled ?? false
+    }
+    
+    // Energy Saver Mode
+    var energySaverEnabled: Bool {
+        settings.energySaverEnabled ?? false
     }
     
     // Max/min caps from API definitions
@@ -324,5 +328,9 @@ class SettingsService: ObservableObject { // Make ObservableObject
     func updateDefaultPlaybackSpeed(speed: Float) {
         settings.selectedDefaultPlaybackSpeed = speed
         saveSettings()
+    }
+
+    func updateEnergySaverEnabled(_ enabled: Bool) {
+        updateAdvancedSetting(keyPath: \.energySaverEnabled, value: enabled)
     }
 }

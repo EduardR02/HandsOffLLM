@@ -49,9 +49,18 @@ struct WaveCircle: Shape {
     }
 }
 
+// File-level constants for smoothing
+fileprivate let defaultMinAmplitude: Double = 0.15
+
+// File-level amp holder for smoothing state between frames
+fileprivate struct AmpHolder {
+    static var displayedAmp: Double = defaultMinAmplitude
+}
+
 struct VoiceIndicatorView: View {
     @Binding var state: ViewModelState
     @EnvironmentObject var audioService: AudioService
+    @EnvironmentObject var settingsService: SettingsService
     @State private var isVisible: Bool = false
     
     // Circle size
@@ -78,69 +87,48 @@ struct VoiceIndicatorView: View {
         }
     }
     
+    // Extract common timeline rendering logic
+    @ViewBuilder
+    private func indicatorTimeline<Schedule: TimelineSchedule>(_ schedule: Schedule) -> some View {
+        TimelineView(schedule) { context in
+            let t     = context.date.timeIntervalSinceReferenceDate
+            let phase = t * 2.0
+            let lvl   = Double(audioService.rawAudioLevel)
+            let norm  = max(0.0, min(1.0, (lvl + 50.0) / 50.0))
+
+            let smoothingFactor = 0.2
+            let minAmplitude    = defaultMinAmplitude
+            var targetAmp       = max(norm, minAmplitude)
+            switch state {
+                case .processingLLM, .fetchingTTS: targetAmp = 0.5
+                case .idle, .error:                 targetAmp = minAmplitude
+                default:                           targetAmp = minAmplitude + (1 - minAmplitude) * norm
+            }
+            // Update and use global amp holder
+            AmpHolder.displayedAmp += (targetAmp - AmpHolder.displayedAmp) * smoothingFactor
+            let ampToUse = AmpHolder.displayedAmp
+
+            return ZStack {
+                WaveCircle(phase: -phase * 1.2, amplitude: ampToUse, noiseOffset: 1)
+                    .fill(AngularGradient(gradient: Gradient(colors: mainColors), center: .center))
+                    .animation(.easeInOut(duration: 0.15), value: mainColors)
+
+                WaveCircle(phase: phase, amplitude: ampToUse * 0.8, noiseOffset: 2)
+                    .stroke(AngularGradient(gradient: Gradient(colors: strokeColors), center: .center), lineWidth: size * 0.04)
+                    .animation(.easeInOut(duration: 0.15), value: strokeColors)
+            }
+            .padding(size * 0.1)
+            .drawingGroup(opaque: true, colorMode: .linear)
+        }
+    }
+
     var body: some View {
         Group {
             if isVisible {
-                // TimelineView drives smooth animation at ~60fps
-                TimelineView(.animation) { context in
-                    let t     = context.date.timeIntervalSinceReferenceDate
-                    let phase = t * 2.0
-                    let lvl = Double(audioService.rawAudioLevel)
-                    let norm = max(0.0, min(1.0, (lvl + 50.0) / 50.0))
-
-                    // Smoothing factor: closer to 1 = faster response, closer to 0 = slower/smoother
-                    let smoothingFactor = 0.2
-                    let minAmplitude = 0.15
-
-                    // Determine target amplitude and enforce global minimum
-                    var targetAmp = max(norm, minAmplitude)
-                    switch state {
-                    case .processingLLM, .fetchingTTS:
-                        targetAmp = 0.5
-                    case .idle, .error:
-                        targetAmp = minAmplitude
-                    default:
-                        // Use minAmplitude as baseline, add dynamic part above it
-                        targetAmp = minAmplitude + (1 - minAmplitude) * norm
-                    }
-
-                    // Use static to persist amplitude between frames
-                    struct Holder { static var displayedAmp: Double = 0.15 }
-                    Holder.displayedAmp += (targetAmp - Holder.displayedAmp) * smoothingFactor
-                    let ampToUse = Holder.displayedAmp
-
-                    return ZStack {
-                        // 2) Main wavy fill
-                        WaveCircle(
-                            phase: -phase * 1.2,
-                            amplitude: ampToUse,
-                            noiseOffset: 1
-                        )
-                        .fill(
-                            AngularGradient(
-                                gradient: Gradient(colors: mainColors),
-                                center: .center
-                            )
-                        )
-                        .animation(.easeInOut(duration: 0.15), value: mainColors)
-
-                        // 3) Wavy outline stroke
-                        WaveCircle(
-                            phase: phase,
-                            amplitude: ampToUse * 0.8,
-                            noiseOffset: 2
-                        )
-                        .stroke(
-                            AngularGradient(
-                                gradient: Gradient(colors: strokeColors),
-                                center: .center
-                            ),
-                            lineWidth: size * 0.04
-                        )
-                        .animation(.easeInOut(duration: 0.15), value: strokeColors)
-                    }
-                    .padding(size * 0.1)
-                    .drawingGroup(opaque: true, colorMode: .linear)
+                if settingsService.energySaverEnabled {
+                    indicatorTimeline(.everyMinute)
+                } else {
+                    indicatorTimeline(.animation)
                 }
             } else {
                 Color.clear
@@ -160,10 +148,15 @@ struct VoiceIndicatorView: View {
 
 struct VoiceIndicatorView_Previews: PreviewProvider {
     static var previews: some View {
-        StatefulPreviewWrapper(ViewModelState.listening) { state in
-            VoiceIndicatorView(
-                state: state
-            )
+        // Set up environment objects needed by the view
+        let settings = SettingsService()
+        let history  = HistoryService()
+        let audio    = AudioService(settingsService: settings, historyService: history)
+
+        return StatefulPreviewWrapper(ViewModelState.listening) { state in
+            VoiceIndicatorView(state: state)
+                .environmentObject(settings)
+                .environmentObject(audio)
         }
     }
 }

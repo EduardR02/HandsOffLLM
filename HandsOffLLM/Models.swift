@@ -55,15 +55,12 @@ struct SettingsData: Codable {
     var advancedMaxTokens: Int?
     var advancedSystemPrompt: String?
     var advancedTTSInstruction: String?
-    var selectedTTSVoice: String?    // New: stores the user's choice of OpenAI TTS voice
-    
-    // New: default API provider for the main‑screen picker
+
+    var selectedTTSVoice: String?
     var selectedDefaultProvider: LLMProvider?
-    // New: default playback speed for the main‑screen slider
     var selectedDefaultPlaybackSpeed: Float?
-    
-    // New: enable web search for supported OpenAI models
     var webSearchEnabled: Bool? = false
+    var energySaverEnabled: Bool? = false
     
     // Default values can be set here or when initializing SettingsService
     init() {

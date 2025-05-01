@@ -100,6 +100,21 @@ struct SettingsView: View {
                     }
                 }
 
+                // MARK: - Energy Saver Mode
+                Section("Energy Saver") {
+                    Toggle(isOn: Binding(
+                        get: { settingsService.energySaverEnabled },
+                        set: { settingsService.updateEnergySaverEnabled($0) }
+                    )) {
+                        VStack(alignment: .leading) {
+                            Text("Energy Saver Mode")
+                            Text("Reduced circle animations, reduces energy usage by ~35%")
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                        }
+                    }
+                }
+                
                 // MARK: - App Defaults
                 Section("App Defaults") {
                     Picker("Default Provider", selection: Binding(
