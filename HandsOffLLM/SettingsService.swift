@@ -14,12 +14,17 @@ class SettingsService: ObservableObject { // Make ObservableObject
     let availableModels: [ModelInfo] = [
         // Claude
         ModelInfo(id: "claude-3-7-sonnet-latest", name: "Claude 3.7 Sonnet", description: "Smartest, most capable", provider: .claude),
-        ModelInfo(id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet", description: "Smartest, most emotinally intelligent", provider: .claude),
+        ModelInfo(id: "claude-3-5-sonnet-latest", name: "Claude 3.5 New Sonnet", description: "Smartest, most emotinally intelligent", provider: .claude),
         ModelInfo(id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku", description: "Fast, good for simple responses", provider: .claude),
         // Gemini
         ModelInfo(id: "gemini-2.5-flash-preview-04-17", name: "Gemini 2.5 Flash", description: "Fast, very capable", provider: .gemini),
         ModelInfo(id: "gemini-2.5-pro-exp-03-25", name: "Gemini 2.5 Pro", description: "Highly intelligent, thinks before responding", provider: .gemini),
         ModelInfo(id: "gemini-2.0-flash", name: "Gemini 2 Flash", description: "Very fast, everyday tasks", provider: .gemini),
+        // OpenAI models
+        ModelInfo(id: "gpt-4.1", name: "GPT-4.1", description: "Smart and versatile", provider: .openai),
+        ModelInfo(id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Fast, everyday tasks", provider: .openai),
+        ModelInfo(id: "o4-mini", name: "o4 mini", description: "Thinks before responding, most capable", provider: .openai),
+        ModelInfo(id: "chatgpt-4o-latest", name: "ChatGPT 4o", description: "Default model in ChatGPT", provider: .openai),
         // Add OpenAI models if needed
     ]
     

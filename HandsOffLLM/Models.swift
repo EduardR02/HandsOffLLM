@@ -161,5 +161,6 @@ enum LlmError: Error, LocalizedError {
 enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case gemini = "Gemini"
     case claude = "Claude"
+    case openai = "OpenAI"
     var id: String { self.rawValue }
 }

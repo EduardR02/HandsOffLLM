@@ -114,6 +114,12 @@ class ChatService: ObservableObject {
                 }
                 logger.info("Using Claude provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
                 stream = try await fetchClaudeStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
+            case .openai:
+                guard let apiKey = settingsService.openaiAPIKey, !apiKey.isEmpty, apiKey != "YOUR_OPENAI_API_KEY" else {
+                    throw LlmError.apiKeyMissing(provider: "OpenAI")
+                }
+                logger.info("Using OpenAI provider (\(activeModelId)). SysPrompt: \(activeSystemPrompt != nil), Temp: \(activeTemperature), MaxTokens: \(activeMaxTokens)")
+                stream = try await fetchOpenAIStream(apiKey: apiKey, modelId: activeModelId, systemPrompt: activeSystemPrompt, temperature: activeTemperature, maxTokens: activeMaxTokens)
             }
             
             var firstChunkReceived = false
@@ -322,7 +328,6 @@ class ChatService: ObservableObject {
         }
     }
     
-    
     // MARK: - Claude Implementation (Updated Signature)
     private func fetchClaudeStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
         // ... URL setup ...
@@ -431,6 +436,72 @@ class ChatService: ObservableObject {
                     streamError = LlmError.networkError(error)
                 }
                 continuation.finish(throwing: streamError)
+            }
+        }
+    }
+    
+    // MARK: - OpenAI Streaming Implementation
+    private struct OpenAIStreamResponse: Decodable {
+        struct Choice: Decodable {
+            struct Delta: Decodable { let content: String? }
+            let delta: Delta
+        }
+        let choices: [Choice]
+    }
+    
+    private func fetchOpenAIStream(apiKey: String, modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) async throws -> AsyncThrowingStream<String, Error> {
+        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
+            throw LlmError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Build messages array including system prompt and conversation history
+        var messages: [[String: String]] = []
+        if let sys = systemPrompt, !sys.isEmpty {
+            messages.append(["role": "developer", "content": sys])
+        }
+        for msg in currentConversation?.messages ?? [] {
+            var role = msg.role
+            if role == "assistant_partial" || role == "assistant_error" { role = "assistant" }
+            messages.append(["role": role, "content": msg.content])
+        }
+        let payload: [String: Any] = [
+            "model": modelId,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": maxTokens,
+            "stream": true
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (bytes, response) = try await urlSession.bytes(for: request)
+        guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
+            var errBody = ""
+            for try await b in bytes { errBody += String(UnicodeScalar(b)) }
+            throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? 0, body: errBody)
+        }
+        
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        guard line.hasPrefix("data: ") else { continue }
+                        let jsonString = String(line.dropFirst(6))
+                        if jsonString == "[DONE]" { break }
+                        guard let data = jsonString.data(using: .utf8) else { continue }
+                        let resp = try JSONDecoder().decode(OpenAIStreamResponse.self, from: data)
+                        if let content = resp.choices.first?.delta.content {
+                            continuation.yield(content)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
             }
         }
     }
