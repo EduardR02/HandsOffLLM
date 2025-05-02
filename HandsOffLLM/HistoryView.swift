@@ -32,15 +32,6 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .listStyle(.insetGrouped) // Or plain, grouped, etc.
-        .onAppear {
-            viewModel.cancelProcessingAndSpeaking()
-        }
-        .onDisappear {
-            // Only resume listening when actually exiting history view (not when navigating deeper)
-            if !rootIsActive {
-                viewModel.startListening()
-            }
-        }
     }
     
     private func deleteConversations(in section: String, at offsets: IndexSet) {

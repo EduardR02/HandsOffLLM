@@ -716,12 +716,6 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         }
     }
     
-    // MARK: - Cleanup for in-app navigation (ContentView disappear)
-    func cleanupOnDisappear() {
-        logger.info("AudioService partial cleanup for in-app nav.")
-        teardown()
-    }
-
     // MARK: - Full cleanup for app background/termination
     func cleanupForBackground() {
         logger.info("AudioService full cleanup for background.")

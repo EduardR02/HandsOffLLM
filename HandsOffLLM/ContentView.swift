@@ -127,20 +127,12 @@ struct ContentView: View {
         .navigationDestination(isPresented: $showHistory) {
             HistoryView(rootIsActive: $showHistory)
         }
-        // When returning from history, ensure we resume listening if appropriate
-        .onChange(of: showHistory) { previous, current in
-            // If history view was dismissed (returned to main)
-            if !current {
-                // Trigger listening cycle in ViewModel (guarded internally)
-                audioService.startListening()
-            }
-        }
         .onAppear {
-            logger.info("ContentView appeared.")
+            logger.info("ContentView appeared, start listening.")
+            audioService.startListening()
         }
         .onDisappear {
-            logger.info("ContentView disappeared.")
-            audioService.cleanupOnDisappear()
+            logger.info("ContentView disappeared, cleanup.")
             viewModel.cancelProcessingAndSpeaking()
         }
     }

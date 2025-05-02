@@ -14,17 +14,46 @@ struct SettingsView: View {
     @EnvironmentObject var settingsService: SettingsService
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
     @State private var showingAdvanced = false // State for DisclosureGroup
-    @State private var isTopLevelActive = true // Add this state
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
     
     var body: some View {
         NavigationView { // Or Form, depending on your structure
             Form {
+
+                // MARK: - App Defaults
+                Section("App Defaults") {
+                    Picker("LLM Provider", selection: Binding(
+                        get: { settingsService.settings.selectedDefaultProvider ?? .claude },
+                        set: { settingsService.updateDefaultProvider(provider: $0) }
+                    )) {
+                        ForEach(LLMProvider.allCases) { provider in
+                            Text(provider.rawValue).tag(provider)
+                        }
+                    }
+
+                    HStack {
+                        Text("Playback Speed:")
+                        Slider(value: Binding(
+                            get: { settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0 },
+                            set: { newValue in
+                                // Round to nearest 0.1 and only update when changed
+                                let quant = (newValue * 10).rounded() / 10
+                                let current = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
+                                if current != quant {
+                                    settingsService.updateDefaultPlaybackSpeed(speed: quant)
+                                }
+                            }
+                        ), in: 0.2...4.0, step: 0.1)
+                        Text(String(format: "%.1fx", settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0))
+                            .frame(width: 40)
+                    }
+                }
+
                 // MARK: - Model Selection
                 Section("LLM Models") {
                     ForEach(LLMProvider.allCases) { provider in
                         NavigationLink {
-                            ModelSelectionView(provider: provider, isParentTopLevelActive: $isTopLevelActive)
+                            ModelSelectionView(provider: provider)
                         } label: {
                             HStack {
                                 Text(provider.rawValue)
@@ -41,8 +70,8 @@ struct SettingsView: View {
                 }
                 
                 // MARK: - Prompt Presets
-                Section("System Prompt") {
-                    Picker("Preset", selection: Binding(
+                Section("Customize Chat Experience") {
+                    Picker("LLM System Prompt", selection: Binding(
                         get: { settingsService.settings.selectedSystemPromptPresetId ?? "" },
                         set: { settingsService.updateSelectedSystemPrompt(presetId: $0) }
                     )) {
@@ -53,14 +82,12 @@ struct SettingsView: View {
                             }
                         }
                     }
-                }
-                
-                Section("Speech Instructions") {
+
                     NavigationLink {
-                        TTSInstructionSelectionView(isParentTopLevelActive: $isTopLevelActive)
+                        TTSInstructionSelectionView()
                     } label: {
                         HStack {
-                            Text("Preset")
+                            Text("Speech Instructions")
                             Spacer()
                             Text(
                                 settingsService
@@ -72,9 +99,7 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                         }
                     }
-                }
-                
-                Section("Voice") {
+
                     Picker("Voice", selection: Binding(
                         get: { settingsService.openAITTSVoice },
                         set: { settingsService.updateSelectedTTSVoice(voice: $0) }
@@ -108,32 +133,10 @@ struct SettingsView: View {
                     )) {
                         VStack(alignment: .leading) {
                             Text("Energy Saver Mode")
-                            Text("Reduced circle animations, reduces energy usage by ~35%")
+                            Text("Static circle mode, reduces energy usage by ~35%")
                                 .font(.caption)
                                 .foregroundColor(.gray)
                         }
-                    }
-                }
-                
-                // MARK: - App Defaults
-                Section("App Defaults") {
-                    Picker("Default Provider", selection: Binding(
-                        get: { settingsService.settings.selectedDefaultProvider ?? .claude },
-                        set: { settingsService.updateDefaultProvider(provider: $0) }
-                    )) {
-                        ForEach(LLMProvider.allCases) { provider in
-                            Text(provider.rawValue).tag(provider)
-                        }
-                    }
-
-                    HStack {
-                        Text("Default Playback Speed:")
-                        Slider(value: Binding(
-                            get: { settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0 },
-                            set: { settingsService.updateDefaultPlaybackSpeed(speed: $0) }
-                        ), in: 0.2...4.0, step: 0.1)
-                        Text(String(format: "%.1fx", settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0))
-                            .frame(width: 40)
                     }
                 }
                 
@@ -149,8 +152,15 @@ struct SettingsView: View {
                         HStack {
                             Text("Temperature:")
                             Slider(value: Binding(
-                                get: { settingsService.settings.advancedTemperature ?? settingsService.activeTemperature }, // Show current or default
-                                set: { settingsService.updateAdvancedSetting(keyPath: \.advancedTemperature, value: $0) }
+                                get: { settingsService.settings.advancedTemperature ?? settingsService.activeTemperature },
+                                set: { newValue in
+                                    // Round to nearest 0.1 and only update when changed
+                                    let quant = (newValue * 10).rounded() / 10
+                                    let current = settingsService.settings.advancedTemperature ?? settingsService.activeTemperature
+                                    if current != quant {
+                                        settingsService.updateAdvancedSetting(keyPath: \.advancedTemperature, value: quant)
+                                    }
+                                }
                             ), in: 0.0...2.0, step: 0.1)
                             Text(String(format: "%.1f", settingsService.settings.advancedTemperature ?? settingsService.activeTemperature))
                                 .frame(width: 40)
@@ -197,21 +207,6 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .onAppear {
-                logger.info("SettingsView appeared, pausing main activities.")
-                viewModel.cancelProcessingAndSpeaking()
-                isTopLevelActive = true // Reset flag when SettingsView appears/reappears
-            }
-            .onDisappear {
-                // Only resume listening if SettingsView is disappearing while it *thought*
-                // it was the top-level view (meaning we're not just navigating deeper).
-                if isTopLevelActive {
-                    logger.info("SettingsView disappeared (presumed exit), resuming listening.")
-                    viewModel.startListening()
-                } else {
-                     logger.info("SettingsView disappeared (navigating deeper), NOT resuming.")
-                }
-            }
         }
         .navigationViewStyle(.stack) // Use stack style if needed
     }
@@ -222,7 +217,6 @@ struct ModelSelectionView: View {
     @EnvironmentObject var settingsService: SettingsService
     @Environment(\.presentationMode) var presentationMode
     let provider: LLMProvider
-    @Binding var isParentTopLevelActive: Bool
 
     // filter down to only this provider's models
     var models: [ModelInfo] {
@@ -252,16 +246,14 @@ struct ModelSelectionView: View {
                                 .foregroundColor(.accentColor)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain) // keep the row tappable without default button styling
             }
         }
         .navigationTitle(provider.rawValue)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            // Tell the parent it's no longer the top active view
-            isParentTopLevelActive = false
-        }
     }
 }
 
@@ -269,7 +261,6 @@ struct TTSInstructionSelectionView: View {
     @EnvironmentObject var settingsService: SettingsService
     @Environment(\.presentationMode) var presentationMode
     @State private var searchText = ""
-    @Binding var isParentTopLevelActive: Bool
 
     // Define categories and their preset IDs
     private let categories: [(title: String, ids: [String])] = [
@@ -328,10 +319,6 @@ struct TTSInstructionSelectionView: View {
         .searchable(text: $searchText)
         .navigationTitle("TTS Instructions")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            // Tell the parent it's no longer the top active view
-            isParentTopLevelActive = false
-        }
     }
 
     // Extracted row view for reuse
@@ -349,6 +336,8 @@ struct TTSInstructionSelectionView: View {
                         .foregroundColor(.accentColor)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
