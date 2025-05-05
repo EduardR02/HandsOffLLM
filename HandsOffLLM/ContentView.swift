@@ -105,15 +105,13 @@ struct ContentView: View {
                         .cornerRadius(8)
                         
                         // Output picker row
-                        HStack(spacing: 12) {
-                            RoutePickerView()
-                                .frame(width: 16, height: 16)
+                        HStack(spacing: 4) {
+                            RoutePickerView().fixedSize()
                             Text("Pick Output")
                                 .foregroundColor(.white)
-                            Spacer()
                         }
-                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 12))
                         .background(Color(.secondarySystemBackground).opacity(0.5))
                         .cornerRadius(8)
                         // Minimal TTS speed control

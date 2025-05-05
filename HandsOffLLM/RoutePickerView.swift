@@ -13,6 +13,12 @@ struct RoutePickerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
+        // Configure Dynamic Type for the route picker symbol
+        let symbolConfig = UIImage.SymbolConfiguration(textStyle: .body)
+        if let button = picker.subviews.compactMap({ $0 as? UIButton }).first {
+            button.setPreferredSymbolConfiguration(symbolConfig, forImageIn: .normal)
+            button.imageView?.adjustsImageSizeForAccessibilityContentSizeCategory = true
+        }
         // Set tint color based on environment (optional, default is usually fine)
         picker.tintColor = (colorScheme == .dark) ? .white : .black
         // You might want to set a specific activeTintColor for the selected route
@@ -23,6 +29,11 @@ struct RoutePickerView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
+        // Ensure symbol config updates on content size category change
+        let symbolConfig = UIImage.SymbolConfiguration(textStyle: .body)
+        if let button = uiView.subviews.compactMap({ $0 as? UIButton }).first {
+            button.setPreferredSymbolConfiguration(symbolConfig, forImageIn: .normal)
+        }
         // Update tint color if the environment changes
         uiView.tintColor = (colorScheme == .dark) ? .white : .black
     }

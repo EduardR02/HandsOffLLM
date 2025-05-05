@@ -64,7 +64,7 @@ struct VoiceIndicatorView: View {
     @State private var isVisible: Bool = false
     
     // Circle size
-    private let size: CGFloat = 240
+    private let size: CGFloat = 300
     
     // Cached color palettes (updated on state change)
     @State private var mainColors: [Color]   = []
