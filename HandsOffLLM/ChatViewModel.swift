@@ -169,6 +169,10 @@ class ChatViewModel: ObservableObject {
     func startListening() {
         audioService.startListening()
     }
+
+    func stopListening() {
+        audioService.stopListeningCleanup()
+    }
     
     // MARK: - Error Handling
     private func handleError(_ error: Error) {

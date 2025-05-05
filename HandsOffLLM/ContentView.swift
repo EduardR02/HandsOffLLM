@@ -1,6 +1,7 @@
 // ContentView.swift
 import SwiftUI
 import OSLog
+import UIKit
 
 struct ContentView: View {
     // Receive ViewModel from the App level
@@ -8,11 +9,19 @@ struct ContentView: View {
     // Access environment objects if needed, e.g., for navigation data
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var audioService: AudioService
-    @State private var showHistory = false   // NEW: track the HistoryLink binding
+    @State private var showHistory = false   // track history
+    @State private var isMenuOpen = false     // track side menu
+    private let menuWidth: CGFloat = 300      // side menu width
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
     
-    // Removed initializer - ViewModel is passed in now
+    init(viewModel: ChatViewModel) {
+        self.viewModel = viewModel
+        // Hide slider thumb
+        UISlider.appearance().setThumbImage(UIImage(), for: .normal)
+        UISlider.appearance().minimumTrackTintColor = .white
+        UISlider.appearance().maximumTrackTintColor = UIColor.white.withAlphaComponent(0.3)
+    }
     
     var body: some View {
         // Use NavigationStack provided by the App
@@ -41,87 +50,130 @@ struct ContentView: View {
                     viewModel.cycleState()
                 }
                 
-                // Slider Section (Reverted to original HStack)
-                HStack {
-                    Text("Speed:")
-                        .foregroundColor(.white)
-                    Slider(
-                        value: Binding<Float>(
-                            get: { viewModel.ttsRate },
-                            set: { newValue in
-                                // Round to nearest 0.1 and only update when changed
-                                let quant = (newValue * 10).rounded() / 10
-                                if viewModel.ttsRate != quant {
-                                    viewModel.ttsRate = quant
-                                }
-                            }
-                        ),
-                        in: 0.2...4.0,
-                        step: 0.1
-                    )
-                    Text(String(format: "%.1fx", viewModel.ttsRate))
-                        .foregroundColor(.white)
-                        .frame(width: 40, alignment: .leading)
-                        .id(viewModel.ttsRate) // Ensure text updates with slider
-                }
-                .padding()
-                .padding(.horizontal) // Add horizontal padding for slider/text
-                
-                Spacer() // Pushes indicator/slider towards center
+                Spacer() // Pushes indicator towards center
             }
             
-            // Picker at the bottom
-            VStack {
-                Spacer()
-                Picker("LLM", selection: $viewModel.selectedProvider) {
-                    ForEach(LLMProvider.allCases) { provider in
-                        Text(provider.rawValue).tag(provider)
+            // main screen has no LLM picker
+            
+            // Side menu overlay
+            if isMenuOpen {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation { isMenuOpen = false } }
+                HStack(spacing: 0) {
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 4) {
+                        // New Chat with full-width background
+                        Button {
+                            viewModel.startNewChat()
+                            withAnimation { isMenuOpen = false }
+                        } label: {
+                            HStack { Image(systemName: "plus.circle"); Text("New Chat") }
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .background(Color(.secondarySystemBackground).opacity(0.5))
+                        .cornerRadius(8)
+                        
+                        // History with full-width background
+                        Button {
+                            showHistory = true
+                            withAnimation { isMenuOpen = false }
+                        } label: {
+                            HStack { Image(systemName: "clock.arrow.circlepath"); Text("History") }
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .background(Color(.secondarySystemBackground).opacity(0.5))
+                        .cornerRadius(8)
+                        
+                        // Settings with full-width background
+                        NavigationLink {
+                            SettingsView()
+                        } label: {
+                            HStack { Image(systemName: "gearshape"); Text("Settings") }
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .background(Color(.secondarySystemBackground).opacity(0.5))
+                        .cornerRadius(8)
+                        
+                        // Output picker row
+                        HStack(spacing: 12) {
+                            RoutePickerView()
+                                .frame(width: 16, height: 16)
+                            Text("Pick Output")
+                                .foregroundColor(.white)
+                            Spacer()
+                        }
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemBackground).opacity(0.5))
+                        .cornerRadius(8)
+                        // Minimal TTS speed control
+                        HStack {
+                            Slider(
+                                value: Binding<Float>(
+                                    get: { viewModel.ttsRate },
+                                    set: { newValue in
+                                        let quant = (newValue * 10).rounded() / 10
+                                        if viewModel.ttsRate != quant {
+                                            viewModel.ttsRate = quant
+                                        }
+                                    }
+                                ), in: 0.2...4.0, step: 0.1
+                            )
+                            .tint(.white)
+                            Text(String(format: "%.1fx", viewModel.ttsRate))
+                                .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                .monospacedDigit()
+                                .frame(width: 40, alignment: .leading)
+                                .foregroundColor(.white)
+                        }
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .frame(maxWidth: .infinity)
+                        .background(Color(.secondarySystemBackground).opacity(0.5))
+                        .cornerRadius(8)
+                        Picker("LLM", selection: $viewModel.selectedProvider) { ForEach(LLMProvider.allCases){ provider in Text(provider.rawValue).tag(provider) }}
+                            .pickerStyle(SegmentedPickerStyle()).padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        Spacer()
                     }
+                    .frame(width: menuWidth)
+                    .background(Color(.systemBackground))
                 }
-                .pickerStyle(SegmentedPickerStyle())
-                .padding(.horizontal)
-                .padding(.bottom)
-                .disabled(viewModel.state == .processingLLM || viewModel.state == .speakingTTS || viewModel.state == .fetchingTTS)
-                .opacity(viewModel.state == .processingLLM || viewModel.state == .speakingTTS || viewModel.state == .fetchingTTS ? 0.5 : 1.0) // Use opacity instead of hide
-                .animation(.easeInOut(duration: 0.3), value: viewModel.state)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .toolbar {
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                // History Button: push via state & navigationDestination
-                Button {
-                    showHistory = true
-                } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                }
-                .buttonStyle(.borderless)
-                .tint(.white)
-                
-                // Settings Button
-                NavigationLink {
-                    // Destination: Settings View
-                    SettingsView() // Needs access to SettingsService (via @EnvironmentObject)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .tint(.white)
+        .toolbar{
+            ToolbarItem(placement:.navigationBarTrailing){
+                Button{withAnimation{isMenuOpen.toggle()}}label:{Image(systemName:"line.horizontal.3").foregroundColor(.white)}
             }
-            // Grouped leading items: new-chat + output toggle
-            ToolbarItemGroup(placement: .navigationBarLeading) {
-                Button {
-                    viewModel.startNewChat()
-                } label: {
-                    Image(systemName: "plus.circle")
+        }
+        .gesture(
+            DragGesture()
+                .onEnded { v in
+                    withAnimation {
+                        if isMenuOpen {
+                            if v.translation.width > 50 {
+                                isMenuOpen = false
+                            }
+                        } else {
+                            if v.translation.width < -50 {
+                                isMenuOpen = true
+                            }
+                        }
+                    }
                 }
-                .buttonStyle(.borderless)
-                .tint(.white)
-                .disabled(viewModel.state != .idle && viewModel.state != .listening)
-
-                RoutePickerView()
-                    .frame(width: 48, height: 48)
-            }
+        )
+        .onChange(of:isMenuOpen){ wasOpen, isOpen in
+            if isOpen{ viewModel.stopListening() } // only stop listening, do not stop tts. this is so that the playback speed can be adjusted while playing
+            else{ audioService.startListening() }
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showHistory) {
@@ -129,6 +181,7 @@ struct ContentView: View {
         }
         .onAppear {
             logger.info("ContentView appeared, start listening.")
+            isMenuOpen = false
             audioService.startListening()
         }
         .onDisappear {
