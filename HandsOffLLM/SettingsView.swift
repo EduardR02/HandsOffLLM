@@ -82,6 +82,11 @@ struct SettingsView: View {
                             }
                         }
                     }
+                    if settingsService.settings.advancedSystemPrompt != nil {
+                        Text("using custom")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
 
                     NavigationLink {
                         TTSInstructionSelectionView()
@@ -98,6 +103,11 @@ struct SettingsView: View {
                             )
                             .foregroundColor(.secondary)
                         }
+                    }
+                    if settingsService.settings.advancedTTSInstruction != nil {
+                        Text("using custom")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
                     }
 
                     Picker("Voice", selection: Binding(
@@ -141,68 +151,9 @@ struct SettingsView: View {
                 }
                 
                 // MARK: - Advanced Settings
-                DisclosureGroup("Advanced Settings", isExpanded: $showingAdvanced) {
-                    VStack(alignment: .leading) {
-                        Text("Overrides preset selections above.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                            .padding(.bottom)
-                        
-                        // Temperature Slider
-                        HStack {
-                            Text("Temperature:")
-                            Slider(value: Binding(
-                                get: { settingsService.settings.advancedTemperature ?? settingsService.activeTemperature },
-                                set: { newValue in
-                                    // Round to nearest 0.1 and only update when changed
-                                    let quant = (newValue * 10).rounded() / 10
-                                    let current = settingsService.settings.advancedTemperature ?? settingsService.activeTemperature
-                                    if current != quant {
-                                        settingsService.updateAdvancedSetting(keyPath: \.advancedTemperature, value: quant)
-                                    }
-                                }
-                            ), in: 0.0...2.0, step: 0.1)
-                            Text(String(format: "%.1f", settingsService.settings.advancedTemperature ?? settingsService.activeTemperature))
-                                .frame(width: 40)
-                        }
-                        
-                        // Max Tokens Input (replacing stepper)
-                        HStack {
-                            Text("Max Tokens:")
-                            TextField("", value: Binding(
-                                get: { settingsService.settings.advancedMaxTokens ?? settingsService.activeMaxTokens },
-                                set: { settingsService.updateAdvancedSetting(keyPath: \.advancedMaxTokens, value: $0) }
-                            ), format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 80)
-                        }
-                        
-                        // Custom System Prompt TextEditor
-                        VStack(alignment: .leading) {
-                            Text("Custom System Prompt:")
-                            TextEditor(text: Binding(
-                                get: { settingsService.settings.advancedSystemPrompt ?? "" },
-                                set: { settingsService.updateAdvancedSetting(keyPath: \.advancedSystemPrompt, value: $0.isEmpty ? nil : $0) } // Store nil if empty
-                            ))
-                            .frame(height: 150)
-                            .border(Color.gray.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
-                        }
-                        .padding(.top)
-                        
-                        // Custom TTS Instruction TextEditor
-                        VStack(alignment: .leading) {
-                            Text("Custom TTS Instruction:")
-                            TextEditor(text: Binding(
-                                get: { settingsService.settings.advancedTTSInstruction ?? "" },
-                                set: { settingsService.updateAdvancedSetting(keyPath: \.advancedTTSInstruction, value: $0.isEmpty ? nil : $0) } // Store nil if empty
-                            ))
-                            .frame(height: 80)
-                            .border(Color.gray.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
-                        }
-                        .padding(.top)
+                Section("Advanced Settings") {
+                    NavigationLink("Advanced Settings") {
+                        AdvancedSettingsView()
                     }
                 }
             }
@@ -340,6 +291,110 @@ struct TTSInstructionSelectionView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+struct AdvancedSettingsView: View {
+    @EnvironmentObject private var settingsService: SettingsService
+
+    var body: some View {
+        Form {
+            // Temperature
+            Section {
+                Toggle("Override Temperature", isOn: Binding(
+                    get: { settingsService.settings.advancedTemperature != nil },
+                    set: {
+                        settingsService.settings.advancedTemperature = $0
+                            ? SettingsService.defaultAdvancedTemperature
+                            : nil
+                    }
+                ))
+                if let temp = settingsService.settings.advancedTemperature {
+                    HStack {
+                        Slider(value: Binding(
+                            get: { temp },
+                            set: { settingsService.settings.advancedTemperature = $0 }
+                        ), in: 0...2, step: 0.1)
+                        Text(String(format: "%.1f", temp))
+                    }
+                    Button("Reset Temperature") {
+                        settingsService.settings.advancedTemperature = SettingsService.defaultAdvancedTemperature
+                    }
+                }
+            }
+
+            // Max Tokens
+            Section {
+                Toggle("Override Max Tokens", isOn: Binding(
+                    get: { settingsService.settings.advancedMaxTokens != nil },
+                    set: {
+                        settingsService.settings.advancedMaxTokens = $0
+                            ? SettingsService.defaultAdvancedMaxTokens
+                            : nil
+                    }
+                ))
+                if let maxTokens = settingsService.settings.advancedMaxTokens {
+                    HStack {
+                        TextField("", value: Binding(
+                            get: { maxTokens },
+                            set: { settingsService.settings.advancedMaxTokens = $0 }
+                        ), format: .number)
+                        .keyboardType(.numberPad)
+                        .frame(width: 80)
+                        Button("Reset Max Tokens") {
+                            settingsService.settings.advancedMaxTokens = SettingsService.defaultAdvancedMaxTokens
+                        }
+                    }
+                }
+            }
+
+            // System Prompt
+            Section {
+                Toggle("Override System Prompt", isOn: Binding(
+                    get: { settingsService.settings.advancedSystemPrompt != nil },
+                    set: {
+                        settingsService.settings.advancedSystemPrompt = $0
+                            ? SettingsService.defaultAdvancedSystemPrompt
+                            : nil
+                    }
+                ))
+                if let prompt = settingsService.settings.advancedSystemPrompt {
+                    TextEditor(text: Binding(
+                        get: { prompt },
+                        set: { settingsService.settings.advancedSystemPrompt = $0 }
+                    ))
+                    .frame(height: 140)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.5)))
+                    Button("Reset Prompt") {
+                        settingsService.settings.advancedSystemPrompt = SettingsService.defaultAdvancedSystemPrompt
+                    }
+                }
+            }
+
+            // TTS Instruction
+            Section {
+                Toggle("Override TTS Instruction", isOn: Binding(
+                    get: { settingsService.settings.advancedTTSInstruction != nil },
+                    set: {
+                        settingsService.settings.advancedTTSInstruction = $0
+                            ? SettingsService.defaultAdvancedTTSInstruction
+                            : nil
+                    }
+                ))
+                if let tts = settingsService.settings.advancedTTSInstruction {
+                    TextEditor(text: Binding(
+                        get: { tts },
+                        set: { settingsService.settings.advancedTTSInstruction = $0 }
+                    ))
+                    .frame(height: 100)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.5)))
+                    Button("Reset TTS Instruction") {
+                        settingsService.settings.advancedTTSInstruction = SettingsService.defaultAdvancedTTSInstruction
+                    }
+                }
+            }
+        }
+        .navigationTitle("Advanced Settings")
     }
 }
 

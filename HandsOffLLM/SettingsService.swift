@@ -31,8 +31,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         PromptPreset(id: "default-helpful", name: "Helpful Assistant", description: "Standard helpful, concise", fullPrompt: "You are a helpful voice assistant. Keep your responses concise and conversational."),
         PromptPreset(id: "casual-friend", name: "Casual Friend", description: "Informal, friendly chat", fullPrompt: "You are a friendly, casual AI assistant. Talk like you're chatting with a friend."),
         PromptPreset(id: "expert-coder", name: "Coding Expert", description: "Focused on code assistance", fullPrompt: "You are an expert programmer AI. Provide clear, accurate code examples and explanations."),
-        PromptPreset(id: "remove-later", name: "Remove Later", description: "Focused on code assistance", fullPrompt: Prompts.chatPrompt),
-        PromptPreset(id: "custom", name: "Custom", description: "Use prompt from Advanced section", fullPrompt: Prompts.chatPrompt), // Placeholder for custom
+        PromptPreset(id: "remove-later", name: "Remove Later", description: "Focused on code assistance", fullPrompt: Prompts.chatPrompt)
     ]
     
     let availableTTSInstructions: [PromptPreset] = [
@@ -58,10 +57,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         PromptPreset(id: "cosmic-horror-narrator", name: "Cosmic Horror Narrator", description: "", fullPrompt: Prompts.cosmicHorrorNarrator),
         PromptPreset(id: "oblivion-npc", name: "Oblivion NPC", description: "", fullPrompt: Prompts.oblivionNPC),
         PromptPreset(id: "passive-aggressive", name: "Passive Aggressive", description: "", fullPrompt: Prompts.passiveAggressive),
-        PromptPreset(id: "cowboy", name: "Cowboy", description: "", fullPrompt: Prompts.cowboy),
-
-        // Custom Placeholder
-        PromptPreset(id: "custom", name: "Custom", description: "Uses text from Advanced", fullPrompt: Prompts.spaceshipAI)
+        PromptPreset(id: "cowboy", name: "Cowboy", description: "", fullPrompt: Prompts.cowboy)
     ]
     
     // --- Persistence ---
@@ -91,70 +87,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
     let openAITTSFormat = "aac"     // Other options: opus, flac, pcm, mp3
     let maxTTSChunkLength = 1000    // 1000 chars ≈ 1 minute of audio
     
-    init() {
-        loadSettings()
-        validateKeysAndPrompts()
-        logger.info("SettingsService initialized.")
-        
-        setDefaultModelsIfNeeded()
-        setDefaultPromptsIfNeeded()
-        setDefaultUISettingsIfNeeded()
-    }
-    
-    // --- Default Selections ---
-    private func setDefaultModelsIfNeeded() {
-        var changed = false
-        for provider in LLMProvider.allCases {
-            if settings.selectedModelIdPerProvider[provider] == nil {
-                // Find the first available model for this provider
-                if let defaultModel = availableModels.first(where: { $0.provider == provider }) {
-                    settings.selectedModelIdPerProvider[provider] = defaultModel.id
-                    logger.info("Setting default model for \(provider.rawValue): \(defaultModel.name)")
-                    changed = true
-                }
-            }
-        }
-        if changed {
-            saveSettings()
-        }
-    }
-    
-    private func setDefaultPromptsIfNeeded() {
-        var changed = false
-        if settings.selectedSystemPromptPresetId == nil, let defaultPrompt = availableSystemPrompts.first(where: { $0.id != "custom" }) {
-            settings.selectedSystemPromptPresetId = defaultPrompt.id
-            logger.info("Setting default system prompt: \(defaultPrompt.name)")
-            changed = true
-        }
-        if settings.selectedTTSInstructionPresetId == nil, let defaultTTS = availableTTSInstructions.first(where: { $0.id != "custom" }) {
-            settings.selectedTTSInstructionPresetId = defaultTTS.id
-            logger.info("Setting default TTS instruction: \(defaultTTS.name)")
-            changed = true
-        }
-        if changed {
-            saveSettings()
-        }
-    }
-    
-    private func setDefaultUISettingsIfNeeded() {
-        var changed = false
-        if settings.selectedDefaultProvider == nil, let defaultProvider = LLMProvider.allCases.first {
-            settings.selectedDefaultProvider = defaultProvider
-            logger.info("Setting default API provider: \(defaultProvider.rawValue)")
-            changed = true
-        }
-        if settings.selectedDefaultPlaybackSpeed == nil {
-            let defaultSpeed: Float = 2.0
-            settings.selectedDefaultPlaybackSpeed = defaultSpeed
-            logger.info("Setting default playback speed: \(defaultSpeed)x")
-            changed = true
-        }
-        if changed {
-            saveSettings()
-        }
-    }
-    
-    
+    // --- Advanced Defaults ---
+    static let defaultAdvancedTemperature: Float = 1.0
+    static let defaultAdvancedMaxTokens: Int   = 8000
+    static let defaultAdvancedSystemPrompt: String = "You are a helpful voice assistant. Keep your responses concise and conversational."
+    static let defaultAdvancedTTSInstruction: String = Prompts.defaultHappy
+
     // MARK: - Active Setting Accessors
     
     // Get the currently active model ID for a given provider
@@ -332,5 +270,68 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     func updateEnergySaverEnabled(_ enabled: Bool) {
         updateAdvancedSetting(keyPath: \.energySaverEnabled, value: enabled)
+    }
+
+    init() {
+        loadSettings()
+        validateKeysAndPrompts()
+        logger.info("SettingsService initialized.")
+        
+        setDefaultModelsIfNeeded()
+        setDefaultPromptsIfNeeded()
+        setDefaultUISettingsIfNeeded()
+    }
+    
+    // --- Default Selections ---
+    private func setDefaultModelsIfNeeded() {
+        var changed = false
+        for provider in LLMProvider.allCases {
+            if settings.selectedModelIdPerProvider[provider] == nil {
+                // Find the first available model for this provider
+                if let defaultModel = availableModels.first(where: { $0.provider == provider }) {
+                    settings.selectedModelIdPerProvider[provider] = defaultModel.id
+                    logger.info("Setting default model for \(provider.rawValue): \(defaultModel.name)")
+                    changed = true
+                }
+            }
+        }
+        if changed {
+            saveSettings()
+        }
+    }
+    
+    private func setDefaultPromptsIfNeeded() {
+        var changed = false
+        if settings.selectedSystemPromptPresetId == nil, let defaultPrompt = availableSystemPrompts.first(where: { $0.id != "custom" }) {
+            settings.selectedSystemPromptPresetId = defaultPrompt.id
+            logger.info("Setting default system prompt: \(defaultPrompt.name)")
+            changed = true
+        }
+        if settings.selectedTTSInstructionPresetId == nil, let defaultTTS = availableTTSInstructions.first(where: { $0.id != "custom" }) {
+            settings.selectedTTSInstructionPresetId = defaultTTS.id
+            logger.info("Setting default TTS instruction: \(defaultTTS.name)")
+            changed = true
+        }
+        if changed {
+            saveSettings()
+        }
+    }
+    
+    private func setDefaultUISettingsIfNeeded() {
+        var changed = false
+        if settings.selectedDefaultProvider == nil, let defaultProvider = LLMProvider.allCases.first {
+            settings.selectedDefaultProvider = defaultProvider
+            logger.info("Setting default API provider: \(defaultProvider.rawValue)")
+            changed = true
+        }
+        if settings.selectedDefaultPlaybackSpeed == nil {
+            let defaultSpeed: Float = 2.0
+            settings.selectedDefaultPlaybackSpeed = defaultSpeed
+            logger.info("Setting default playback speed: \(defaultSpeed)x")
+            changed = true
+        }
+        if changed {
+            saveSettings()
+        }
     }
 }
