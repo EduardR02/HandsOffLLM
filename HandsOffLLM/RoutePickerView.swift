@@ -13,6 +13,10 @@ struct RoutePickerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
+        // Hide the default route button UI; we’ll overlay our own visuals
+        if let btn = picker.subviews.compactMap({ $0 as? UIButton }).first {
+            btn.isHidden = true
+        }
         // Configure Dynamic Type for the route picker symbol
         let symbolConfig = UIImage.SymbolConfiguration(textStyle: .body)
         if let button = picker.subviews.compactMap({ $0 as? UIButton }).first {

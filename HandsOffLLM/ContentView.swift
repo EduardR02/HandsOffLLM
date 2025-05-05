@@ -9,6 +9,14 @@ struct ContentView: View {
     // Access environment objects if needed, e.g., for navigation data
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var audioService: AudioService
+    @Environment(\.sizeCategory) private var sizeCategory
+    // Compute row height based on Dynamic Type
+    private var pickerRowHeight: CGFloat {
+        let font = UIFont.preferredFont(forTextStyle: .body)
+        let scaledLine = UIFontMetrics.default.scaledValue(for: font.lineHeight)
+        // add top+bottom padding (6pt each)
+        return scaledLine + 12
+    }
     @State private var showHistory = false   // track history
     @State private var isMenuOpen = false     // track side menu
     private let menuWidth: CGFloat = 300      // side menu width
@@ -68,52 +76,72 @@ struct ContentView: View {
                             viewModel.startNewChat()
                             withAnimation { isMenuOpen = false }
                         } label: {
-                            HStack { Image(systemName: "plus.circle"); Text("New Chat") }
-                                .foregroundColor(.white)
+                            HStack {
+                                Image(systemName: "plus.circle")
+                                Text("New Chat")
+                                Spacer()
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                        .background(Color(.secondarySystemBackground).opacity(0.5))
-                        .cornerRadius(8)
+                        .contentShape(Rectangle())
                         
                         // History with full-width background
                         Button {
                             showHistory = true
                             withAnimation { isMenuOpen = false }
                         } label: {
-                            HStack { Image(systemName: "clock.arrow.circlepath"); Text("History") }
-                                .foregroundColor(.white)
+                            HStack {
+                                Image(systemName: "clock.arrow.circlepath")
+                                Text("History")
+                                Spacer()
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                        .background(Color(.secondarySystemBackground).opacity(0.5))
-                        .cornerRadius(8)
+                        .contentShape(Rectangle())
                         
                         // Settings with full-width background
                         NavigationLink {
                             SettingsView()
                         } label: {
-                            HStack { Image(systemName: "gearshape"); Text("Settings") }
-                                .foregroundColor(.white)
+                            HStack {
+                                Image(systemName: "gearshape")
+                                Text("Settings")
+                                Spacer()
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                        .background(Color(.secondarySystemBackground).opacity(0.5))
-                        .cornerRadius(8)
+                        .contentShape(Rectangle())
                         
-                        // Output picker row
-                        HStack(spacing: 4) {
-                            RoutePickerView().fixedSize()
-                            Text("Pick Output")
-                                .foregroundColor(.white)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 12))
-                        .background(Color(.secondarySystemBackground).opacity(0.5))
-                        .cornerRadius(8)
+                        // Output picker row as full-width tap target
+                        RoutePickerView()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: pickerRowHeight)
+                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .cornerRadius(8)
+                            .overlay(
+                                HStack(spacing: 8) {
+                                    Image(systemName: "airplayaudio")
+                                    Text("Pick Output").foregroundColor(.white)
+                                    Spacer()
+                                }
+                                .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                                .allowsHitTesting(false)
+                            )
                         // Minimal TTS speed control
                         HStack {
                             Slider(
