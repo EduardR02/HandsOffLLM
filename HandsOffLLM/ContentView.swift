@@ -46,7 +46,7 @@ struct ContentView: View {
                 // --- Updated Slider Section ---
                 VStack(alignment: .center) { // This VStack will hold the Text and Slider
                     Text(String(format: "%.1fx", viewModel.ttsRate))
-                        .font(.system(size: 14, weight: .regular, design: .monospaced))
+                        .font(.system(.body, design: .monospaced, weight: .regular))
                         .monospacedDigit()
                         .foregroundColor(Theme.primaryText)
                         .padding(.bottom, 2) // A small space between the text and the slider

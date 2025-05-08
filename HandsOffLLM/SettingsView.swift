@@ -34,7 +34,7 @@ struct SettingsView: View {
                     .tint(Theme.secondaryAccent)
 
                     HStack {
-                        Text("Playback Speed:")
+                        Text("Speed")
                             .foregroundColor(Theme.primaryText)
                         Slider(value: Binding(
                             get: { settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0 },
@@ -46,8 +46,10 @@ struct SettingsView: View {
                                 }
                             }
                         ), in: 0.2...4.0, step: 0.1)
-                        .tint(Theme.secondaryAccent)
+                        .tint(Theme.accent)
                         Text(String(format: "%.1fx", settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0))
+                            .font(.system(.body, design: .monospaced, weight: .regular))
+                            .monospacedDigit()
                             .foregroundColor(Theme.secondaryAccent)
                             .frame(width: 40)
                     }
@@ -74,6 +76,7 @@ struct SettingsView: View {
                                 }
                             }
                         }
+                        .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -116,6 +119,7 @@ struct SettingsView: View {
                             .foregroundColor(Theme.secondaryAccent)
                         }
                     }
+                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                     if settingsService.settings.advancedTTSInstruction != nil {
                         Text("using custom")
                             .font(.caption2)
@@ -173,10 +177,12 @@ struct SettingsView: View {
                 
                 // MARK: - Advanced Settings
                 Section("Advanced Settings") {
-                    NavigationLink("Advanced Settings") {
+                    NavigationLink {
                         AdvancedSettingsView()
+                    } label: {
+                        Text("Advanced Settings")
                     }
-                    .foregroundColor(Theme.primaryText)
+                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
             }
@@ -221,7 +227,7 @@ struct ModelSelectionView: View {
                             // show a checkmark next to the current selection
                             if settingsService.settings.selectedModelIdPerProvider[provider] == model.id {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Theme.secondaryAccent)
+                                    .foregroundColor(Theme.accent)
                             }
                         }
                     }
@@ -320,7 +326,7 @@ struct TTSInstructionSelectionView: View {
                 Spacer()
                 if settingsService.settings.selectedTTSInstructionPresetId == preset.id {
                     Image(systemName: "checkmark")
-                        .foregroundColor(Theme.secondaryAccent)
+                        .foregroundColor(Theme.accent)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -355,14 +361,16 @@ struct AdvancedSettingsView: View {
                                 get: { temp },
                                 set: { settingsService.settings.advancedTemperature = $0 }
                             ), in: 0...2, step: 0.1)
-                            .tint(Theme.secondaryAccent)
+                            .tint(Theme.accent)
                             Text(String(format: "%.1f", temp))
+                                .font(.system(.body, design: .monospaced, weight: .regular))
+                                .monospacedDigit()
                                 .foregroundColor(Theme.secondaryAccent)
                         }
                         Button("Reset Temperature") {
                             settingsService.settings.advancedTemperature = SettingsService.defaultAdvancedTemperature
                         }
-                        .foregroundColor(Theme.secondaryAccent)
+                        .foregroundColor(Theme.accent)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -393,7 +401,7 @@ struct AdvancedSettingsView: View {
                             Button("Reset Max Tokens") {
                                 settingsService.settings.advancedMaxTokens = SettingsService.defaultAdvancedMaxTokens
                             }
-                            .foregroundColor(Theme.secondaryAccent)
+                            .foregroundColor(Theme.accent)
                         }
                     }
                 }
@@ -424,7 +432,7 @@ struct AdvancedSettingsView: View {
                         Button("Reset Prompt") {
                             settingsService.settings.advancedSystemPrompt = SettingsService.defaultAdvancedSystemPrompt
                         }
-                        .foregroundColor(Theme.secondaryAccent)
+                        .foregroundColor(Theme.accent)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -454,7 +462,7 @@ struct AdvancedSettingsView: View {
                         Button("Reset TTS Instruction") {
                             settingsService.settings.advancedTTSInstruction = SettingsService.defaultAdvancedTTSInstruction
                         }
-                        .foregroundColor(Theme.secondaryAccent)
+                        .foregroundColor(Theme.accent)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
