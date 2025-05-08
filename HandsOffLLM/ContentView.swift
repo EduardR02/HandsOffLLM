@@ -19,6 +19,7 @@ struct ContentView: View {
     }
     @State private var showHistory = false   // track history
     @State private var isMenuOpen = false     // track side menu
+    @State private var isEditingSlider: Bool = false // Add this line
     private let menuWidth: CGFloat = 300      // side menu width
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
@@ -41,6 +42,37 @@ struct ContentView: View {
                 .onTapGesture {
                     viewModel.cycleState()
                 }
+
+                // --- Updated Slider Section ---
+                VStack(alignment: .center) { // This VStack will hold the Text and Slider
+                    Text(String(format: "%.1fx", viewModel.ttsRate))
+                        .font(.system(size: 14, weight: .regular, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundColor(Theme.primaryText)
+                        .padding(.bottom, 2) // A small space between the text and the slider
+                        .opacity(isEditingSlider ? 1.0 : 0.0) // Text fades based on editing state
+
+                    Slider(
+                        value: Binding<Float>(
+                            get: { viewModel.ttsRate },
+                            set: { newValue in
+                                let quant = (newValue * 10).rounded() / 10
+                                if viewModel.ttsRate != quant {
+                                    viewModel.ttsRate = quant
+                                }
+                            }
+                        ),
+                        in: 0.2...4.0,
+                        step: 0.1,
+                        onEditingChanged: { editing in
+                            isEditingSlider = editing
+                        }
+                    )
+                    .tint(Theme.accent)
+                }
+                .padding(.horizontal, 40)
+                .padding(.top, 20)
+                .animation(.easeInOut(duration: 0.25), value: isEditingSlider)
             }
 
             if isMenuOpen {
@@ -127,31 +159,6 @@ struct ContentView: View {
                             )
                             .padding(.horizontal, 12)
 
-                        HStack {
-                            Slider(
-                                value: Binding<Float>(
-                                    get: { viewModel.ttsRate },
-                                    set: { newValue in
-                                        let quant = (newValue * 10).rounded() / 10
-                                        if viewModel.ttsRate != quant {
-                                            viewModel.ttsRate = quant
-                                        }
-                                    }
-                                ), in: 0.2...4.0, step: 0.1
-                            )
-                            .tint(Theme.accent)
-                            Text(String(format: "%.1fx", viewModel.ttsRate))
-                                .font(.system(size: 14, weight: .regular, design: .monospaced))
-                                .monospacedDigit()
-                                .frame(width: 40, alignment: .leading)
-                                .foregroundColor(Theme.primaryText)
-                        }
-                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                        .frame(maxWidth: .infinity)
-                        .background(Theme.menuButtonAccent)
-                        .cornerRadius(8)
-                        .padding(.horizontal, 12)
-
                         Picker("LLM", selection: $viewModel.selectedProvider) {
                             ForEach(LLMProvider.allCases) { provider in
                                 Text(provider.rawValue).tag(provider)
@@ -160,7 +167,7 @@ struct ContentView: View {
                         }
                         .pickerStyle(SegmentedPickerStyle())
                         .cornerRadius(8)
-                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
                         
                         Spacer()
                     }
