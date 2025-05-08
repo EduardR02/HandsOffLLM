@@ -117,6 +117,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     // --- Notification Observer ---
     private var routeChangeObserver: Any?
+    private var isReconfiguringRoute: Bool = false
     
     init(settingsService: SettingsService, historyService: HistoryService) {
         self.settingsService = settingsService
@@ -767,12 +768,22 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
                 return
             }
         }
+
+        guard !isReconfiguringRoute else {
+            logger.info("Route reconfiguration already in progress. Skipping.")
+            return
+        }
+        isReconfiguringRoute = true
+
         let session = AVAudioSession.sharedInstance()
         let currentRoute = session.currentRoute
         
         logRouteDetails(route: currentRoute, reason: reason)
         
         Task {
+            defer {
+                Task { @MainActor in self.isReconfiguringRoute = false }
+            }
             // Give the system a moment (e.g., 100ms) to settle the route change
             try? await Task.sleep(nanoseconds: 100_000_000) 
             
