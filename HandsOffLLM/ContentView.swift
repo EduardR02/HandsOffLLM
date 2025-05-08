@@ -27,8 +27,8 @@ struct ContentView: View {
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
         UISlider.appearance().setThumbImage(UIImage(), for: .normal)
-        UISegmentedControl.appearance().backgroundColor = UIColor(Theme.menuButtonAccent)
-        // UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Theme.secondaryAccent)
+        UISegmentedControl.appearance().backgroundColor = UIColor(Theme.overlayMask)
+        //UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Theme.menuAccent)
     }
     
     var body: some View {
@@ -76,7 +76,8 @@ struct ContentView: View {
             }
 
             if isMenuOpen {
-                Theme.overlayMask.opacity(0.3)
+                Color.clear
+                    .contentShape(Rectangle())
                     .edgesIgnoringSafeArea(.all)
                     .onTapGesture { withAnimation { isMenuOpen = false } }
 
@@ -97,7 +98,7 @@ struct ContentView: View {
                             .foregroundColor(Theme.primaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .background(Theme.menuButtonAccent)
+                            .background(Theme.menuAccent)
                             .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -116,7 +117,7 @@ struct ContentView: View {
                             .foregroundColor(Theme.primaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .background(Theme.menuButtonAccent)
+                            .background(Theme.menuAccent)
                             .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -134,7 +135,7 @@ struct ContentView: View {
                             .foregroundColor(Theme.primaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .background(Theme.menuButtonAccent)
+                            .background(Theme.menuAccent)
                             .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -144,7 +145,7 @@ struct ContentView: View {
                         RoutePickerView()
                             .frame(maxWidth: .infinity)
                             .frame(height: pickerRowHeight)
-                            .background(Theme.menuButtonAccent)
+                            .background(Theme.menuAccent)
                             .cornerRadius(8)
                             .overlay(
                                 HStack {
@@ -173,7 +174,7 @@ struct ContentView: View {
                     }
                     .padding(.top)
                     .frame(width: menuWidth)
-                    .background(Theme.menuAccent.opacity(0.8).edgesIgnoringSafeArea(.all))
+                    .background(Theme.overlayMask.opacity(0.8).edgesIgnoringSafeArea(.all))
                 }
             }
         }

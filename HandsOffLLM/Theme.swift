@@ -11,7 +11,6 @@ enum Theme {
   // static let background = Color(red: 30/255, green: 30/255, blue: 30/255)
   static let background = Color(red: 29/255, green: 28/255, blue: 34/255)
   static let menuAccent  = Color(red: 40/255, green: 44/255, blue: 52/255)
-  static let menuButtonAccent = Color(red: 59/255, green: 61/255, blue: 70/255)
   static let overlayMask = Color(red: 30/255, green: 34/255, blue: 42/255)
   
   static let primaryText = Color.white
