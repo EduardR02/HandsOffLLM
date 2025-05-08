@@ -41,21 +41,6 @@ struct HandsOffLLMApp: App {
         _chatService = StateObject(wrappedValue: localChatService)
         _viewModel = StateObject(wrappedValue: localViewModel)
         
-        // --- Theme Navigation Bar ---
-        let appearance = UINavigationBarAppearance()
-        
-        appearance.configureWithTransparentBackground()
-        
-        appearance.shadowImage = UIImage()
-        appearance.shadowColor = .clear
-
-        appearance.titleTextAttributes = [.foregroundColor: UIColor(Theme.primaryText)]
-        appearance.largeTitleTextAttributes = [.foregroundColor: UIColor(Theme.primaryText)]
-
-        UINavigationBar.appearance().standardAppearance = appearance
-        UINavigationBar.appearance().scrollEdgeAppearance = appearance
-        UINavigationBar.appearance().compactAppearance = appearance
-        
         UIBarButtonItem.appearance().tintColor = UIColor(Theme.accent)
         
         logger.info("App Services Initialized.")
