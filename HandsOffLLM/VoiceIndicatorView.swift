@@ -118,7 +118,7 @@ struct VoiceIndicatorView: View {
                     .animation(.easeInOut(duration: 0.15), value: strokeColors)
             }
             .padding(size * 0.1)
-            .drawingGroup(opaque: true, colorMode: .linear)
+            .drawingGroup()
         }
     }
 
@@ -135,6 +135,7 @@ struct VoiceIndicatorView: View {
             }
         }
         .frame(width: size, height: size)
+        .background(Theme.background)
         .onAppear {
             isVisible = true
             updateColors(for: state)

@@ -22,44 +22,49 @@ struct ChatDetailView: View {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatDetailView")
     
     var body: some View {
-        Group {
-            if let conversation = conversationDetail {
-                ScrollViewReader { proxy in // To scroll to bottom
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
-                                MessageView(message: message, index: index, conversationId: conversation.id)
-                                    .id(message.id) // Add ID for scrolling
+        ZStack {
+            Theme.background.edgesIgnoringSafeArea(.all)
+            Group {
+                if let conversation = conversationDetail {
+                    ScrollViewReader { proxy in // To scroll to bottom
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
+                                    MessageView(message: message, index: index, conversationId: conversation.id)
+                                        .id(message.id) // Add ID for scrolling
+                                }
+                            }
+                            .padding()
+                        }
+                        .navigationTitle(conversation.title ?? "Chat Details")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .onAppear {
+                            // Scroll to the bottom on appear
+                            if let lastMessageId = conversation.messages.last?.id {
+                                DispatchQueue.main.async { // Ensure UI updates are done
+                                    proxy.scrollTo(lastMessageId, anchor: .bottom)
+                                }
                             }
                         }
-                        .padding()
-                    }
-                    .navigationTitle(conversation.title ?? "Chat Details")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .onAppear {
-                        // Scroll to the bottom on appear
-                        if let lastMessageId = conversation.messages.last?.id {
-                            DispatchQueue.main.async { // Ensure UI updates are done
-                                proxy.scrollTo(lastMessageId, anchor: .bottom)
+                        .onDisappear {
+                            // Stop any ongoing replay when the view disappears
+                            if replayingMessageId != nil {
+                                logger.info("ChatDetailView disappearing, stopping audio replay.")
+                                audioService.stopReplay()
+                                replayingMessageId = nil // Also clear the state
                             }
                         }
                     }
-                    .onDisappear {
-                        // Stop any ongoing replay when the view disappears
-                        if replayingMessageId != nil {
-                            logger.info("ChatDetailView disappearing, stopping audio replay.")
-                            audioService.stopReplay()
-                            replayingMessageId = nil // Also clear the state
-                        }
-                    }
+                } else {
+                    ProgressView("Loading conversation…")
+                        .foregroundColor(Theme.primaryText)
+                        .progressViewStyle(CircularProgressViewStyle(tint: Theme.accent))
                 }
-            } else {
-                ProgressView("Loading conversation…")
             }
-        }
-        .task {
-            if conversationDetail == nil {
-                conversationDetail = await historyService.loadConversationDetail(id: conversationId)
+            .task {
+                if conversationDetail == nil {
+                    conversationDetail = await historyService.loadConversationDetail(id: conversationId)
+                }
             }
         }
     }
@@ -97,7 +102,7 @@ struct ChatDetailView: View {
                                 .symbolEffect(.wiggle.left.byLayer, options: .repeat(.continuous), isActive: isCurrentlyPlaying)
                         }
                         .buttonStyle(.borderless)
-                        .tint(.white)
+                        .tint(Theme.primaryText)
                         .font(.body) // Increased font size
                         .disabled(conversationDetail?.ttsAudioPaths?[message.id]?.isEmpty ?? true)
                         
@@ -107,7 +112,7 @@ struct ChatDetailView: View {
                             Image(systemName: "arrowshape.turn.up.right.fill")
                         }
                         .buttonStyle(.borderless)
-                        .tint(.white)
+                        .tint(Theme.primaryText)
                         .font(.body) // Increased font size
                     }
                     .padding(.top, 2)
@@ -144,16 +149,16 @@ struct ChatDetailView: View {
     // --- Styling Helpers ---
     private func messageBackgroundColor(role: String) -> Color {
         switch role {
-        case "user": return Color(red: 40/255.0, green: 44/255.0, blue: 52/255.0)
-        default: return Color.clear
+        case "user": return Theme.menuAccent
+        default: return Color.clear // Assistant messages will have no distinct background
         }
     }
     private func messageForegroundColor(role: String) -> Color {
         switch role {
-        case "user": return Color.white
-        case "assistant": return Color.white
-        case "assistant_partial", "assistant_error": return Color(red: 250/255.0, green: 170/255.0, blue: 170/255.0)
-        default: return Color.primary
+        case "user": return Theme.primaryText
+        case "assistant": return Theme.primaryText
+        case "assistant_partial", "assistant_error": return Theme.errorText
+        default: return Theme.primaryText
         }
     }
 }

@@ -14,8 +14,8 @@ struct ContentView: View {
     private var pickerRowHeight: CGFloat {
         let font = UIFont.preferredFont(forTextStyle: .body)
         let scaledLine = UIFontMetrics.default.scaledValue(for: font.lineHeight)
-        // add top+bottom padding (6pt each)
-        return scaledLine + 12
+        // add top+bottom padding (10pt each to match other buttons)
+        return scaledLine + 20
     }
     @State private var showHistory = false   // track history
     @State private var isMenuOpen = false     // track side menu
@@ -25,53 +25,34 @@ struct ContentView: View {
     
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        // Hide slider thumb
         UISlider.appearance().setThumbImage(UIImage(), for: .normal)
-        UISlider.appearance().minimumTrackTintColor = .white
-        UISlider.appearance().maximumTrackTintColor = UIColor.white.withAlphaComponent(0.3)
+        UISegmentedControl.appearance().backgroundColor = UIColor(Theme.menuButtonAccent)
+        // UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Theme.secondaryAccent)
     }
     
     var body: some View {
-        // Use NavigationStack provided by the App
         ZStack {
-            Color.black.edgesIgnoringSafeArea(.all)
+            Theme.background.edgesIgnoringSafeArea(.all)
             
             VStack {
-                Spacer() // Push indicator down a bit
-                
-                // Display errors subtly if needed (don't do this)
-                /*
-                 if let error = viewModel.lastError {
-                 Text(error)
-                 .font(.caption)
-                 .foregroundColor(.red)
-                 .padding(.bottom, 5)
-                 .transition(.opacity) // Animate appearance
-                 }
-                 */
-                
-                
                 VoiceIndicatorView(
                     state: $viewModel.state
                 )
                 .onTapGesture {
                     viewModel.cycleState()
                 }
-                
-                Spacer() // Pushes indicator towards center
             }
-            
-            // main screen has no LLM picker
-            
-            // Side menu overlay
+
             if isMenuOpen {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
+                Theme.overlayMask.opacity(0.3)
+                    .edgesIgnoringSafeArea(.all)
                     .onTapGesture { withAnimation { isMenuOpen = false } }
+
                 HStack(spacing: 0) {
-                    Spacer()
+                    Spacer() // Pushes menu to the right
+
+                    // The actual menu content VStack
                     VStack(alignment: .leading, spacing: 4) {
-                        // New Chat with full-width background
                         Button {
                             viewModel.startNewChat()
                             withAnimation { isMenuOpen = false }
@@ -81,16 +62,16 @@ struct ContentView: View {
                                 Text("New Chat")
                                 Spacer()
                             }
-                            .foregroundColor(.white)
+                            .foregroundColor(Theme.primaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .background(Theme.menuButtonAccent)
                             .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())
-                        
-                        // History with full-width background
+                        .padding(.horizontal, 12)
+
                         Button {
                             showHistory = true
                             withAnimation { isMenuOpen = false }
@@ -100,16 +81,16 @@ struct ContentView: View {
                                 Text("History")
                                 Spacer()
                             }
-                            .foregroundColor(.white)
+                            .foregroundColor(Theme.primaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .background(Theme.menuButtonAccent)
                             .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())
-                        
-                        // Settings with full-width background
+                        .padding(.horizontal, 12)
+
                         NavigationLink {
                             SettingsView()
                         } label: {
@@ -118,31 +99,34 @@ struct ContentView: View {
                                 Text("Settings")
                                 Spacer()
                             }
-                            .foregroundColor(.white)
+                            .foregroundColor(Theme.primaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .background(Theme.menuButtonAccent)
                             .cornerRadius(8)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())
+                        .padding(.horizontal, 12)
                         
-                        // Output picker row as full-width tap target
                         RoutePickerView()
                             .frame(maxWidth: .infinity)
                             .frame(height: pickerRowHeight)
-                            .background(Color(.secondarySystemBackground).opacity(0.5))
+                            .background(Theme.menuButtonAccent)
                             .cornerRadius(8)
                             .overlay(
-                                HStack(spacing: 8) {
+                                HStack {
                                     Image(systemName: "airplayaudio")
-                                    Text("Pick Output").foregroundColor(.white)
+                                    Text("Pick Output")
                                     Spacer()
                                 }
-                                .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                                .foregroundColor(Theme.primaryText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                                 .allowsHitTesting(false)
                             )
-                        // Minimal TTS speed control
+                            .padding(.horizontal, 12)
+
                         HStack {
                             Slider(
                                 value: Binding<Float>(
@@ -155,30 +139,45 @@ struct ContentView: View {
                                     }
                                 ), in: 0.2...4.0, step: 0.1
                             )
-                            .tint(.white)
+                            .tint(Theme.accent)
                             Text(String(format: "%.1fx", viewModel.ttsRate))
                                 .font(.system(size: 14, weight: .regular, design: .monospaced))
                                 .monospacedDigit()
                                 .frame(width: 40, alignment: .leading)
-                                .foregroundColor(.white)
+                                .foregroundColor(Theme.primaryText)
                         }
                         .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                         .frame(maxWidth: .infinity)
-                        .background(Color(.secondarySystemBackground).opacity(0.5))
+                        .background(Theme.menuButtonAccent)
                         .cornerRadius(8)
-                        Picker("LLM", selection: $viewModel.selectedProvider) { ForEach(LLMProvider.allCases){ provider in Text(provider.rawValue).tag(provider) }}
-                            .pickerStyle(SegmentedPickerStyle()).padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .padding(.horizontal, 12)
+
+                        Picker("LLM", selection: $viewModel.selectedProvider) {
+                            ForEach(LLMProvider.allCases) { provider in
+                                Text(provider.rawValue).tag(provider)
+                                    .foregroundColor(Theme.primaryText)
+                            }
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
+                        .cornerRadius(8)
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        
                         Spacer()
                     }
+                    .padding(.top)
                     .frame(width: menuWidth)
-                    .background(Color(.systemBackground))
+                    .background(Theme.menuAccent.opacity(0.8).edgesIgnoringSafeArea(.all))
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .toolbar{
-            ToolbarItem(placement:.navigationBarTrailing){
-                Button{withAnimation{isMenuOpen.toggle()}}label:{Image(systemName:"line.horizontal.3").foregroundColor(.white)}
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    withAnimation{ isMenuOpen.toggle() }
+                } label: {
+                    Image(systemName:"line.horizontal.3").foregroundColor(Theme.primaryText)
+                }
             }
         }
         .gesture(

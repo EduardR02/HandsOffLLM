@@ -11,50 +11,67 @@ import UIKit
 
 @main
 struct HandsOffLLMApp: App {
-    // Initialize services once
-    @StateObject private var settingsService = SettingsService()
-    @StateObject private var historyService = HistoryService()
-    // AudioService needs SettingsService
-    @StateObject private var audioService: AudioService
-    // ChatService needs SettingsService and HistoryService
-    @StateObject private var chatService: ChatService
-    // ViewModel needs all services
-    @StateObject private var chatViewModel: ChatViewModel
+    // Declare StateObjects without initial values here
+    @StateObject var settingsService: SettingsService
+    @StateObject var historyService: HistoryService
+    @StateObject var audioService: AudioService
+    @StateObject var chatService: ChatService
+    @StateObject var viewModel: ChatViewModel
     @Environment(\.scenePhase) private var scenePhase
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "App")
     
     init() {
-        let settings = SettingsService()
-        let history = HistoryService()
-        let audio = AudioService(settingsService: settings, historyService: history)
-        let chat = ChatService(settingsService: settings, historyService: history)
-        let viewModel = ChatViewModel(audioService: audio,
-                                      chatService: chat,
-                                      settingsService: settings,
-                                      historyService: history)
+        // Create the actual service instances first
+        let localSettingsService = SettingsService()
+        let localHistoryService = HistoryService()
+        let localAudioService = AudioService(settingsService: localSettingsService, historyService: localHistoryService)
+        let localChatService = ChatService(settingsService: localSettingsService, historyService: localHistoryService)
+        let localViewModel = ChatViewModel(
+            audioService: localAudioService,
+            chatService: localChatService,
+            settingsService: localSettingsService,
+            historyService: localHistoryService
+        )
+
+        // Initialize the StateObject wrapped properties
+        _settingsService = StateObject(wrappedValue: localSettingsService)
+        _historyService = StateObject(wrappedValue: localHistoryService)
+        _audioService = StateObject(wrappedValue: localAudioService)
+        _chatService = StateObject(wrappedValue: localChatService)
+        _viewModel = StateObject(wrappedValue: localViewModel)
         
-        _settingsService = StateObject(wrappedValue: settings)
-        _historyService = StateObject(wrappedValue: history)
-        _audioService = StateObject(wrappedValue: audio)
-        _chatService = StateObject(wrappedValue: chat)
-        _chatViewModel = StateObject(wrappedValue: viewModel)
+        // --- Theme Navigation Bar ---
+        let appearance = UINavigationBarAppearance()
+        
+        appearance.configureWithTransparentBackground()
+        
+        appearance.shadowImage = UIImage()
+        appearance.shadowColor = .clear
+
+        appearance.titleTextAttributes = [.foregroundColor: UIColor(Theme.primaryText)]
+        appearance.largeTitleTextAttributes = [.foregroundColor: UIColor(Theme.primaryText)]
+
+        UINavigationBar.appearance().standardAppearance = appearance
+        UINavigationBar.appearance().scrollEdgeAppearance = appearance
+        UINavigationBar.appearance().compactAppearance = appearance
+        
+        UIBarButtonItem.appearance().tintColor = UIColor(Theme.accent)
         
         logger.info("App Services Initialized.")
     }
     
     var body: some Scene {
         WindowGroup {
-            // Use NavigationStack for navigation features
             NavigationStack {
-                ContentView(viewModel: chatViewModel) // Pass the viewModel
+                ContentView(viewModel: viewModel)
             }
-            // Make services available to the environment if needed lower down
             .environmentObject(settingsService)
             .environmentObject(historyService)
-            .environmentObject(audioService) // Make audio service available for potential replay in detail view
-            .environmentObject(chatViewModel)
-            .preferredColorScheme(.dark) // Keep dark mode
+            .environmentObject(audioService)
+            .environmentObject(chatService)
+            .environmentObject(viewModel)
+            .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             switch newPhase {

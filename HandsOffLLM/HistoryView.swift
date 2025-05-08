@@ -17,21 +17,25 @@ struct HistoryView: View {
     }
     
     var body: some View {
-        List {
-            ForEach(groupedConversations, id: \.0) { sectionTitle, entries in
-                Section(header: Text(sectionTitle).foregroundColor(.gray)) {
-                    ForEach(entries) { entry in
-                        ConversationRow(entry: entry, rootIsActive: $rootIsActive)
-                    }
-                    .onDelete { indexSet in
-                        // Find the actual conversations to delete based on the section and indexSet
-                        deleteConversations(in: sectionTitle, at: indexSet)
+        ZStack {
+            Theme.background.edgesIgnoringSafeArea(.all)
+            List {
+                ForEach(groupedConversations, id: \.0) { sectionTitle, entries in
+                    Section(header: Text(sectionTitle).foregroundColor(Theme.secondaryText)) {
+                        ForEach(entries) { entry in
+                            ConversationRow(entry: entry, rootIsActive: $rootIsActive)
+                                .listRowBackground(Theme.menuAccent)
+                        }
+                        .onDelete { indexSet in
+                            deleteConversations(in: sectionTitle, at: indexSet)
+                        }
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
         }
         .navigationTitle("History")
-        .listStyle(.insetGrouped) // Or plain, grouped, etc.
+        .listStyle(.insetGrouped)
     }
     
     private func deleteConversations(in section: String, at offsets: IndexSet) {
@@ -111,9 +115,10 @@ private struct ConversationRow: View {
             VStack(alignment: .leading) {
                 Text(entry.title ?? "Untitled Chat")
                     .font(.headline)
+                    .foregroundColor(Theme.primaryText)
                 Text(entry.createdAt, style: .date)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Theme.secondaryText)
             }
         }
         .isDetailLink(false)
