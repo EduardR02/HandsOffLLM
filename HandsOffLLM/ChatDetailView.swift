@@ -9,15 +9,15 @@ import SwiftUI
 import OSLog
 
 struct ChatDetailView: View {
-    @Binding var rootIsActive: Bool          // NEW: binding to pop all the way home
-    @EnvironmentObject var viewModel: ChatViewModel // For loading history
-    @EnvironmentObject var audioService: AudioService // For TTS replay (future)
-    @EnvironmentObject var historyService: HistoryService         // ← added
+    @Binding var rootIsActive: Bool          // binding to pop all the way home
+    @EnvironmentObject var viewModel: ChatViewModel
+    @EnvironmentObject var audioService: AudioService
+    @EnvironmentObject var historyService: HistoryService
     
-    let conversationId: UUID                                     // ← changed from `Conversation`
+    let conversationId: UUID
     
-    @State private var conversationDetail: Conversation?         // Loaded on demand
-    @State private var replayingMessageId: UUID? = nil           // ← added
+    @State private var conversationDetail: Conversation?    // loaded on demand
+    @State private var replayingMessageId: UUID? = nil
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatDetailView")
     
@@ -98,7 +98,6 @@ struct ChatDetailView: View {
                             let isCurrentlyPlaying = replayingMessageId == message.id && audioService.isSpeaking
                             
                             Image(systemName: "waveform") // Always show waveform
-                                // Apply the wiggle symbol effect conditionally
                                 .symbolEffect(.wiggle.left.byLayer, options: .repeat(.continuous), isActive: isCurrentlyPlaying)
                         }
                         .buttonStyle(.borderless)

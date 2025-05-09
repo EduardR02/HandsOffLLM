@@ -4,11 +4,7 @@ import OSLog
 import UIKit
 
 struct ContentView: View {
-    // Receive ViewModel from the App level
     @ObservedObject var viewModel: ChatViewModel
-    // Access environment objects if needed, e.g., for navigation data
-    @EnvironmentObject var historyService: HistoryService
-    @EnvironmentObject var audioService: AudioService
     @Environment(\.sizeCategory) private var sizeCategory
     // Compute row height based on Dynamic Type
     private var pickerRowHeight: CGFloat {
@@ -17,10 +13,11 @@ struct ContentView: View {
         // add top+bottom padding (10pt each to match other buttons)
         return scaledLine + 20
     }
-    @State private var showHistory = false   // track history
-    @State private var isMenuOpen = false     // track side menu
-    @State private var isEditingSlider: Bool = false // Add this line
-    private let menuWidth: CGFloat = 300      // side menu width
+    @State private var showHistory = false
+    @State private var isMenuOpen = false
+    @State private var isEditingSlider: Bool = false
+    @State private var showInitialSliderValueHelpText: Bool = false
+    private let menuWidth: CGFloat = 300
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
     
@@ -50,7 +47,7 @@ struct ContentView: View {
                         .monospacedDigit()
                         .foregroundColor(Theme.primaryText)
                         .padding(.bottom, 2) // A small space between the text and the slider
-                        .opacity(isEditingSlider ? 1.0 : 0.0) // Text fades based on editing state
+                        .opacity(isEditingSlider || showInitialSliderValueHelpText ? 1.0 : 0.0) // Text fades based on editing state or initial show
 
                     Slider(
                         value: Binding<Float>(
@@ -90,16 +87,7 @@ struct ContentView: View {
                             viewModel.startNewChat()
                             withAnimation { isMenuOpen = false }
                         } label: {
-                            HStack {
-                                Image(systemName: "plus.circle")
-                                Text("New Chat")
-                                Spacer()
-                            }
-                            .foregroundColor(Theme.primaryText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .background(Theme.menuAccent)
-                            .cornerRadius(8)
+                            MenuRowContent(imageName: "plus.circle", text: "New Chat")
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())
@@ -107,18 +95,8 @@ struct ContentView: View {
 
                         Button {
                             showHistory = true
-                            withAnimation { isMenuOpen = false }
                         } label: {
-                            HStack {
-                                Image(systemName: "clock.arrow.circlepath")
-                                Text("History")
-                                Spacer()
-                            }
-                            .foregroundColor(Theme.primaryText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .background(Theme.menuAccent)
-                            .cornerRadius(8)
+                            MenuRowContent(imageName: "clock.arrow.circlepath", text: "History")
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())
@@ -127,16 +105,7 @@ struct ContentView: View {
                         NavigationLink {
                             SettingsView()
                         } label: {
-                            HStack {
-                                Image(systemName: "gearshape")
-                                Text("Settings")
-                                Spacer()
-                            }
-                            .foregroundColor(Theme.primaryText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .background(Theme.menuAccent)
-                            .cornerRadius(8)
+                            MenuRowContent(imageName: "gearshape", text: "Settings")
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())
@@ -206,7 +175,7 @@ struct ContentView: View {
         )
         .onChange(of:isMenuOpen){ wasOpen, isOpen in
             if isOpen{ viewModel.stopListening() } // only stop listening, do not stop tts. this is so that the playback speed can be adjusted while playing
-            else{ audioService.startListening() }
+            else{ viewModel.startListening() }
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showHistory) {
@@ -215,7 +184,15 @@ struct ContentView: View {
         .onAppear {
             logger.info("ContentView appeared, start listening.")
             isMenuOpen = false
-            audioService.startListening()
+            viewModel.startListening()
+            
+            // slider text fade out so user doesn't confuse speed slider with "loading"
+            showInitialSliderValueHelpText = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                withAnimation(.easeInOut(duration: 0.25)) { // Explicitly animate only the fade-out
+                    showInitialSliderValueHelpText = false
+                }
+            }
         }
         .onDisappear {
             logger.info("ContentView disappeared, cleanup.")
@@ -224,28 +201,26 @@ struct ContentView: View {
     }
 }
 
-// --- Preview Update ---
-// Need to provide mock services for the preview
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        // Create mock services for preview
-        let settings = SettingsService()
-        let history = HistoryService()
-        let audio = AudioService(settingsService: settings, historyService: history)
-        let chat = ChatService(settingsService: settings, historyService: history)
-        let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
-        
-        NavigationStack { // Wrap in NavigationStack for preview
-            ContentView(viewModel: viewModel)
+
+private struct MenuRowContent: View {
+    let imageName: String
+    let text: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: imageName)
+            Text(text)
+            Spacer()
         }
-        .environmentObject(settings)
-        .environmentObject(history)
-        .environmentObject(audio)
-        .preferredColorScheme(.dark)
+        .foregroundColor(Theme.primaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        .background(Theme.menuAccent)
+        .cornerRadius(8)
     }
 }
 
-// Create simpler preview struct if the above is too complex
+
 #Preview {
     let settings = SettingsService()
     let history = HistoryService()

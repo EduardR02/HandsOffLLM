@@ -25,6 +25,7 @@ struct HistoryView: View {
                         ForEach(entries) { entry in
                             ConversationRow(entry: entry, rootIsActive: $rootIsActive)
                                 .listRowBackground(Theme.menuAccent)
+                                .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                         }
                         .onDelete { indexSet in
                             deleteConversations(in: sectionTitle, at: indexSet)
