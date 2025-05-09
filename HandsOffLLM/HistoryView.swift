@@ -7,28 +7,52 @@
 
 import SwiftUI
 
+// Tiny helper to defer view construction
+private struct LazyView<Content: View>: View {
+    let build: () -> Content
+    init(_ build: @escaping @autoclosure () -> Content) { self.build = build }
+    var body: Content { build() }
+}
+
 struct HistoryView: View {
-    @Binding var rootIsActive: Bool           // NEW: binding back to ContentView
+    @Binding var rootIsActive: Bool
     @EnvironmentObject var historyService: HistoryService
-    @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
-    
-    var groupedConversations: [(String, [ConversationIndexEntry])] {
-        historyService.groupIndexByDate()
-    }
-    
+    @EnvironmentObject var viewModel: ChatViewModel
+
+    @State private var groupedConversations: [(String, [ConversationIndexEntry])] = []
+
     var body: some View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
+
             List {
-                ForEach(groupedConversations, id: \.0) { sectionTitle, entries in
-                    Section(header: Text(sectionTitle).foregroundColor(Theme.secondaryText)) {
+                ForEach(groupedConversations, id: \.0) { section, entries in
+                    Section(header: Text(section)
+                                .foregroundColor(Theme.secondaryText)) {
                         ForEach(entries) { entry in
-                            ConversationRow(entry: entry, rootIsActive: $rootIsActive)
-                                .listRowBackground(Theme.menuAccent)
-                                .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                            NavigationLink(
+                                // important, this is so that the view is not created until the link is tapped, no cpu spike on load!
+                                destination: LazyView(
+                                    ChatDetailView(
+                                        rootIsActive: $rootIsActive,
+                                        conversationId: entry.id
+                                    )
+                                )
+                            ) {
+                                VStack(alignment: .leading) {
+                                    Text(entry.title ?? "Untitled Chat")
+                                        .font(.headline)
+                                        .foregroundColor(Theme.primaryText)
+                                    Text(entry.createdAt, style: .date)
+                                        .font(.caption)
+                                        .foregroundColor(Theme.secondaryText)
+                                }
+                            }
+                            .listRowBackground(Theme.menuAccent)
+                            .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                         }
-                        .onDelete { indexSet in
-                            deleteConversations(in: sectionTitle, at: indexSet)
+                        .onDelete { offsets in
+                            deleteConversations(in: section, at: offsets)
                         }
                     }
                 }
@@ -37,16 +61,19 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .listStyle(.insetGrouped)
-    }
-    
-    private func deleteConversations(in section: String, at offsets: IndexSet) {
-        guard let entriesInSection = groupedConversations.first(where: { $0.0 == section })?.1 else {
-            return
+        .onAppear {
+            groupedConversations = historyService.groupIndexByDate()
         }
-        let idsToDelete = offsets.map { entriesInSection[$0].id }
-        for id in idsToDelete {
+    }
+
+    private func deleteConversations(in section: String, at offsets: IndexSet) {
+        guard let entries = groupedConversations.first(where: { $0.0 == section })?.1 else { return }
+        let ids = offsets.map { entries[$0].id }
+        for id in ids {
             historyService.deleteConversation(id: id)
         }
+        // Refresh the grouped list after deletion
+        groupedConversations = historyService.groupIndexByDate()
     }
 }
 
@@ -101,27 +128,4 @@ struct HistoryView: View {
     .environmentObject(settings)
     .environmentObject(audio)
     .preferredColorScheme(.dark)
-}
-
-// MARK: – Tiny helper to speed up compilation
-private struct ConversationRow: View {
-    let entry: ConversationIndexEntry
-    @Binding var rootIsActive: Bool
-    
-    var body: some View {
-        NavigationLink(destination: ChatDetailView(
-            rootIsActive: $rootIsActive,
-            conversationId: entry.id
-        )) {
-            VStack(alignment: .leading) {
-                Text(entry.title ?? "Untitled Chat")
-                    .font(.headline)
-                    .foregroundColor(Theme.primaryText)
-                Text(entry.createdAt, style: .date)
-                    .font(.caption)
-                    .foregroundColor(Theme.secondaryText)
-            }
-        }
-        .isDetailLink(false)
-    }
 }

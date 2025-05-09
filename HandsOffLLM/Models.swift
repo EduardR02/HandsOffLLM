@@ -20,7 +20,7 @@ struct Conversation: Identifiable, Codable {
 }
 // MARK: - Conversation Index Entry
 /// Minimal metadata for listing conversations without loading full messages
-struct ConversationIndexEntry: Identifiable, Codable {
+struct ConversationIndexEntry: Identifiable, Codable, Equatable {
     let id: UUID
     let title: String?
     let createdAt: Date

@@ -61,8 +61,11 @@ struct ChatDetailView: View {
                         .progressViewStyle(CircularProgressViewStyle(tint: Theme.accent))
                 }
             }
-            .task {
-                if conversationDetail == nil {
+        }
+        .onAppear {
+            // Only load when the detail actually appears
+            if conversationDetail == nil {
+                Task {
                     conversationDetail = await historyService.loadConversationDetail(id: conversationId)
                 }
             }

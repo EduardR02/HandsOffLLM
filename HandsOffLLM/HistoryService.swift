@@ -183,38 +183,49 @@ class HistoryService: ObservableObject {
     
     // MARK: - Utility for Views
     
+    private func getSectionKey(for date: Date, calendar: Calendar, now: Date, formatter: DateFormatter) -> String {
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        if let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now), date >= sevenDaysAgo { return "Last Week" }
+        if let oneMonthAgo = calendar.date(byAdding: .month, value: -1, to: now), date >= oneMonthAgo { return "Last Month" }
+        return formatter.string(from: date)
+    }
+    
     func groupIndexByDate() -> [(String, [ConversationIndexEntry])] {
+        guard !indexEntries.isEmpty else { return [] }
+
+        var result: [(String, [ConversationIndexEntry])] = []
+        var currentSectionTitle: String = ""
+        var currentSectionEntries: [ConversationIndexEntry] = []
+
         let calendar = Calendar.current
         let now = Date()
-        var grouped: [String: [ConversationIndexEntry]] = [:]
-        let df = DateFormatter()
+        let monthYearFormatter = DateFormatter()
+        monthYearFormatter.dateFormat = "MMMM yyyy"
+
+        // indexEntries are assumed to be sorted by createdAt, newest first.
         for entry in indexEntries {
-            let date = entry.createdAt
-            let key: String
-            if calendar.isDateInToday(date) { key = "Today" }
-            else if calendar.isDateInYesterday(date) { key = "Yesterday" }
-            else if let wk = calendar.date(byAdding: .day, value: -7, to: now), date >= wk { key = "Last Week" }
-            else if let mo = calendar.date(byAdding: .month, value: -1, to: now), date >= mo { key = "Last Month" }
-            else { df.dateFormat = "MMMM yyyy"; key = df.string(from: date) }
-            grouped[key, default: []].append(entry)
+            let key = getSectionKey(for: entry.createdAt, calendar: calendar, now: now, formatter: monthYearFormatter)
+
+            if key == currentSectionTitle {
+                currentSectionEntries.append(entry)
+            } else {
+                if !currentSectionEntries.isEmpty { // Only append if there are entries for the previous section
+                    result.append((currentSectionTitle, currentSectionEntries))
+                }
+                currentSectionTitle = key
+                currentSectionEntries = [entry]
+            }
         }
-        let order = ["Today","Yesterday","Last Week","Last Month"]
-        var result: [(String, [ConversationIndexEntry])] = []
-        for k in order { if let arr = grouped.removeValue(forKey: k) { result.append((k, arr)) }}
-        let rest = grouped.keys.sorted { df.dateFormat = "MMMM yyyy"; return df.date(from: $0)! > df.date(from: $1)! }
-        for k in rest { result.append((k, grouped[k]!)) }
+
+        // Append the very last section being built, if it has entries.
+        if !currentSectionEntries.isEmpty {
+            result.append((currentSectionTitle, currentSectionEntries))
+        }
+
         return result
     }
     
-    // MARK: - Audio Saving
-    /// Save raw TTS audio data for a specific chunk as a file and update the conversation's audio paths
-    /// - Parameters:
-    ///   - conversationID: The UUID of the conversation
-    ///   - messageID: The UUID of the message
-    ///   - data: Audio data to save
-    ///   - ext: File extension (e.g., "aac", "mp3")
-    ///   - chunkIndex: Index of this audio chunk for naming
-    /// - Returns: Relative path under Documents to the saved audio file
     func saveAudioData(conversationID: UUID, messageID: UUID, data: Data, ext: String, chunkIndex: Int) throws -> String {
         guard let docs = documentsURL else {
             throw NSError(domain: "HistoryService", code: -1,
@@ -252,23 +263,23 @@ class HistoryService: ObservableObject {
                                                                    includingPropertiesForKeys: nil,
                                                                    options: .skipsHiddenFiles)
                 .filter { $0.pathExtension == "json" }
-            var entries: [ConversationIndexEntry] = []
+            
+            var rebuiltEntries: [ConversationIndexEntry] = []
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
+            
             for fileURL in files {
                 if let data = try? Data(contentsOf: fileURL),
-                   let conv = try? decoder.decode(Conversation.self, from: data) {
-                    entries.append(ConversationIndexEntry(id: conv.id,
-                                                         title: conv.title,
-                                                         createdAt: conv.createdAt))
-                    // Optionally keep in previewStore
-                    previewStore[conv.id] = conv
+                   let entry = try? decoder.decode(ConversationIndexEntry.self, from: data) {
+                    rebuiltEntries.append(entry)
+                } else {
+                    logger.warning("Could not decode ConversationIndexEntry from file: \(fileURL.lastPathComponent)")
                 }
             }
-            // Sort and persist
-            indexEntries = entries.sorted { $0.createdAt > $1.createdAt }
+            
+            indexEntries = rebuiltEntries.sorted { $0.createdAt > $1.createdAt }
             saveIndex()
-            logger.info("Rebuilt index from \(entries.count) files.")
+            logger.info("Rebuilt index from \(self.indexEntries.count) files.")
         } catch {
             logger.error("Failed to rebuild index: \(error.localizedDescription)")
             indexEntries = []
