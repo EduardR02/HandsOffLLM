@@ -14,6 +14,7 @@ struct SettingsView: View {
     @EnvironmentObject var settingsService: SettingsService
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
     @State private var showingAdvanced = false // State for DisclosureGroup
+    @State private var tempDefaultPlaybackSpeed: Float = 2.0
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
     
     var body: some View {
@@ -36,22 +37,33 @@ struct SettingsView: View {
                     HStack {
                         Text("Speed")
                             .foregroundColor(Theme.primaryText)
-                        Slider(value: Binding(
-                            get: { settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0 },
-                            set: { newValue in
-                                let quant = (newValue * 10).rounded() / 10
-                                let current = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
-                                if current != quant {
-                                    settingsService.updateDefaultPlaybackSpeed(speed: quant)
+
+                        Slider(
+                            value: $tempDefaultPlaybackSpeed,
+                            in: 0.2...4.0,
+                            step: 0.1,
+                            onEditingChanged: { editing in
+                                if !editing {
+                                    let quant = (tempDefaultPlaybackSpeed * 10).rounded() / 10
+                                    if settingsService.settings.selectedDefaultPlaybackSpeed != quant {
+                                        settingsService.updateDefaultPlaybackSpeed(speed: quant)
+                                    }
+                                    tempDefaultPlaybackSpeed = quant
                                 }
                             }
-                        ), in: 0.2...4.0, step: 0.1)
+                        )
                         .tint(Theme.accent)
-                        Text(String(format: "%.1fx", settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0))
+
+                        Text(String(format: "%.1fx", tempDefaultPlaybackSpeed))
                             .font(.system(.body, design: .monospaced, weight: .regular))
                             .monospacedDigit()
                             .foregroundColor(Theme.secondaryAccent)
-                            .frame(width: 40)
+                    }
+                    .onAppear {
+                        tempDefaultPlaybackSpeed = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
+                    }
+                    .onChange(of: settingsService.settings.selectedDefaultPlaybackSpeed) { oldValue, newValue in
+                        tempDefaultPlaybackSpeed = newValue ?? 2.0
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -338,6 +350,7 @@ struct TTSInstructionSelectionView: View {
 
 struct AdvancedSettingsView: View {
     @EnvironmentObject private var settingsService: SettingsService
+    @State private var tempAdvancedTemperature: Float = SettingsService.defaultAdvancedTemperature
 
     var body: some View {
         ZStack {
@@ -355,18 +368,35 @@ struct AdvancedSettingsView: View {
                     ))
                     .foregroundColor(Theme.primaryText)
                     .tint(Theme.secondaryAccent)
-                    if let temp = settingsService.settings.advancedTemperature {
+                    if settingsService.settings.advancedTemperature != nil {
                         HStack {
-                            Slider(value: Binding(
-                                get: { temp },
-                                set: { settingsService.settings.advancedTemperature = $0 }
-                            ), in: 0...2, step: 0.1)
+                            Slider(
+                                value: $tempAdvancedTemperature,
+                                in: 0...2,
+                                step: 0.1,
+                                onEditingChanged: { editing in
+                                    if !editing {
+                                        settingsService.settings.advancedTemperature = tempAdvancedTemperature
+                                    }
+                                }
+                            )
                             .tint(Theme.accent)
-                            Text(String(format: "%.1f", temp))
+
+                            Text(String(format: "%.1f", tempAdvancedTemperature))
                                 .font(.system(.body, design: .monospaced, weight: .regular))
                                 .monospacedDigit()
                                 .foregroundColor(Theme.secondaryAccent)
                         }
+                        .onAppear {
+                            tempAdvancedTemperature = settingsService.settings.advancedTemperature
+                                ?? SettingsService.defaultAdvancedTemperature
+                        }
+                        .onChange(of: settingsService.settings.advancedTemperature) { oldValue, newValue in
+                            if let newValue = newValue {
+                                tempAdvancedTemperature = newValue
+                            }
+                        }
+
                         Button("Reset Temperature") {
                             settingsService.settings.advancedTemperature = SettingsService.defaultAdvancedTemperature
                         }
