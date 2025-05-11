@@ -40,6 +40,9 @@ class HistoryService: ObservableObject {
             try? FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
         }
         loadIndex()
+
+        // NEW: once-a-day purge of audio files older than 7 days
+        scheduleDailyAudioCleanup()
     }
     
     // MARK: - Index Persistence
@@ -283,6 +286,43 @@ class HistoryService: ObservableObject {
         } catch {
             logger.error("Failed to rebuild index: \(error.localizedDescription)")
             indexEntries = []
+        }
+    }
+
+    // → only run deletion once per calendar day
+    private func scheduleDailyAudioCleanup() {
+        let key = "HistoryService.lastAudioCleanupDate"
+        let defaults = UserDefaults.standard
+        if let last = defaults.object(forKey: key) as? Date,
+           Calendar.current.isDateInToday(last) {
+            return
+        }
+        cleanupOldAudioFiles(olderThan: 7)
+        defaults.set(Date(), forKey: key)
+    }
+
+    // → walk the Audio folder and delete files > days old
+    private func cleanupOldAudioFiles(olderThan days: Int) {
+        logger.info("Cleaning up old audio files older than \(days) days")
+        guard let root = audioFolderURL else { return }
+        let cutoff = Date().addingTimeInterval(-TimeInterval(days * 24 * 3600))
+        let fm = FileManager.default
+
+        // List only the per-conversation subdirectories
+        if let subdirs = try? fm.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.creationDateKey],
+                options: [.skipsHiddenFiles]
+           ) {
+            for dirURL in subdirs {
+                // If the folder itself is older than the cutoff, delete the entire dir
+                if let created = try? dirURL.resourceValues(
+                                   forKeys: [.creationDateKey]
+                               ).creationDate,
+                   created < cutoff {
+                    try? fm.removeItem(at: dirURL)
+                }
+            }
         }
     }
 }

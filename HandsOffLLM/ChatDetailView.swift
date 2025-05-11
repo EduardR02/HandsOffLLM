@@ -18,6 +18,7 @@ struct ChatDetailView: View {
     
     @State private var conversationDetail: Conversation?    // loaded on demand
     @State private var replayingMessageId: UUID? = nil
+    @State private var missingAudioMessageId: UUID? = nil
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ChatDetailView")
     
@@ -85,28 +86,21 @@ struct ChatDetailView: View {
                     .foregroundColor(messageForegroundColor(role: message.role))
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                 
-                // Add buttons below assistant messages
+                // Add buttons below assistant messages     
                 if message.role.starts(with: "assistant") { // Covers assistant, assistant_partial, assistant_error
                     HStack {
                         Button {
-                            if replayingMessageId == message.id && audioService.isSpeaking {
-                                audioService.stopReplay()
-                                replayingMessageId = nil // Will stop animation via state change
-                            } else {
-                                replayingMessageId = message.id // Will start animation via state change
-                                replayTTS(message: message)
-                            }
+                            toggleReplay(for: message)
                         } label: {
-                            // Determine if this specific message's audio is playing
-                            let isCurrentlyPlaying = replayingMessageId == message.id && audioService.isSpeaking
-                            
-                            Image(systemName: "waveform") // Always show waveform
-                                .symbolEffect(.wiggle.left.byLayer, options: .repeat(.continuous), isActive: isCurrentlyPlaying)
+                            let isPlaying = replayingMessageId == message.id && audioService.isSpeaking
+                            let isMissing = missingAudioMessageId == message.id
+                            Image(systemName: "waveform")
+                                .foregroundColor(isMissing ? Theme.errorText : Theme.primaryText)
+                                .symbolEffect(.wiggle.left.byLayer, options: isMissing ? .repeat(.periodic(delay: 10)): .repeat(.continuous), isActive: isMissing || isPlaying)  // periodic with delay is hack so we can just play it once
+                                .animation(.easeInOut(duration: 0.2), value: isMissing)
                         }
                         .buttonStyle(.borderless)
-                        .tint(Theme.primaryText)
-                        .font(.body) // Increased font size
-                        .disabled(conversationDetail?.ttsAudioPaths?[message.id]?.isEmpty ?? true)
+                        .font(.body)
                         
                         Button {
                             continueFromMessage(index: index)
@@ -129,14 +123,6 @@ struct ChatDetailView: View {
     }
     
     // --- Action Handlers ---
-    private func replayTTS(message: ChatMessage) {
-        if let conversation = conversationDetail, let paths = conversation.ttsAudioPaths?[message.id], !paths.isEmpty {
-            logger.info("Replay TTS for message \(message.id), files: \(paths)")
-            audioService.replayAudioFiles(paths)
-        } else {
-            logger.warning("No saved audio for message \(message.id).")
-        }
-    }
     
     private func continueFromMessage(index: Int) {
         logger.info("Continue tapped at \(index) for \(conversationId).")
@@ -161,6 +147,33 @@ struct ChatDetailView: View {
         case "assistant": return Theme.primaryText
         case "assistant_partial", "assistant_error": return Theme.errorText
         default: return Theme.primaryText
+        }
+    }
+    
+    // Helper to only return file paths that still exist on disk
+    private func existingAudioPaths(for message: ChatMessage) -> [String] {
+        guard let relPaths = conversationDetail?.ttsAudioPaths?[message.id],
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        else { return [] }
+        return relPaths.filter {
+            FileManager.default.fileExists(atPath: docs.appendingPathComponent($0).path)
+        }
+    }
+    
+    // Encapsulated toggle logic for replay/missing
+    private func toggleReplay(for message: ChatMessage) {
+        if replayingMessageId == message.id && audioService.isSpeaking {
+            audioService.stopReplay()
+            replayingMessageId = nil
+        } else {
+            let validPaths = existingAudioPaths(for: message)
+            if validPaths.isEmpty {
+                missingAudioMessageId = message.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) { missingAudioMessageId = nil }  // hacky but timing is configured so that color transition ends when one wiggle animation ends
+            } else {
+                replayingMessageId = message.id
+                audioService.replayAudioFiles(validPaths)
+            }
         }
     }
 }
