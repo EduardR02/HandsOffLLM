@@ -353,6 +353,8 @@ struct AdvancedSettingsView: View {
     @State private var tempAdvancedTemperature: Float = SettingsService.defaultAdvancedTemperature
     @State private var tempAdvancedSystemPrompt: String = ""
     @State private var tempAdvancedTTSInstruction: String = ""
+    private var systemPromptEditorHeight: CGFloat = 250
+    private var ttsInstructionEditorHeight: CGFloat = 150
 
     var body: some View {
         ZStack {
@@ -469,13 +471,13 @@ struct AdvancedSettingsView: View {
                                 value: enabled
                             )
                             if enabled {
-                                // suggestion #1: reload whatever was last‐saved
                                 tempAdvancedSystemPrompt = settingsService.settings.advancedSystemPrompt
                                     ?? SettingsService.defaultAdvancedSystemPrompt
                             }
                         }
                     ),
                     tempText: $tempAdvancedSystemPrompt,
+                    height: systemPromptEditorHeight,
                     defaultText: SettingsService.defaultAdvancedSystemPrompt,
                     saveText: { newPrompt in
                         settingsService.updateAdvancedSetting(
@@ -502,6 +504,7 @@ struct AdvancedSettingsView: View {
                         }
                     ),
                     tempText: $tempAdvancedTTSInstruction,
+                    height: ttsInstructionEditorHeight,
                     defaultText: SettingsService.defaultAdvancedTTSInstruction,
                     saveText: { newInstruction in
                         settingsService.updateAdvancedSetting(
@@ -519,13 +522,16 @@ struct AdvancedSettingsView: View {
                     ?? SettingsService.defaultAdvancedTTSInstruction
             }
             .onDisappear {
-                if settingsService.settings.advancedSystemPromptEnabled {
+                let ss = settingsService.settings
+                if ss.advancedSystemPromptEnabled,
+                   tempAdvancedSystemPrompt != ss.advancedSystemPrompt {
                     settingsService.updateAdvancedSetting(
                         keyPath: \.advancedSystemPrompt,
                         value: tempAdvancedSystemPrompt
                     )
                 }
-                if settingsService.settings.advancedTTSInstructionEnabled {
+                if ss.advancedTTSInstructionEnabled,
+                   tempAdvancedTTSInstruction != ss.advancedTTSInstruction {
                     settingsService.updateAdvancedSetting(
                         keyPath: \.advancedTTSInstruction,
                         value: tempAdvancedTTSInstruction
@@ -542,6 +548,7 @@ struct AdvancedSettingsView: View {
         toggleTitle: String,
         isEnabled: Binding<Bool>,
         tempText: Binding<String>,
+        height: CGFloat,
         defaultText: String,
         saveText: @escaping (String) -> Void
     ) -> some View {
@@ -552,7 +559,7 @@ struct AdvancedSettingsView: View {
 
             if isEnabled.wrappedValue {
                 TextEditor(text: tempText)
-                    .frame(height: defaultText == SettingsService.defaultAdvancedSystemPrompt ? 250 : 150)
+                    .frame(height: height)
                     .foregroundColor(Theme.primaryText)
                     .background(Theme.overlayMask.opacity(0.3))
                     .scrollContentBackground(.hidden)
