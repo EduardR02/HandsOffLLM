@@ -14,23 +14,23 @@ struct QuickPromptOption: Identifiable, Hashable {
 
 // All quick‐select options (excluding "remove‐later")
 fileprivate let quickPromptOptions: [QuickPromptOption] = [
-    QuickPromptOption(id: "current",                         title: "Use Settings",      icon: "star",                          systemPromptId: nil,                            ttsInstructionId: nil),
+    QuickPromptOption(id: "current",                         title: "My Preset",         icon: "circle.grid.2x2",               systemPromptId: nil,                            ttsInstructionId: nil),
     QuickPromptOption(id: "learn-anything",                  title: "Learn Anything",    icon: "brain",                         systemPromptId: "learn-anything",               ttsInstructionId: "passionate-educator"),
+    QuickPromptOption(id: "brainstorm-anything",             title: "Brainstorm",        icon: "bubbles.and.sparkles",          systemPromptId: "brainstorm-anything",          ttsInstructionId: "internet-historian"),
     QuickPromptOption(id: "relationship-argument-simulator", title: "Argument Practice", icon: "figure.stand.line.dotted.figure.stand", systemPromptId: "relationship-argument-simulator", ttsInstructionId: "passive-aggressive"),
-    QuickPromptOption(id: "social-skills-coach",             title: "Social Coach",      icon: "person.2.wave.2",               systemPromptId: "social-skills-coach",          ttsInstructionId: "critical-friend"),
-    QuickPromptOption(id: "conversational-companion",        title: "Casual Chat",       icon: "bubble.left.and.bubble.right",  systemPromptId: "conversational-companion",     ttsInstructionId: "default-happy"),
-    QuickPromptOption(id: "task-guide",                      title: "Task Guide",        icon: "list.number",                   systemPromptId: "task-guide",                   ttsInstructionId: "morning-hype"),
-    QuickPromptOption(id: "voice-game-master",               title: "Game Master",       icon: "gamecontroller",                systemPromptId: "voice-game-master",            ttsInstructionId: "film-trailer-voice"),
-    QuickPromptOption(id: "brainstorm-anything",             title: "Brainstorm",        icon: "sparkles",                      systemPromptId: "brainstorm-anything",          ttsInstructionId: "internet-historian"),
-    QuickPromptOption(id: "financial-advisor",               title: "Money Advice",      icon: "dollarsign.circle",             systemPromptId: "financial-advisor",            ttsInstructionId: "spaceship-ai"),
-    QuickPromptOption(id: "health-fitness-trainer",          title: "Fitness Coach",     icon: "figure.walk",                   systemPromptId: "health-fitness-trainer",       ttsInstructionId: "spaceship-ai"),
-    QuickPromptOption(id: "travel-guide",                    title: "Travel Buddy",      icon: "airplane",                      systemPromptId: "travel-guide",                 ttsInstructionId: "temporal-archivist"),
+    QuickPromptOption(id: "conversational-companion",        title: "Casual Chat",       icon: "hand.raised.fingers.spread",    systemPromptId: "conversational-companion",     ttsInstructionId: "default-happy"),
+    QuickPromptOption(id: "travel-guide",                    title: "Travel Guide",      icon: "airplane",                      systemPromptId: "travel-guide",                 ttsInstructionId: "temporal-archivist"),
+    QuickPromptOption(id: "social-skills-coach",             title: "Social Coach",      icon: "figure.socialdance",            systemPromptId: "social-skills-coach",          ttsInstructionId: "critical-friend"),  
+    QuickPromptOption(id: "task-guide",                      title: "How-To Guide",      icon: "wrench.and.screwdriver",        systemPromptId: "task-guide",                   ttsInstructionId: "morning-hype"),
+    QuickPromptOption(id: "voice-game-master",               title: "Play Game",         icon: "dice",                          systemPromptId: "voice-game-master",            ttsInstructionId: "film-trailer-voice"),
+    QuickPromptOption(id: "financial-advisor",               title: "Money Advice",      icon: "dollarsign",                    systemPromptId: "financial-advisor",            ttsInstructionId: "spaceship-ai"),
+    QuickPromptOption(id: "health-fitness-trainer",          title: "Fitness Coach",     icon: "figure.core.training",          systemPromptId: "health-fitness-trainer",       ttsInstructionId: "spaceship-ai"),
     QuickPromptOption(id: "incoherent-drunk",                title: "Drunk Chat",        icon: "wineglass",                     systemPromptId: "incoherent-drunk",             ttsInstructionId: "rick-sanchez"),
     QuickPromptOption(id: "edgy-gamer",                      title: "Edgy Gamer",        icon: "dot.scope",                     systemPromptId: "edgy-gamer",                   ttsInstructionId: "cyberpunk-street-kid"),
     QuickPromptOption(id: "conspiracy-theorist",             title: "Conspiracy",        icon: "antenna.radiowaves.left.and.right", systemPromptId: "conspiracy-theorist",      ttsInstructionId: "cosmic-horror-narrator"),
-    QuickPromptOption(id: "life-coach-maniac",               title: "Crazy Coach",       icon: "rosette",                       systemPromptId: "life-coach-maniac",            ttsInstructionId: "morning-hype"),
-    QuickPromptOption(id: "victorian-traveler",              title: "Time Traveler",     icon: "clock.arrow.circlepath",        systemPromptId: "victorian-traveler",           ttsInstructionId: "vintage-broadcaster"),
-    QuickPromptOption(id: "tech-bro",                        title: "Tech Bro",          icon: "laptopcomputer",                systemPromptId: "tech-bro",                     ttsInstructionId: "internet-historian")
+    QuickPromptOption(id: "life-coach-maniac",               title: "Crazy Coach",       icon: "figure.mind.and.body",          systemPromptId: "life-coach-maniac",            ttsInstructionId: "morning-hype"),
+    QuickPromptOption(id: "victorian-traveler",              title: "Time Traveler",     icon: "infinity",                      systemPromptId: "victorian-traveler",           ttsInstructionId: "vintage-broadcaster"),
+    QuickPromptOption(id: "tech-bro",                        title: "Tech Bro",          icon: "cpu",                           systemPromptId: "tech-bro",                     ttsInstructionId: "internet-historian")
 ]
 
 // Horizontal quick-prompt bar
@@ -166,79 +166,81 @@ struct ContentView: View {
                 Spacer()
             }
 
+            // 3) Slide-in menu, now with zIndex(2)
             if isMenuOpen {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .edgesIgnoringSafeArea(.all)
-                    .onTapGesture { withAnimation { isMenuOpen = false } }
-
-                HStack(spacing: 0) {
-                    Spacer() // Pushes menu to the right
-
-                    // The actual menu content VStack
-                    VStack(alignment: .leading, spacing: 4) {
-                        Button {
-                            viewModel.startNewChat()
-                            withAnimation { isMenuOpen = false }
-                        } label: {
-                            MenuRowContent(imageName: "plus.circle", text: "New Chat")
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                ZStack {
+                    Color.clear
                         .contentShape(Rectangle())
-                        .padding(.horizontal, 12)
+                        .edgesIgnoringSafeArea(.all)
+                        .onTapGesture { withAnimation { isMenuOpen = false } }
 
-                        Button {
-                            showHistory = true
-                        } label: {
-                            MenuRowContent(imageName: "clock.arrow.circlepath", text: "History")
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .contentShape(Rectangle())
-                        .padding(.horizontal, 12)
-
-                        NavigationLink {
-                            SettingsView()
-                        } label: {
-                            MenuRowContent(imageName: "gearshape", text: "Customize")
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .contentShape(Rectangle())
-                        .padding(.horizontal, 12)
-                        
-                        RoutePickerView()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: pickerRowHeight)
-                            .background(Theme.menuAccent)
-                            .cornerRadius(8)
-                            .overlay(
-                                HStack {
-                                    Image(systemName: "airplayaudio")
-                                    Text("Pick Output")
-                                    Spacer()
-                                }
-                                .foregroundColor(Theme.primaryText)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                                .allowsHitTesting(false)
-                            )
+                    HStack(spacing: 0) {
+                        Spacer()
+                        VStack(alignment: .leading, spacing: 4) {
+                            Button {
+                                viewModel.startNewChat()
+                                withAnimation { isMenuOpen = false }
+                            } label: {
+                                MenuRowContent(imageName: "plus.circle", text: "New Chat")
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .contentShape(Rectangle())
                             .padding(.horizontal, 12)
 
-                        Picker("LLM", selection: $viewModel.selectedProvider) {
-                            ForEach(LLMProvider.allCases) { provider in
-                                Text(provider.rawValue).tag(provider)
-                                    .foregroundColor(Theme.primaryText)
+                            Button {
+                                showHistory = true
+                            } label: {
+                                MenuRowContent(imageName: "clock.arrow.circlepath", text: "History")
                             }
+                            .buttonStyle(PlainButtonStyle())
+                            .contentShape(Rectangle())
+                            .padding(.horizontal, 12)
+
+                            NavigationLink {
+                                SettingsView()
+                            } label: {
+                                MenuRowContent(imageName: "gearshape", text: "Customize")
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .contentShape(Rectangle())
+                            .padding(.horizontal, 12)
+                            
+                            RoutePickerView()
+                                .frame(maxWidth: .infinity)
+                                .frame(height: pickerRowHeight)
+                                .background(Theme.menuAccent)
+                                .cornerRadius(8)
+                                .overlay(
+                                    HStack {
+                                        Image(systemName: "airplayaudio")
+                                        Text("Pick Output")
+                                        Spacer()
+                                    }
+                                    .foregroundColor(Theme.primaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                                    .allowsHitTesting(false)
+                                )
+                                .padding(.horizontal, 12)
+
+                            Picker("LLM", selection: $viewModel.selectedProvider) {
+                                ForEach(LLMProvider.allCases) { provider in
+                                    Text(provider.rawValue).tag(provider)
+                                        .foregroundColor(Theme.primaryText)
+                                }
+                            }
+                            .pickerStyle(SegmentedPickerStyle())
+                            .cornerRadius(8)
+                            .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+                            
+                            Spacer()
                         }
-                        .pickerStyle(SegmentedPickerStyle())
-                        .cornerRadius(8)
-                        .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
-                        
-                        Spacer()
+                        .padding(.top)
+                        .frame(width: menuWidth)
+                        .background(Theme.overlayMask.opacity(0.8).edgesIgnoringSafeArea(.all))
                     }
-                    .padding(.top)
-                    .frame(width: menuWidth)
-                    .background(Theme.overlayMask.opacity(0.8).edgesIgnoringSafeArea(.all))
                 }
+                .zIndex(2)  // <- MENU ABOVE THE BAR
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
