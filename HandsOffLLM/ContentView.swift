@@ -3,6 +3,89 @@ import SwiftUI
 import OSLog
 import UIKit
 
+// Quick-select prompt model
+struct QuickPromptOption: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let icon: String
+    let systemPromptId: String?
+    let ttsInstructionId: String?
+}
+
+// All quick‐select options (excluding "remove‐later")
+fileprivate let quickPromptOptions: [QuickPromptOption] = [
+    QuickPromptOption(id: "current",                         title: "Use Settings",      icon: "star",                          systemPromptId: nil,                            ttsInstructionId: nil),
+    QuickPromptOption(id: "learn-anything",                  title: "Learn Anything",    icon: "brain",                         systemPromptId: "learn-anything",               ttsInstructionId: "passionate-educator"),
+    QuickPromptOption(id: "relationship-argument-simulator", title: "Argument Practice", icon: "figure.stand.line.dotted.figure.stand", systemPromptId: "relationship-argument-simulator", ttsInstructionId: "passive-aggressive"),
+    QuickPromptOption(id: "social-skills-coach",             title: "Social Coach",      icon: "person.2.wave.2",               systemPromptId: "social-skills-coach",          ttsInstructionId: "critical-friend"),
+    QuickPromptOption(id: "conversational-companion",        title: "Casual Chat",       icon: "bubble.left.and.bubble.right",  systemPromptId: "conversational-companion",     ttsInstructionId: "default-happy"),
+    QuickPromptOption(id: "task-guide",                      title: "Task Guide",        icon: "list.number",                   systemPromptId: "task-guide",                   ttsInstructionId: "morning-hype"),
+    QuickPromptOption(id: "voice-game-master",               title: "Game Master",       icon: "gamecontroller",                systemPromptId: "voice-game-master",            ttsInstructionId: "film-trailer-voice"),
+    QuickPromptOption(id: "brainstorm-anything",             title: "Brainstorm",        icon: "sparkles",                      systemPromptId: "brainstorm-anything",          ttsInstructionId: "internet-historian"),
+    QuickPromptOption(id: "financial-advisor",               title: "Money Advice",      icon: "dollarsign.circle",             systemPromptId: "financial-advisor",            ttsInstructionId: "spaceship-ai"),
+    QuickPromptOption(id: "health-fitness-trainer",          title: "Fitness Coach",     icon: "figure.walk",                   systemPromptId: "health-fitness-trainer",       ttsInstructionId: "spaceship-ai"),
+    QuickPromptOption(id: "travel-guide",                    title: "Travel Buddy",      icon: "airplane",                      systemPromptId: "travel-guide",                 ttsInstructionId: "temporal-archivist"),
+    QuickPromptOption(id: "incoherent-drunk",                title: "Drunk Chat",        icon: "wineglass",                     systemPromptId: "incoherent-drunk",             ttsInstructionId: "rick-sanchez"),
+    QuickPromptOption(id: "edgy-gamer",                      title: "Edgy Gamer",        icon: "dot.scope",                     systemPromptId: "edgy-gamer",                   ttsInstructionId: "cyberpunk-street-kid"),
+    QuickPromptOption(id: "conspiracy-theorist",             title: "Conspiracy",        icon: "antenna.radiowaves.left.and.right", systemPromptId: "conspiracy-theorist",      ttsInstructionId: "cosmic-horror-narrator"),
+    QuickPromptOption(id: "life-coach-maniac",               title: "Crazy Coach",       icon: "rosette",                       systemPromptId: "life-coach-maniac",            ttsInstructionId: "morning-hype"),
+    QuickPromptOption(id: "victorian-traveler",              title: "Time Traveler",     icon: "clock.arrow.circlepath",        systemPromptId: "victorian-traveler",           ttsInstructionId: "vintage-broadcaster"),
+    QuickPromptOption(id: "tech-bro",                        title: "Tech Bro",          icon: "laptopcomputer",                systemPromptId: "tech-bro",                     ttsInstructionId: "internet-historian")
+]
+
+// Horizontal quick-prompt bar
+private struct QuickPromptBar: View {
+    @Binding var selectedId: String
+    @EnvironmentObject var settingsService: SettingsService
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(quickPromptOptions) { option in
+                    Button {
+                        // Update selection & apply session override
+                        selectedId = option.id
+                        if let sysId = option.systemPromptId,
+                           let sysText = settingsService.availableSystemPrompts.first(where: { $0.id == sysId })?.fullPrompt,
+                           let ttsId = option.ttsInstructionId,
+                           let ttsText = settingsService.availableTTSInstructions.first(where: { $0.id == ttsId })?.fullPrompt
+                        {
+                            settingsService.setSessionOverride(systemPrompt: sysText, ttsInstruction: ttsText)
+                        } else {
+                            settingsService.clearSessionOverride()
+                        }
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: option.icon)
+                                .font(.system(size: 20))
+                                .frame(width: 24, height: 24)
+                            Text(option.title)
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                                .frame(height: 16)
+                        }
+                        .frame(height: 60)
+                        .padding(.horizontal, 8)
+                        .background(Theme.menuAccent)
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(selectedId == option.id ? Theme.accent : Color.clear, lineWidth: 2)
+                        )
+                        .foregroundColor(selectedId == option.id ? Theme.accent : Theme.primaryText)
+                        .animation(.easeInOut(duration: 0.2), value: selectedId)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+        }
+        .frame(height: 68)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Environment(\.sizeCategory) private var sizeCategory
@@ -18,6 +101,7 @@ struct ContentView: View {
     @State private var isEditingSlider: Bool = false
     @State private var showInitialSliderValueHelpText: Bool = false
     private let menuWidth: CGFloat = 300
+    @State private var selectedQuickPromptId: String = "current"
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ContentView")
     
@@ -29,25 +113,33 @@ struct ContentView: View {
     }
     
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Theme.background.edgesIgnoringSafeArea(.all)
-            
+
+            // 1) Quick‐select bar as an overlay at the very top
+            QuickPromptBar(selectedId: $selectedQuickPromptId)
+                .padding(.top, 16)
+                .opacity(viewModel.state == .idle || viewModel.state == .listening ? 1 : 0)
+                .animation(.easeInOut(duration: 0.25), value: viewModel.state)
+                .zIndex(1)
+
+            // 2) Main content VStack that truly centers circle + slider
             VStack {
-                VoiceIndicatorView(
-                    state: $viewModel.state
-                )
-                .onTapGesture {
-                    viewModel.cycleState()
-                }
+                Spacer()
+
+                VoiceIndicatorView(state: $viewModel.state)
+                    .onTapGesture {
+                        viewModel.cycleState()
+                    }
 
                 // --- Updated Slider Section ---
-                VStack(alignment: .center) { // This VStack will hold the Text and Slider
+                VStack(alignment: .center) {
                     Text(String(format: "%.1fx", viewModel.ttsRate))
                         .font(.system(.body, design: .monospaced, weight: .regular))
                         .monospacedDigit()
                         .foregroundColor(Theme.primaryText)
-                        .padding(.bottom, 2) // A small space between the text and the slider
-                        .opacity(isEditingSlider || showInitialSliderValueHelpText ? 1.0 : 0.0) // Text fades based on editing state or initial show
+                        .padding(.bottom, 2)
+                        .opacity(isEditingSlider || showInitialSliderValueHelpText ? 1 : 0)
 
                     Slider(
                         value: Binding<Float>(
@@ -70,6 +162,8 @@ struct ContentView: View {
                 .padding(.horizontal, 40)
                 .padding(.top, 20)
                 .animation(.easeInOut(duration: 0.25), value: isEditingSlider)
+
+                Spacer()
             }
 
             if isMenuOpen {
@@ -105,7 +199,7 @@ struct ContentView: View {
                         NavigationLink {
                             SettingsView()
                         } label: {
-                            MenuRowContent(imageName: "gearshape", text: "Settings")
+                            MenuRowContent(imageName: "gearshape", text: "Customize")
                         }
                         .buttonStyle(PlainButtonStyle())
                         .contentShape(Rectangle())

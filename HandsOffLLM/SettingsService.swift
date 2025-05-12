@@ -10,6 +10,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // --- Published Settings Data ---
     @Published var settings: SettingsData = SettingsData()
     
+    // Ephemeral session-only overrides (not persisted)
+    @Published var sessionSystemPromptOverride: String? = nil
+    @Published var sessionTTSInstructionOverride: String? = nil
+    
     // --- Available Options (Hardcoded Placeholders) ---
     let availableModels: [ModelInfo] = [
         // Claude
@@ -122,38 +126,50 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // Get the currently active system prompt
     var activeSystemPrompt: String? {
+        // Session override takes priority
+        if let session = sessionSystemPromptOverride,
+           !session.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return session
+        }
         // Prioritize advanced override if enabled
         if settings.advancedSystemPromptEnabled,
            let advanced = settings.advancedSystemPrompt,
            !advanced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return advanced
         }
-
         // Fallback to selected preset
         if let selectedId = settings.selectedSystemPromptPresetId,
            let preset = availableSystemPrompts.first(where: { $0.id == selectedId }) {
             return preset.fullPrompt
         }
         // Fallback to explicit default
-        return availableSystemPrompts.first(where: { $0.id == Self.defaultSystemPromptId })?.fullPrompt
+        return availableSystemPrompts
+            .first(where: { $0.id == Self.defaultSystemPromptId })?
+            .fullPrompt
     }
     
     // Get the currently active TTS instruction
     var activeTTSInstruction: String? {
+        // Session override takes priority
+        if let session = sessionTTSInstructionOverride,
+           !session.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return session
+        }
         // Prioritize advanced override if enabled
         if settings.advancedTTSInstructionEnabled,
            let advanced = settings.advancedTTSInstruction,
            !advanced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return advanced
         }
-
         // Fallback to selected preset
         if let selectedId = settings.selectedTTSInstructionPresetId,
            let preset = availableTTSInstructions.first(where: { $0.id == selectedId }) {
             return preset.fullPrompt
         }
         // Fallback to explicit default
-        return availableTTSInstructions.first(where: { $0.id == Self.defaultTTSInstructionPromptId })?.fullPrompt
+        return availableTTSInstructions
+            .first(where: { $0.id == Self.defaultTTSInstructionPromptId })?
+            .fullPrompt
     }
     
     // Get the currently active temperature
@@ -300,6 +316,18 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     func updateEnergySaverEnabled(_ enabled: Bool) {
         updateAdvancedSetting(keyPath: \.energySaverEnabled, value: enabled)
+    }
+
+    /// Apply a temporary session-only override of system prompt and TTS instruction
+    func setSessionOverride(systemPrompt: String?, ttsInstruction: String?) {
+        sessionSystemPromptOverride = systemPrompt
+        sessionTTSInstructionOverride = ttsInstruction
+    }
+
+    /// Clear any temporary session-only overrides
+    func clearSessionOverride() {
+        sessionSystemPromptOverride = nil
+        sessionTTSInstructionOverride = nil
     }
 
     init() {
