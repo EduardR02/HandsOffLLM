@@ -55,6 +55,10 @@ struct SettingsData: Codable {
     var advancedMaxTokens: Int?
     var advancedSystemPrompt: String?
     var advancedTTSInstruction: String?
+    var advancedTemperatureEnabled: Bool = false
+    var advancedMaxTokensEnabled: Bool = false
+    var advancedSystemPromptEnabled: Bool = false
+    var advancedTTSInstructionEnabled: Bool = false
 
     var selectedTTSVoice: String?
     var selectedDefaultProvider: LLMProvider?

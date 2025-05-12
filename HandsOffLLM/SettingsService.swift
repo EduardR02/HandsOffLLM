@@ -102,16 +102,18 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // Get the currently active system prompt
     var activeSystemPrompt: String? {
-        // Prioritize advanced override
-        if let advanced = settings.advancedSystemPrompt, !advanced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Prioritize advanced override if enabled
+        if settings.advancedSystemPromptEnabled,
+           let advanced = settings.advancedSystemPrompt,
+           !advanced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return advanced
         }
+
         // Fallback to selected preset
         guard let selectedId = settings.selectedSystemPromptPresetId,
               let preset = availableSystemPrompts.first(where: { $0.id == selectedId }),
-              preset.id != "custom" // Don't use the "custom" placeholder prompt itself
+              preset.id != "custom"
         else {
-            // Fallback to the very first non-custom prompt if selection is invalid or missing
             return availableSystemPrompts.first(where: { $0.id != "custom" })?.fullPrompt
         }
         return preset.fullPrompt
@@ -119,16 +121,18 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // Get the currently active TTS instruction
     var activeTTSInstruction: String? {
-        // Prioritize advanced override
-        if let advanced = settings.advancedTTSInstruction, !advanced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Prioritize advanced override if enabled
+        if settings.advancedTTSInstructionEnabled,
+           let advanced = settings.advancedTTSInstruction,
+           !advanced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return advanced
         }
+
         // Fallback to selected preset
         guard let selectedId = settings.selectedTTSInstructionPresetId,
               let preset = availableTTSInstructions.first(where: { $0.id == selectedId }),
               preset.id != "custom"
         else {
-            // Fallback to the very first non-custom instruction if selection is invalid or missing
             return availableTTSInstructions.first(where: { $0.id != "custom" })?.fullPrompt
         }
         return preset.fullPrompt
@@ -136,14 +140,22 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // Get the currently active temperature
     var activeTemperature: Float {
-        // Prioritize advanced override
-        return settings.advancedTemperature ?? 1.0 // Default temperature
+        // Only use the stored temperature if the override is enabled
+        if settings.advancedTemperatureEnabled,
+           let t = settings.advancedTemperature {
+            return t
+        }
+        return Self.defaultAdvancedTemperature
     }
     
     // Get the currently active max tokens
     var activeMaxTokens: Int {
-        // Prioritize advanced override
-        return settings.advancedMaxTokens ?? 8000 // Default max tokens (adjust as needed)
+        // Only use the stored maxTokens if the override is enabled
+        if settings.advancedMaxTokensEnabled,
+           let m = settings.advancedMaxTokens {
+            return m
+        }
+        return Self.defaultAdvancedMaxTokens
     }
     
     // Web search toggle

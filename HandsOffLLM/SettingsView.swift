@@ -108,10 +108,10 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Theme.secondaryAccent)
-                    if settingsService.settings.advancedSystemPrompt != nil {
+                    if settingsService.settings.advancedSystemPromptEnabled {
                         Text("using custom")
                             .font(.caption2)
-                            .foregroundColor(Theme.warningText)
+                            .foregroundColor(Theme.secondaryAccent)
                     }
 
                     NavigationLink {
@@ -132,10 +132,10 @@ struct SettingsView: View {
                         }
                     }
                     .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
-                    if settingsService.settings.advancedTTSInstruction != nil {
+                    if settingsService.settings.advancedTTSInstructionEnabled {
                         Text("using custom")
                             .font(.caption2)
-                            .foregroundColor(Theme.warningText)
+                            .foregroundColor(Theme.secondaryAccent)
                     }
 
                     Picker("Voice", selection: Binding(
@@ -351,24 +351,28 @@ struct TTSInstructionSelectionView: View {
 struct AdvancedSettingsView: View {
     @EnvironmentObject private var settingsService: SettingsService
     @State private var tempAdvancedTemperature: Float = SettingsService.defaultAdvancedTemperature
+    @State private var tempAdvancedSystemPrompt: String = ""
+    @State private var tempAdvancedTTSInstruction: String = ""
 
     var body: some View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
             Form {
-                // Temperature
+                // Temperature Section
                 Section {
                     Toggle("Override Temperature", isOn: Binding(
-                        get: { settingsService.settings.advancedTemperature != nil },
-                        set: {
-                            settingsService.settings.advancedTemperature = $0
-                                ? SettingsService.defaultAdvancedTemperature
-                                : nil
+                        get: { settingsService.settings.advancedTemperatureEnabled },
+                        set: { enabled in
+                            settingsService.updateAdvancedSetting(
+                                keyPath: \.advancedTemperatureEnabled,
+                                value: enabled
+                            )
                         }
                     ))
                     .foregroundColor(Theme.primaryText)
                     .tint(Theme.secondaryAccent)
-                    if settingsService.settings.advancedTemperature != nil {
+
+                    if settingsService.settings.advancedTemperatureEnabled {
                         HStack {
                             Slider(
                                 value: $tempAdvancedTemperature,
@@ -376,7 +380,10 @@ struct AdvancedSettingsView: View {
                                 step: 0.1,
                                 onEditingChanged: { editing in
                                     if !editing {
-                                        settingsService.settings.advancedTemperature = tempAdvancedTemperature
+                                        settingsService.updateAdvancedSetting(
+                                            keyPath: \.advancedTemperature,
+                                            value: tempAdvancedTemperature
+                                        )
                                     }
                                 }
                             )
@@ -391,45 +398,59 @@ struct AdvancedSettingsView: View {
                             tempAdvancedTemperature = settingsService.settings.advancedTemperature
                                 ?? SettingsService.defaultAdvancedTemperature
                         }
-                        .onChange(of: settingsService.settings.advancedTemperature) { oldValue, newValue in
+                        .onChange(of: settingsService.settings.advancedTemperature) { _, newValue in
                             if let newValue = newValue {
                                 tempAdvancedTemperature = newValue
                             }
                         }
 
                         Button("Reset Temperature") {
-                            settingsService.settings.advancedTemperature = SettingsService.defaultAdvancedTemperature
+                            settingsService.updateAdvancedSetting(
+                                keyPath: \.advancedTemperature,
+                                value: SettingsService.defaultAdvancedTemperature
+                            )
                         }
                         .foregroundColor(Theme.accent)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
 
-                // Max Tokens
+                // Max Tokens Section
                 Section {
                     Toggle("Override Max Tokens", isOn: Binding(
-                        get: { settingsService.settings.advancedMaxTokens != nil },
-                        set: {
-                            settingsService.settings.advancedMaxTokens = $0
-                                ? SettingsService.defaultAdvancedMaxTokens
-                                : nil
+                        get: { settingsService.settings.advancedMaxTokensEnabled },
+                        set: { enabled in
+                            settingsService.updateAdvancedSetting(
+                                keyPath: \.advancedMaxTokensEnabled,
+                                value: enabled
+                            )
                         }
                     ))
                     .foregroundColor(Theme.primaryText)
                     .tint(Theme.secondaryAccent)
-                    if let maxTokens = settingsService.settings.advancedMaxTokens {
+
+                    if settingsService.settings.advancedMaxTokensEnabled {
                         HStack {
                             TextField("", value: Binding(
-                                get: { maxTokens },
-                                set: { settingsService.settings.advancedMaxTokens = $0 }
+                                get: { settingsService.settings.advancedMaxTokens ?? SettingsService.defaultAdvancedMaxTokens },
+                                set: { newValue in
+                                    settingsService.updateAdvancedSetting(
+                                        keyPath: \.advancedMaxTokens,
+                                        value: newValue
+                                    )
+                                }
                             ), format: .number)
                             .keyboardType(.numberPad)
                             .frame(width: 80)
                             .foregroundColor(Theme.primaryText)
                             .background(Theme.overlayMask.opacity(0.5))
                             .cornerRadius(4)
+
                             Button("Reset Max Tokens") {
-                                settingsService.settings.advancedMaxTokens = SettingsService.defaultAdvancedMaxTokens
+                                settingsService.updateAdvancedSetting(
+                                    keyPath: \.advancedMaxTokens,
+                                    value: SettingsService.defaultAdvancedMaxTokens
+                                )
                             }
                             .foregroundColor(Theme.accent)
                         }
@@ -437,69 +458,114 @@ struct AdvancedSettingsView: View {
                 }
                 .listRowBackground(Theme.menuAccent)
 
-                // System Prompt
-                Section {
-                    Toggle("Override System Prompt", isOn: Binding(
-                        get: { settingsService.settings.advancedSystemPrompt != nil },
-                        set: {
-                            settingsService.settings.advancedSystemPrompt = $0
-                                ? SettingsService.defaultAdvancedSystemPrompt
-                                : nil
+                // System Prompt Override
+                textOverrideSection(
+                    toggleTitle: "Override System Prompt",
+                    isEnabled: Binding(
+                        get: { settingsService.settings.advancedSystemPromptEnabled },
+                        set: { enabled in
+                            settingsService.updateAdvancedSetting(
+                                keyPath: \.advancedSystemPromptEnabled,
+                                value: enabled
+                            )
+                            if enabled {
+                                // suggestion #1: reload whatever was last‐saved
+                                tempAdvancedSystemPrompt = settingsService.settings.advancedSystemPrompt
+                                    ?? SettingsService.defaultAdvancedSystemPrompt
+                            }
                         }
-                    ))
-                    .foregroundColor(Theme.primaryText)
-                    .tint(Theme.secondaryAccent)
-                    if let prompt = settingsService.settings.advancedSystemPrompt {
-                        TextEditor(text: Binding(
-                            get: { prompt },
-                            set: { settingsService.settings.advancedSystemPrompt = $0 }
-                        ))
-                        .frame(height: 140)
-                        .foregroundColor(Theme.primaryText)
-                        .background(Theme.overlayMask.opacity(0.3))
-                        .scrollContentBackground(.hidden)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderColor))
-                        Button("Reset Prompt") {
-                            settingsService.settings.advancedSystemPrompt = SettingsService.defaultAdvancedSystemPrompt
-                        }
-                        .foregroundColor(Theme.accent)
+                    ),
+                    tempText: $tempAdvancedSystemPrompt,
+                    defaultText: SettingsService.defaultAdvancedSystemPrompt,
+                    saveText: { newPrompt in
+                        settingsService.updateAdvancedSetting(
+                            keyPath: \.advancedSystemPrompt,
+                            value: newPrompt
+                        )
                     }
-                }
-                .listRowBackground(Theme.menuAccent)
+                )
 
-                // TTS Instruction
-                Section {
-                    Toggle("Override TTS Instruction", isOn: Binding(
-                        get: { settingsService.settings.advancedTTSInstruction != nil },
-                        set: {
-                            settingsService.settings.advancedTTSInstruction = $0
-                                ? SettingsService.defaultAdvancedTTSInstruction
-                                : nil
+                // TTS Instruction Override
+                textOverrideSection(
+                    toggleTitle: "Override TTS Instruction",
+                    isEnabled: Binding(
+                        get: { settingsService.settings.advancedTTSInstructionEnabled },
+                        set: { enabled in
+                            settingsService.updateAdvancedSetting(
+                                keyPath: \.advancedTTSInstructionEnabled,
+                                value: enabled
+                            )
+                            if enabled {
+                                tempAdvancedTTSInstruction = settingsService.settings.advancedTTSInstruction
+                                    ?? SettingsService.defaultAdvancedTTSInstruction
+                            }
                         }
-                    ))
-                    .foregroundColor(Theme.primaryText)
-                    .tint(Theme.secondaryAccent)
-                    if let tts = settingsService.settings.advancedTTSInstruction {
-                        TextEditor(text: Binding(
-                            get: { tts },
-                            set: { settingsService.settings.advancedTTSInstruction = $0 }
-                        ))
-                        .frame(height: 100)
-                        .foregroundColor(Theme.primaryText)
-                        .background(Theme.overlayMask.opacity(0.3))
-                        .scrollContentBackground(.hidden)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderColor))
-                        Button("Reset TTS Instruction") {
-                            settingsService.settings.advancedTTSInstruction = SettingsService.defaultAdvancedTTSInstruction
-                        }
-                        .foregroundColor(Theme.accent)
+                    ),
+                    tempText: $tempAdvancedTTSInstruction,
+                    defaultText: SettingsService.defaultAdvancedTTSInstruction,
+                    saveText: { newInstruction in
+                        settingsService.updateAdvancedSetting(
+                            keyPath: \.advancedTTSInstruction,
+                            value: newInstruction
+                        )
                     }
-                }
-                .listRowBackground(Theme.menuAccent)
+                )
             }
             .scrollContentBackground(.hidden)
+            .onAppear {
+                tempAdvancedSystemPrompt = settingsService.settings.advancedSystemPrompt
+                    ?? SettingsService.defaultAdvancedSystemPrompt
+                tempAdvancedTTSInstruction = settingsService.settings.advancedTTSInstruction
+                    ?? SettingsService.defaultAdvancedTTSInstruction
+            }
+            .onDisappear {
+                if settingsService.settings.advancedSystemPromptEnabled {
+                    settingsService.updateAdvancedSetting(
+                        keyPath: \.advancedSystemPrompt,
+                        value: tempAdvancedSystemPrompt
+                    )
+                }
+                if settingsService.settings.advancedTTSInstructionEnabled {
+                    settingsService.updateAdvancedSetting(
+                        keyPath: \.advancedTTSInstruction,
+                        value: tempAdvancedTTSInstruction
+                    )
+                }
+            }
             .navigationTitle("Advanced Settings")
         }
+    }
+
+    // MARK: ––––– Reusable Text‐Override Section –––––
+    @ViewBuilder
+    private func textOverrideSection(
+        toggleTitle: String,
+        isEnabled: Binding<Bool>,
+        tempText: Binding<String>,
+        defaultText: String,
+        saveText: @escaping (String) -> Void
+    ) -> some View {
+        Section {
+            Toggle(toggleTitle, isOn: isEnabled)
+                .foregroundColor(Theme.primaryText)
+                .tint(Theme.secondaryAccent)
+
+            if isEnabled.wrappedValue {
+                TextEditor(text: tempText)
+                    .frame(height: defaultText == SettingsService.defaultAdvancedSystemPrompt ? 250 : 150)
+                    .foregroundColor(Theme.primaryText)
+                    .background(Theme.overlayMask.opacity(0.3))
+                    .scrollContentBackground(.hidden)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderColor))
+
+                Button("Reset \(toggleTitle.replacingOccurrences(of: "Override ", with: ""))") {
+                    tempText.wrappedValue = defaultText
+                    saveText(defaultText)
+                }
+                .foregroundColor(Theme.accent)
+            }
+        }
+        .listRowBackground(Theme.menuAccent)
     }
 }
 
