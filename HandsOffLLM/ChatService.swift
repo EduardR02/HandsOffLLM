@@ -309,12 +309,16 @@ class ChatService: ObservableObject {
         req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         // Prepare messages payload (no separate system message in history)
-        let messagesPayload = currentConversation?.messages.map { message in
-            [
-                "role": message.role == "user" ? "user" : "assistant",
-                "content": message.content
-            ]
+        var messagesPayload = currentConversation?.messages.map { message in
+            ["role": message.role == "user" ? "user" : "assistant",
+             "content": message.content]
         } ?? []
+        // Tag last message for ephemeral caching
+        if !messagesPayload.isEmpty {
+            var last = messagesPayload.removeLast()
+            last["cache_control"] = ["type": "ephemeral"]
+            messagesPayload.append(last)
+        }
 
         // Thinking not supported
         var payload: [String: Any] = [
@@ -329,6 +333,8 @@ class ChatService: ObservableObject {
             payload["system"] = sys
         }
 
+
+        /* Removed web-search tool for claude for now as claude likes to search wayyy too much even when not necessary, worsening response quality / adherence to system prompt
         // Add web-search tool if enabled and model is compatible
         let webSearchCompatibleModelSubstrings = ["claude-3-7-sonnet", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]
         if settingsService.webSearchEnabled, webSearchCompatibleModelSubstrings.contains(where: { modelId.contains($0) }) {
@@ -336,6 +342,7 @@ class ChatService: ObservableObject {
                 ["type": "web_search_20250305", "name": "web_search", "max_uses": 3]
             ]
         }
+        */
 
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         return req
