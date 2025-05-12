@@ -102,8 +102,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // --- Advanced Defaults ---
     static let defaultAdvancedTemperature: Float = 1.0
     static let defaultAdvancedMaxTokens: Int   = 8000
-    static let defaultAdvancedSystemPrompt: String = "You are a helpful voice assistant. Keep your responses concise and conversational."
+    static let defaultAdvancedSystemPrompt: String = Prompts.learnAnythingSystemPrompt
     static let defaultAdvancedTTSInstruction: String = Prompts.defaultHappy
+
+    // --- Default Preset IDs ---
+    static let defaultSystemPromptId = "conversational-companion"
+    static let defaultTTSInstructionPromptId = "default-happy"
 
     // MARK: - Active Setting Accessors
     
@@ -122,13 +126,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
         }
 
         // Fallback to selected preset
-        guard let selectedId = settings.selectedSystemPromptPresetId,
-              let preset = availableSystemPrompts.first(where: { $0.id == selectedId }),
-              preset.id != "custom"
-        else {
-            return availableSystemPrompts.first(where: { $0.id != "custom" })?.fullPrompt
+        if let selectedId = settings.selectedSystemPromptPresetId,
+           let preset = availableSystemPrompts.first(where: { $0.id == selectedId }) {
+            return preset.fullPrompt
         }
-        return preset.fullPrompt
+        // Fallback to explicit default
+        return availableSystemPrompts.first(where: { $0.id == Self.defaultSystemPromptId })?.fullPrompt
     }
     
     // Get the currently active TTS instruction
@@ -141,13 +144,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
         }
 
         // Fallback to selected preset
-        guard let selectedId = settings.selectedTTSInstructionPresetId,
-              let preset = availableTTSInstructions.first(where: { $0.id == selectedId }),
-              preset.id != "custom"
-        else {
-            return availableTTSInstructions.first(where: { $0.id != "custom" })?.fullPrompt
+        if let selectedId = settings.selectedTTSInstructionPresetId,
+           let preset = availableTTSInstructions.first(where: { $0.id == selectedId }) {
+            return preset.fullPrompt
         }
-        return preset.fullPrompt
+        // Fallback to explicit default
+        return availableTTSInstructions.first(where: { $0.id == Self.defaultTTSInstructionPromptId })?.fullPrompt
     }
     
     // Get the currently active temperature
@@ -326,14 +328,14 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     private func setDefaultPromptsIfNeeded() {
         var changed = false
-        if settings.selectedSystemPromptPresetId == nil, let defaultPrompt = availableSystemPrompts.first(where: { $0.id != "custom" }) {
-            settings.selectedSystemPromptPresetId = defaultPrompt.id
-            logger.info("Setting default system prompt: \(defaultPrompt.name)")
+        if settings.selectedSystemPromptPresetId == nil {
+            settings.selectedSystemPromptPresetId = Self.defaultSystemPromptId
+            logger.info("Setting default system prompt preset: \(Self.defaultSystemPromptId)")
             changed = true
         }
-        if settings.selectedTTSInstructionPresetId == nil, let defaultTTS = availableTTSInstructions.first(where: { $0.id != "custom" }) {
-            settings.selectedTTSInstructionPresetId = defaultTTS.id
-            logger.info("Setting default TTS instruction: \(defaultTTS.name)")
+        if settings.selectedTTSInstructionPresetId == nil {
+            settings.selectedTTSInstructionPresetId = Self.defaultTTSInstructionPromptId
+            logger.info("Setting default TTS instruction preset: \(Self.defaultTTSInstructionPromptId)")
             changed = true
         }
         if changed {
@@ -343,7 +345,9 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     private func setDefaultUISettingsIfNeeded() {
         var changed = false
-        if settings.selectedDefaultProvider == nil, let defaultProvider = LLMProvider.allCases.first {
+        if settings.selectedDefaultProvider == nil {
+            // Explicitly set Claude as the default if no provider is selected
+            let defaultProvider: LLMProvider = .claude
             settings.selectedDefaultProvider = defaultProvider
             logger.info("Setting default API provider: \(defaultProvider.rawValue)")
             changed = true
