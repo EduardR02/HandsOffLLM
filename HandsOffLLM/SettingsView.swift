@@ -399,9 +399,28 @@ struct SystemPromptSelectionView: View {
 
     // Define categories and their preset IDs specifically for System Prompts
     private let categories: [(title: String, ids: [String])] = [
-        ("Helpful Assistants", ["learn-anything", "conversational-companion", "task-guide", "social-skills-coach", "brainstorm-anything"]),
-        ("Simulators & Games", ["relationship-argument-simulator", "voice-game-master"]),
-        ("Fun", ["incoherent-drunk", "edgy-gamer", "conspiracy-theorist", "life-coach-maniac", "victorian-traveler", "tech-bro"]),
+        ("Skill & Knowledge Builders", [
+            "learn-anything",
+            "social-skills-coach",
+            "relationship-argument-simulator",
+            "health-fitness-trainer",
+            "financial-advisor",
+            "brainstorm-anything"
+        ]),
+        ("Companions & Guides", [
+            "task-guide",
+            "travel-guide",
+            "conversational-companion",
+            "voice-game-master"
+        ]),
+        ("Fun & Entertainment", [
+            "incoherent-drunk",
+            "edgy-gamer",
+            "conspiracy-theorist",
+            "life-coach-maniac",
+            "victorian-traveler",
+            "tech-bro"
+        ]),
         ("Personal", ["remove-later"])
     ]
 

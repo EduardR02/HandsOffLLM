@@ -35,6 +35,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         PromptPreset(id: "task-guide", name: "Task Guide", description: "Step-by-step hands-free instructions", fullPrompt: Prompts.taskGuide),
         PromptPreset(id: "voice-game-master", name: "Voice Game Master", description: "Games and adventures via voice", fullPrompt: Prompts.voiceGameMaster),
         PromptPreset(id: "brainstorm-anything", name: "Brainstorm Anything", description: "Brainstorming partner", fullPrompt: Prompts.brainstormAnything),
+        // new expert prompts
+        PromptPreset(id: "financial-advisor", name: "Financial Advisor", description: "Insightful financial guidance", fullPrompt: Prompts.financialAdvisorSystemPrompt),
+        PromptPreset(id: "health-fitness-trainer", name: "Health & Fitness Trainer", description: "Exercise and nutrition guidance", fullPrompt: Prompts.healthAndFitnessTrainerSystemPrompt),
+        PromptPreset(id: "travel-guide", name: "Travel Guide", description: "Practical travel insights", fullPrompt: Prompts.travelGuideSystemPrompt),
         // fun prompts
         PromptPreset(id: "incoherent-drunk", name: "Incoherent Drunk", description: "Your wasted, oversharing 'friend'", fullPrompt: Prompts.incoherentDrunk),
         PromptPreset(id: "edgy-gamer", name: "Edgy Gamer", description: "Toxic, hypercompetitive gamer stereotype", fullPrompt: Prompts.edgyGamer),
