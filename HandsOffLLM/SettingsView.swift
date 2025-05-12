@@ -95,19 +95,24 @@ struct SettingsView: View {
                 
                 // MARK: - Prompt Presets
                 Section("Customize Chat Experience") {
-                    Picker("LLM System Prompt", selection: Binding(
-                        get: { settingsService.settings.selectedSystemPromptPresetId ?? "" },
-                        set: { settingsService.updateSelectedSystemPrompt(presetId: $0) }
-                    )) {
-                        ForEach(settingsService.availableSystemPrompts) { preset in
-                            VStack(alignment: .leading) {
-                                Text(preset.name).tag(preset.id)
-                                    .foregroundColor(Theme.primaryText)
-                                Text(preset.description).font(.caption).foregroundColor(Theme.secondaryText)
-                            }
+                    NavigationLink {
+                        SystemPromptSelectionView()
+                    } label: {
+                        HStack {
+                            Text("LLM System Prompt")
+                                .foregroundColor(Theme.primaryText)
+                            Spacer()
+                            Text(
+                                settingsService
+                                    .availableSystemPrompts
+                                    .first { $0.id == settingsService.settings.selectedSystemPromptPresetId }?
+                                    .name
+                                ?? "Select…"
+                            )
+                            .foregroundColor(Theme.secondaryAccent)
                         }
                     }
-                    .tint(Theme.secondaryAccent)
+                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                     if settingsService.settings.advancedSystemPromptEnabled {
                         Text("using custom")
                             .font(.caption2)
@@ -160,7 +165,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading) {
                             Text("Web Search (Experimental)")
                                 .foregroundColor(Theme.primaryText)
-                            Text("Only GPT-4.1 and some Claude models")
+                            Text("Only GPT-4.1 models")
                                 .font(.caption)
                                 .foregroundColor(Theme.secondaryText)
                         }
@@ -255,37 +260,35 @@ struct ModelSelectionView: View {
     }
 }
 
-struct TTSInstructionSelectionView: View {
-    @EnvironmentObject var settingsService: SettingsService
+// MARK: - Generic Preset Selection View
+struct GenericPresetSelectionView: View {
     @Environment(\.presentationMode) var presentationMode
     @State private var searchText = ""
 
-    // Define categories and their preset IDs
-    private let categories: [(title: String, ids: [String])] = [
-        ("General / Supportive", ["default-happy", "critical-friend", "existential-crisis-companion", "morning-hype", "late-night-mode"]),
-        ("Informative / Storytelling", ["passionate-educator", "vintage-broadcaster", "temporal-archivist", "internet-historian", "spaceship-ai"]),
-        ("Fun", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive", "cowboy"]),
-        ("Advanced", ["custom"]) // Keep custom separate
-    ]
+    let availablePresets: [PromptPreset]
+    let selectedPresetId: String?
+    let categories: [(title: String, ids: [String])]
+    let navigationTitle: String
+    let onSelectPreset: (String) -> Void
 
     // Filter presets based on search text
     private var filteredPresets: [PromptPreset] {
         if searchText.isEmpty {
-            return settingsService.availableTTSInstructions
+            return availablePresets
         } else {
-            return settingsService.availableTTSInstructions.filter {
+            return availablePresets.filter {
                 $0.name.localizedCaseInsensitiveContains(searchText)
             }
         }
     }
-    
+
     // Helper to get presets for a specific category, considering the search filter
     private func presets(for categoryIDs: [String]) -> [PromptPreset] {
         filteredPresets.filter { categoryIDs.contains($0.id) }
-            // Keep the original order from SettingsService
+            // Keep the original order from the source list
             .sorted { p1, p2 in
-                guard let index1 = settingsService.availableTTSInstructions.firstIndex(where: { $0.id == p1.id }),
-                      let index2 = settingsService.availableTTSInstructions.firstIndex(where: { $0.id == p2.id }) else {
+                guard let index1 = availablePresets.firstIndex(where: { $0.id == p1.id }),
+                      let index2 = availablePresets.firstIndex(where: { $0.id == p2.id }) else {
                     return false
                 }
                 return index1 < index2
@@ -316,10 +319,21 @@ struct TTSInstructionSelectionView: View {
                             .listRowBackground(Theme.menuAccent)
                         }
                     }
+                    // Optionally, show uncategorized items if any exist (good for maintenance)
+                    let allCategorizedIds = categories.flatMap { $0.ids }
+                    let uncategorizedPresets = filteredPresets.filter { !allCategorizedIds.contains($0.id) }
+                    if !uncategorizedPresets.isEmpty && searchText.isEmpty {
+                         Section(header: Text("Other").foregroundColor(Theme.secondaryText)) {
+                            ForEach(uncategorizedPresets) { preset in
+                                presetRow(preset)
+                            }
+                        }
+                        .listRowBackground(Theme.menuAccent)
+                    }
                 }
             }
             .searchable(text: $searchText)
-            .navigationTitle("TTS Instructions")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .scrollContentBackground(.hidden)
         }
@@ -329,14 +343,21 @@ struct TTSInstructionSelectionView: View {
     @ViewBuilder
     private func presetRow(_ preset: PromptPreset) -> some View {
         Button {
-            settingsService.updateSelectedTTSInstruction(presetId: preset.id)
+            onSelectPreset(preset.id)
             presentationMode.wrappedValue.dismiss()
         } label: {
             HStack {
-                Text(preset.name)
-                    .foregroundColor(Theme.primaryText)
+                 VStack(alignment: .leading) {
+                    Text(preset.name)
+                        .foregroundColor(Theme.primaryText)
+                    if !preset.description.isEmpty { // Show description if available
+                         Text(preset.description)
+                            .font(.caption)
+                            .foregroundColor(Theme.secondaryText)
+                    }
+                 }
                 Spacer()
-                if settingsService.settings.selectedTTSInstructionPresetId == preset.id {
+                if selectedPresetId == preset.id {
                     Image(systemName: "checkmark")
                         .foregroundColor(Theme.accent)
                 }
@@ -345,6 +366,55 @@ struct TTSInstructionSelectionView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Specific Implementation for TTS Instructions
+struct TTSInstructionSelectionView: View {
+    @EnvironmentObject var settingsService: SettingsService
+
+    // Define categories and their preset IDs specifically for TTS
+    private let categories: [(title: String, ids: [String])] = [
+        ("General / Supportive", ["default-happy", "critical-friend", "existential-crisis-companion", "morning-hype", "late-night-mode"]),
+        ("Informative / Storytelling", ["passionate-educator", "vintage-broadcaster", "temporal-archivist", "internet-historian", "spaceship-ai"]),
+        ("Fun", ["jaded-detective", "film-trailer-voice", "cyberpunk-street-kid", "rick-sanchez", "cosmic-horror-narrator", "oblivion-npc", "passive-aggressive", "cowboy"])
+    ]
+
+    var body: some View {
+        GenericPresetSelectionView(
+            availablePresets: settingsService.availableTTSInstructions,
+            selectedPresetId: settingsService.settings.selectedTTSInstructionPresetId,
+            categories: categories,
+            navigationTitle: "Speech Instructions",
+            onSelectPreset: { selectedId in
+                settingsService.updateSelectedTTSInstruction(presetId: selectedId)
+            }
+        )
+    }
+}
+
+// MARK: - Specific Implementation for System Prompts
+struct SystemPromptSelectionView: View {
+    @EnvironmentObject var settingsService: SettingsService
+
+    // Define categories and their preset IDs specifically for System Prompts
+    private let categories: [(title: String, ids: [String])] = [
+        ("Helpful Assistants", ["learn-anything", "conversational-companion", "task-guide", "social-skills-coach", "brainstorm-anything"]),
+        ("Simulators & Games", ["relationship-argument-simulator", "voice-game-master"]),
+        ("Fun", ["incoherent-drunk", "edgy-gamer", "conspiracy-theorist", "life-coach-maniac", "victorian-traveler", "tech-bro"]),
+        ("Personal", ["remove-later"])
+    ]
+
+    var body: some View {
+        GenericPresetSelectionView(
+            availablePresets: settingsService.availableSystemPrompts,
+            selectedPresetId: settingsService.settings.selectedSystemPromptPresetId,
+            categories: categories,
+            navigationTitle: "System Prompt",
+            onSelectPreset: { selectedId in
+                settingsService.updateSelectedSystemPrompt(presetId: selectedId)
+            }
+        )
     }
 }
 

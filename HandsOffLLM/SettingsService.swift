@@ -28,10 +28,22 @@ class SettingsService: ObservableObject { // Make ObservableObject
     ]
     
     let availableSystemPrompts: [PromptPreset] = [
-        PromptPreset(id: "default-helpful", name: "Helpful Assistant", description: "Standard helpful, concise", fullPrompt: "You are a helpful voice assistant. Keep your responses concise and conversational."),
-        PromptPreset(id: "casual-friend", name: "Casual Friend", description: "Informal, friendly chat", fullPrompt: "You are a friendly, casual AI assistant. Talk like you're chatting with a friend."),
-        PromptPreset(id: "expert-coder", name: "Coding Expert", description: "Focused on code assistance", fullPrompt: "You are an expert programmer AI. Provide clear, accurate code examples and explanations."),
-        PromptPreset(id: "remove-later", name: "Remove Later", description: "Focused on code assistance", fullPrompt: Prompts.chatPrompt)
+        PromptPreset(id: "learn-anything", name: "Learn Anything", description: "Focused on learning", fullPrompt: Prompts.learnAnythingSystemPrompt),
+        PromptPreset(id: "relationship-argument-simulator", name: "Relationship Argument Simulator", description: "Simulate difficult arguments for practice", fullPrompt: Prompts.relationshipArgumentSimulator),
+        PromptPreset(id: "social-skills-coach", name: "Social Skills Coach", description: "Actionable social skills guidance", fullPrompt: Prompts.socialSkillsCoach),
+        PromptPreset(id: "conversational-companion", name: "Conversational Companion", description: "Thoughtful, authentic conversation partner", fullPrompt: Prompts.conversationalCompanion),
+        PromptPreset(id: "task-guide", name: "Task Guide", description: "Step-by-step hands-free instructions", fullPrompt: Prompts.taskGuide),
+        PromptPreset(id: "voice-game-master", name: "Voice Game Master", description: "Games and adventures via voice", fullPrompt: Prompts.voiceGameMaster),
+        PromptPreset(id: "brainstorm-anything", name: "Brainstorm Anything", description: "Brainstorming partner", fullPrompt: Prompts.brainstormAnything),
+        // fun prompts
+        PromptPreset(id: "incoherent-drunk", name: "Incoherent Drunk", description: "Your wasted, oversharing 'friend'", fullPrompt: Prompts.incoherentDrunk),
+        PromptPreset(id: "edgy-gamer", name: "Edgy Gamer", description: "Toxic, hypercompetitive gamer stereotype", fullPrompt: Prompts.edgyGamer),
+        PromptPreset(id: "conspiracy-theorist", name: "Conspiracy Theorist", description: "Paranoid, sees connections everywhere", fullPrompt: Prompts.conspiracyTheorist),
+        PromptPreset(id: "life-coach-maniac", name: "Life Coach Maniac", description: "Overly intense self-help guru", fullPrompt: Prompts.overlyEnthusiasticLifeCoach),
+        PromptPreset(id: "victorian-traveler", name: "Victorian Time Traveler", description: "Proper, confused 1885 traveler", fullPrompt: Prompts.victorianTimeTraveler),
+        PromptPreset(id: "tech-bro", name: "Tech Bro", description: "Stereotypical SV founder delusion", fullPrompt: Prompts.siliconValleyTechBro),
+        // custom
+        PromptPreset(id: "remove-later", name: "Remove Later", description: "remove later", fullPrompt: Prompts.chatPrompt)
     ]
     
     let availableTTSInstructions: [PromptPreset] = [
