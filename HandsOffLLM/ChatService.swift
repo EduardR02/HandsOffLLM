@@ -308,10 +308,10 @@ class ChatService: ObservableObject {
         req.addValue(key, forHTTPHeaderField: "x-api-key")
         req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
-        // Prepare messages payload (no separate system message in history)
-        var messagesPayload = currentConversation?.messages.map { message in
-            ["role": message.role == "user" ? "user" : "assistant",
-             "content": message.content]
+        // Corrected: Transforming [ChatMessage] to [[String: Any]]
+        var messagesPayload: [[String: Any]] = currentConversation?.messages.map { message in
+            // Explicitly cast to [String: Any] to be able to add cache_control
+            return ["role": message.role, "content": message.content] as [String : Any]
         } ?? []
         // Tag last message for ephemeral caching
         if !messagesPayload.isEmpty {
