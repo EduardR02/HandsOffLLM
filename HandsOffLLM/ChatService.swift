@@ -310,13 +310,18 @@ class ChatService: ObservableObject {
 
         // Corrected: Transforming [ChatMessage] to [[String: Any]]
         var messagesPayload: [[String: Any]] = currentConversation?.messages.map { message in
-            // Explicitly cast to [String: Any] to be able to add cache_control
-            return ["role": message.role, "content": message.content] as [String : Any]
+            // Create content as array with a single dictionary inside
+            return ["role": message.role, "content": [["type": "text", "text": message.content]]] as [String: Any]
         } ?? []
+        
         // Tag last message for ephemeral caching
         if !messagesPayload.isEmpty {
             var last = messagesPayload.removeLast()
-            last["cache_control"] = ["type": "ephemeral"]
+            // Get the content array and add cache_control to its first item
+            if var contentArray = last["content"] as? [[String: Any]] {
+                contentArray[0]["cache_control"] = ["type": "ephemeral"]
+                last["content"] = contentArray
+            }
             messagesPayload.append(last)
         }
 
