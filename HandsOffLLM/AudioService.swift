@@ -370,7 +370,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     /// Called by ViewModel on each LLM chunk
     func processTTSChunk(textChunk: String, isLastChunk: Bool) {
-        logger.debug("Received TTS chunk (\(textChunk.count) chars). IsLast: \(isLastChunk)")
+        logger.debug("Received text chunk (\(textChunk.count) chars). IsLast: \(isLastChunk)")
         // Enqueue text
         textBuffer.append(textChunk)
         if isLastChunk { llmDone = true }

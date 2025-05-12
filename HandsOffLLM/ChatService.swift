@@ -328,6 +328,15 @@ class ChatService: ObservableObject {
         if let sys = systemPrompt, !sys.isEmpty {
             payload["system"] = sys
         }
+
+        // Add web-search tool if enabled and model is compatible
+        let webSearchCompatibleModelSubstrings = ["claude-3-7-sonnet", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]
+        if settingsService.webSearchEnabled, webSearchCompatibleModelSubstrings.contains(where: { modelId.contains($0) }) {
+            payload["tools"] = [
+                ["type": "web_search_20250305", "name": "web_search", "max_uses": 3]
+            ]
+        }
+
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         return req
     }
