@@ -25,7 +25,7 @@ fileprivate let quickPromptOptions: [QuickPromptOption] = [
     QuickPromptOption(id: "voice-game-master",               title: "Play Game",         icon: "dice",                          systemPromptId: "voice-game-master",            ttsInstructionId: "film-trailer-voice"),
     QuickPromptOption(id: "financial-advisor",               title: "Money Advice",      icon: "dollarsign",                    systemPromptId: "financial-advisor",            ttsInstructionId: "spaceship-ai"),
     QuickPromptOption(id: "health-fitness-trainer",          title: "Fitness Coach",     icon: "figure.core.training",          systemPromptId: "health-fitness-trainer",       ttsInstructionId: "spaceship-ai"),
-    QuickPromptOption(id: "incoherent-drunk",                title: "Drunk Chat",        icon: "wineglass",                     systemPromptId: "incoherent-drunk",             ttsInstructionId: "rick-sanchez"),
+    QuickPromptOption(id: "incoherent-drunk",                title: "3AM Drunk",         icon: "wineglass",                     systemPromptId: "incoherent-drunk",             ttsInstructionId: "rick-sanchez"),
     QuickPromptOption(id: "edgy-gamer",                      title: "Edgy Gamer",        icon: "dot.scope",                     systemPromptId: "edgy-gamer",                   ttsInstructionId: "cyberpunk-street-kid"),
     QuickPromptOption(id: "conspiracy-theorist",             title: "Conspiracy",        icon: "antenna.radiowaves.left.and.right", systemPromptId: "conspiracy-theorist",      ttsInstructionId: "cosmic-horror-narrator"),
     QuickPromptOption(id: "life-coach-maniac",               title: "Crazy Coach",       icon: "figure.mind.and.body",          systemPromptId: "life-coach-maniac",            ttsInstructionId: "morning-hype"),

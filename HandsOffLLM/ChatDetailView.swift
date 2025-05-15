@@ -116,7 +116,7 @@ struct ChatDetailView: View {
                 }
             }
             .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.role == "user" ? .trailing : .leading) // Limit width
-            
+            .textSelection(.enabled)
             
             if message.role != "user" { Spacer() } // Align assistant messages left
         }
