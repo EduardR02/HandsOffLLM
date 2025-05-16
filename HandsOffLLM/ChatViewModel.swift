@@ -114,7 +114,8 @@ class ChatViewModel: ObservableObject {
         // --- Initial State Transition: idle -> listening ---
         // Start listening shortly after initialization
         Task { @MainActor in
-            if self.state == .idle {
+            if self.state == .idle,
+               settingsService.settings.hasCompletedInitialSetup {  // guard to not listen on first app startup when setup screen is showing
                 self.startListening()
             }
         }

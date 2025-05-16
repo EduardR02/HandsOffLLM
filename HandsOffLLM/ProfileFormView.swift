@@ -19,8 +19,9 @@ struct ProfileFormView: View {
     @State private var selectedLocaleId: String = "en-US"
     @State private var displayName: String = ""
     @State private var profileDescription: String = ""
-    @State private var isEditing: Bool = false
     @State private var profileEnabled: Bool = true
+    @FocusState private var nameFocused: Bool
+    @FocusState private var bioFocused: Bool
     
     private var locales: [Locale] {
         Array(SFSpeechRecognizer.supportedLocales())
@@ -78,6 +79,7 @@ struct ProfileFormView: View {
                             subtitle: "How should I address you?",
                             content: {
                                 TextField("", text: $displayName)
+                                    .focused($nameFocused)
                                     .placeholder("Alex", when: displayName.isEmpty)
                                     .font(.system(size: 17, weight: .medium))
                                     .foregroundColor(Theme.primaryText)
@@ -100,7 +102,6 @@ struct ProfileFormView: View {
                                             let name = Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
                                             Button(name) {
                                                 selectedLocaleId = locale.identifier
-                                                isEditing = false
                                             }
                                         }
                                     } label: {
@@ -143,27 +144,26 @@ struct ProfileFormView: View {
                             title: "About You",
                             subtitle: "Share anything that helps me assist you better",
                             content: {
-                                ZStack(alignment: .topLeading) {
-                                    TextEditor(text: $profileDescription)
-                                        .font(.system(size: 17))
-                                        .foregroundColor(Theme.primaryText)
-                                        .frame(minHeight: 100)
-                                        .scrollContentBackground(.hidden)
-                                        .background(Theme.menuAccent)
-                                        .cornerRadius(12)
-                                        .padding(.top, isEditing ? 8 : 0)
-                                    
-                                    if profileDescription.isEmpty && !isEditing {
-                                        Text("I enjoy cooking and hiking on weekends. I'm interested in science and tech news. I prefer responses in German.")
-                                            .font(.system(size: 17))
-                                            .foregroundColor(Theme.secondaryText.opacity(0.6))
-                                            .padding(.horizontal, 20)
-                                            .padding(.vertical, 16)
-                                    }
-                                }
-                                .onTapGesture {
-                                    isEditing = true
-                                }
+                                TextEditor(text: $profileDescription)
+                                    .font(.system(size: 17))
+                                    .foregroundColor(Theme.primaryText)
+                                    .focused($bioFocused)
+                                    .frame(minHeight: 120)
+                                    .scrollContentBackground(.hidden)
+                                    .padding(16)
+                                    .background(Theme.menuAccent)
+                                    .cornerRadius(12)
+                                    .overlay(
+                                        Group {
+                                            if profileDescription.isEmpty && !bioFocused {
+                                                Text("I enjoy cooking and hiking on weekends. I'm interested in science and tech news. I prefer responses in German.")
+                                                    .foregroundColor(Theme.secondaryText.opacity(0.6))
+                                                    .padding(16)
+                                                    .allowsHitTesting(false)
+                                            }
+                                        },
+                                        alignment: .topLeading
+                                    )
                             }
                         )
                         
@@ -176,6 +176,11 @@ struct ProfileFormView: View {
                 // Bottom Action Buttons
                 bottomActionBar
             }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            nameFocused = false
+            bioFocused = false
         }
         // Hide navigation bar completely in initial setup
         .navigationBarHidden(isInitial)
@@ -198,10 +203,6 @@ struct ProfileFormView: View {
             displayName = settingsService.settings.userDisplayName ?? ""
             profileDescription = settingsService.settings.userProfileDescription ?? ""
             profileEnabled = settingsService.settings.userProfileEnabled
-        }
-        .onTapGesture {
-            isEditing = false
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         }
     }
     
