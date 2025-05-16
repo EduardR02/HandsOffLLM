@@ -91,9 +91,9 @@ class ChatService: ObservableObject {
         do {
             // --- Get ACTIVE settings ---
             guard let activeModelId = settingsService.activeModelId(for: provider) else {
-                throw LlmError.apiKeyMissing(provider: "\(provider.rawValue) model selection") // Reuse error or create new one
+                throw LlmError.apiKeyMissing(provider: "\(provider.rawValue) model selection")
             }
-            let activeSystemPrompt = settingsService.activeSystemPrompt
+            let activeSystemPrompt = settingsService.activeSystemPromptWithUserProfile
             let activeTemperature = settingsService.activeTemperature
             let activeMaxTokens = settingsService.activeMaxTokens
             // --- End Get ACTIVE settings ---

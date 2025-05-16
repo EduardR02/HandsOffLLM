@@ -210,6 +210,42 @@ class SettingsService: ObservableObject { // Make ObservableObject
     static let maxTempGemini: Float = 2.0
     static let maxTokensGemini: Int = 8192
     
+    // MARK: - Personalization getters
+    var speechRecognitionLocale: Locale {
+        Locale(identifier: settings.speechRecognitionLanguage ?? "en-US")
+    }
+
+    var userProfilePrompt: String {
+        var lines: [String] = []
+        if let name = settings.userDisplayName, !name.isEmpty {
+            lines.append("The user prefers to be addressed as \"\(name)\".")
+        }
+        if let localeId = settings.speechRecognitionLanguage,
+           let languageName = Locale.current.localizedString(forIdentifier: localeId) {
+            lines.append("Speech recognition language: \(languageName) (\(localeId)).")
+        }
+        if let desc = settings.userProfileDescription, !desc.isEmpty {
+            lines.append("Additional information: \(desc)")
+        }
+        return lines.joined(separator: " ")
+    }
+
+    var activeSystemPromptWithUserProfile: String? {
+        let base = activeSystemPrompt ?? ""
+        guard settings.userProfileEnabled else {
+            // When disabled, just return the base system prompt without profile info
+            return base
+        }
+        let profile = userProfilePrompt
+        guard !profile.isEmpty else { return base }
+        let instruction = """
+        Below are some details about the user you are assisting. Use this information to adapt your responses to their preferences and context, but do not reference these details explicitly in your replies.
+
+        \(profile)
+        """
+        return "\(base)\n\n\(instruction)"
+    }
+
     // MARK: - Persistence
     func loadSettings() {
         guard let url = persistenceURL else {
@@ -330,14 +366,36 @@ class SettingsService: ObservableObject { // Make ObservableObject
         sessionTTSInstructionOverride = nil
     }
 
+    /// Atomically update all profile fields and persist once.
+    /// If `completedInitialSetup` is true, we flip that flag, but never clear it.
+    func updateUserProfile(
+        language: String,
+        displayName: String,
+        description: String,
+        enabled: Bool,
+        completedInitialSetup: Bool
+    ) {
+        settings.speechRecognitionLanguage = language
+        settings.userDisplayName = displayName
+        settings.userProfileDescription = description
+        settings.userProfileEnabled = enabled
+        if completedInitialSetup {
+            settings.hasCompletedInitialSetup = true
+        }
+        saveSettings()
+    }
+
     init() {
         loadSettings()
+        // Force initial setup screen to show for debugging
+        // settings.hasCompletedInitialSetup = false
         validateKeysAndPrompts()
         logger.info("SettingsService initialized.")
         
         setDefaultModelsIfNeeded()
         setDefaultPromptsIfNeeded()
         setDefaultUISettingsIfNeeded()
+        setDefaultUserProfileSettingsIfNeeded()
     }
     
     // --- Default Selections ---
@@ -393,5 +451,13 @@ class SettingsService: ObservableObject { // Make ObservableObject
         if changed {
             saveSettings()
         }
+    }
+
+    private func setDefaultUserProfileSettingsIfNeeded() {
+        var changed = false
+        if settings.speechRecognitionLanguage == nil {
+            settings.speechRecognitionLanguage = "en-US"; changed = true
+        }
+        if changed { saveSettings() }
     }
 }

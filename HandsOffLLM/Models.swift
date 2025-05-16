@@ -65,6 +65,13 @@ struct SettingsData: Codable {
     var selectedDefaultPlaybackSpeed: Float?
     var webSearchEnabled: Bool? = false
     var energySaverEnabled: Bool? = false
+
+    // Personalization Settings
+    var speechRecognitionLanguage: String?
+    var userDisplayName: String?
+    var userProfileDescription: String?
+    var userProfileEnabled: Bool = true
+    var hasCompletedInitialSetup: Bool = false
     
     // Default values can be set here or when initializing SettingsService
     init() {

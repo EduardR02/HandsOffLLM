@@ -53,7 +53,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     @Published private(set) var isFetchingTTS: Bool = false
     
     // --- Audio Components ---
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
+    private var speechRecognizer: SFSpeechRecognizer!
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
@@ -123,6 +123,7 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         self.settingsService = settingsService
         self.historyService = historyService
         super.init()
+        speechRecognizer = SFSpeechRecognizer(locale: settingsService.speechRecognitionLocale)
         speechRecognizer.delegate = self
         requestPermissions()
         applyAudioSessionSettings()
@@ -859,6 +860,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         ttsFetchTask = nil
         isFetchingTTS = false
         logger.info("TTS fetch task cancelled.")
+    }
+
+    /// Change recognizer locale at runtime
+    func updateSpeechRecognizerLocale(_ localeId: String) {
+        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: localeId))
+        speechRecognizer.delegate = self
     }
 }
 

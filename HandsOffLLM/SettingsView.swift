@@ -21,6 +21,31 @@ struct SettingsView: View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
             Form {
+                // MARK: - User Profile
+                Section {
+                    NavigationLink {
+                        ProfileFormView(isInitial: false)
+                    } label: {
+                        HStack {
+                            Text("User Profile")
+                                .foregroundColor(Theme.primaryText)
+                            Spacer()
+                            if !settingsService.settings.userProfileEnabled {
+                                Text("Disabled")
+                                    .foregroundColor(Theme.secondaryText)
+                            } else if let name = settingsService.settings.userDisplayName, !name.isEmpty {
+                                Text("Hello, \(name)")
+                                    .foregroundColor(Theme.secondaryAccent)
+                            } else {
+                                Text("Set up…")
+                                    .foregroundColor(Theme.secondaryText)
+                            }
+                        }
+                    }
+                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                }
+                .listRowBackground(Theme.menuAccent)
+
                 // MARK: - App Defaults
                 Section("App Defaults") {
                     Picker("LLM Provider", selection: Binding(

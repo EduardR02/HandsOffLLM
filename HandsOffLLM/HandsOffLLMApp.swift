@@ -49,7 +49,15 @@ struct HandsOffLLMApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                ContentView(viewModel: viewModel)
+                if settingsService.settings.hasCompletedInitialSetup {
+                    ContentView(viewModel: viewModel)
+                } else {
+                    ProfileFormView(isInitial: true)
+                        .onAppear {
+                            // Make sure we stop listening when setup view appears
+                            audioService.stopListeningCleanup()
+                        }
+                }
             }
             .environmentObject(settingsService)
             .environmentObject(historyService)
@@ -68,7 +76,9 @@ struct HandsOffLLMApp: App {
                 UIApplication.shared.isIdleTimerDisabled = true
                 logger.info("App became active: reconfiguring audio.")
                 audioService.applyAudioSessionSettings()
-                audioService.startListening()
+                if settingsService.settings.hasCompletedInitialSetup {
+                    audioService.startListening()   // restart listening if not in initial setup screen
+                }
             default:
                 break
             }
