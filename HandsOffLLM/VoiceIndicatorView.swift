@@ -73,8 +73,8 @@ struct VoiceIndicatorView: View {
     private func updateColors(for state: ViewModelState) {
         switch state {
         case .listening:
-            mainColors   = [Color.blue, Color.purple, Color.cyan, Color.blue]
-            strokeColors = [Color.cyan, Color.purple, Color.blue, Color.cyan]
+            mainColors   = [Color.blue, Color(red: 11/255, green: 219/255, blue: 182/255), Color.cyan, Color.blue]
+            strokeColors = [Color.cyan, Color(red: 8/255, green: 164/255, blue: 167/255), Color.blue, Color.cyan]
         case .speakingTTS:
             mainColors   = [Color.pink, Color.purple, Color.pink]
             strokeColors = [Color.purple, Color.pink, Color.purple]

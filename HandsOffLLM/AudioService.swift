@@ -513,19 +513,17 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
         let potentialChunk = textBuffer.prefix(maxChunkLength)
         var splitIdx = potentialChunk.count // Default: use all possible
 
-        if !llmDone {
-            let lookaheadMargin = min(75, potentialChunk.count)
-            let searchStart = potentialChunk.index(potentialChunk.endIndex, offsetBy: -lookaheadMargin)
-            let searchRange = searchStart..<potentialChunk.endIndex
+        let lookaheadMargin = min(100, potentialChunk.count)
+        let searchStart = potentialChunk.index(potentialChunk.endIndex, offsetBy: -lookaheadMargin)
+        let searchRange = searchStart..<potentialChunk.endIndex
 
-            if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange)?.upperBound {
-                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSentenceEnd)
-            } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange)?.upperBound {
-                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastComma)
-            } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange)?.upperBound {
-                if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
-                    splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
-                }
+        if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange)?.upperBound {
+            splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSentenceEnd)
+        } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange)?.upperBound {
+            splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastComma)
+        } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange)?.upperBound {
+            if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
+                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
             }
         }
 
