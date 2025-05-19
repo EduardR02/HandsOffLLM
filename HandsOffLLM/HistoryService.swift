@@ -175,7 +175,7 @@ class HistoryService: ObservableObject {
             
             if let firstUserMessage = updatedConversation.messages.first(where: { $0.role == "user" }) {
                 let words = firstUserMessage.content.split(separator: " ").prefix(5)
-                updatedConversation.title = "\(words.joined(separator: " "))..."
+                updatedConversation.title = "\(words.joined(separator: " "))"
             } else {
                 updatedConversation.title = "Chat from \(dateString)"
             }

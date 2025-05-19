@@ -79,15 +79,13 @@ class ChatService: ObservableObject {
     // MARK: - LLM Fetching Logic
     private func fetchLLMResponse(provider: LLMProvider) async {
         var llmError: Error? = nil
-        let providerString = provider.rawValue
-        
+
         guard currentConversation != nil else {
             logger.error("Cannot fetch LLM response without an active conversation.")
-            llmError = LlmError.streamingError("No active conversation.")
-            handleLLMCompletion(error: llmError)
+            handleLLMCompletion(error: LlmError.streamingError("No active conversation."))
             return
         }
-        
+
         do {
             // --- Get ACTIVE settings ---
             guard let activeModelId = settingsService.activeModelId(for: provider) else {
@@ -97,107 +95,63 @@ class ChatService: ObservableObject {
             let activeTemperature = settingsService.activeTemperature
             let activeMaxTokens = settingsService.activeMaxTokens
             // --- End Get ACTIVE settings ---
-            
-            // 1. Build request and unified stream
+
             let request = try buildRequest(for: provider,
                                            modelId: activeModelId,
                                            systemPrompt: activeSystemPrompt,
                                            temperature: activeTemperature,
                                            maxTokens: activeMaxTokens)
             let stream = try await makeStream(for: provider, request: request)
-            
-            var firstChunkReceived = false
-            // 2. Process the stream
+
+            // 1) insert one placeholder
+            let placeholder = ChatMessage(id: UUID(), role: "assistant_partial", content: "")
+            appendMessageAndUpdateHistory(placeholder)
+
+            // 2) pull off the stream until end or cancellation
             for try await chunk in stream {
-                try Task.checkCancellation() // Check if cancellation was requested
-                
-                if !firstChunkReceived {
-                    logger.info("🤖 Received first LLM chunk (\(providerString)).")
-                    firstChunkReceived = true
-                    // Add assistant_partial message placeholder immediately
-                    let partialMsg = ChatMessage(id: UUID(), role: "assistant_partial", content: "")
-                    if currentConversation?.messages.last?.role != "assistant_partial" && currentConversation?.messages.last?.role != "assistant_error" {
-                        appendMessageAndUpdateHistory(partialMsg)
-                    }
-                }
-                
-                currentFullResponse.append(chunk) // Accumulate full response
-                
-                if var lastMessage = currentConversation?.messages.last, lastMessage.role == "assistant_partial" {
-                    lastMessage.content = currentFullResponse
-                    currentConversation?.messages[currentConversation!.messages.count - 1] = lastMessage
-                }
-                
-                llmChunkSubject.send(chunk)     // Send chunk for immediate TTS processing
+                try Task.checkCancellation()      // throws CancellationError on cancelProcessing()
+                currentFullResponse.append(chunk)
+                llmChunkSubject.send(chunk)
             }
-            // 3. Stream finished successfully
-            logger.info("🤖 LLM stream completed successfully (\(providerString)).")
-            
-        } catch let error {
-            if error is CancellationError {
-                logger.notice("⏹️ LLM Task Cancelled.")
-            } else {
-                logger.error("🚨 LLM Error (\(providerString)): \(error.localizedDescription)")
+
+        } catch {
+            llmError = error
+            if !(error is CancellationError) {
+                logger.error("🚨 LLM Error (\(provider.rawValue)): \(error.localizedDescription)")
                 llmErrorSubject.send(error)
             }
-            llmError = error
         }
-        
-        // 4. Cleanup and Final State Update
-        handleLLMCompletion(error: llmError)
+
+        // If the Task itself was cancelled, force a CancellationError
+        isLLMStreamComplete = true
+        let errorToHandle: Error? = Task.isCancelled ? CancellationError() : llmError
+        handleLLMCompletion(error: errorToHandle)
     }
     
     private func handleLLMCompletion(error: Error?) {
         isProcessingLLM = false
-        
-        // Log final response if successful or partially successful
-        if !currentFullResponse.isEmpty {
-            logger.info("🤖 LLM full response processed (\(self.currentFullResponse.count) chars). Error: \(error?.localizedDescription ?? "None")")
-            logger.info("------ LLM FINAL RESPONSE ------\n\(self.currentFullResponse)\n----------------------")
-        } else if error == nil {
-            logger.info("🤖 LLM response was empty.")
-        } else if !(error is CancellationError) {
-            logger.error("🚨 LLM fetch failed completely. Error: \(error!.localizedDescription)")
+
+        // Find & update the one assistant_partial placeholder
+        guard var conversation = currentConversation,
+              let idx = conversation.messages.lastIndex(where: { $0.role == "assistant_partial" })
+        else { return }
+
+        var msg = conversation.messages[idx]
+        if let err = error {
+            msg.role = (err is CancellationError) ? "assistant_partial" : "assistant_error"
+        } else {
+            msg.role = "assistant"
         }
-        
-        // Update the final assistant message in the history
-        if !currentFullResponse.isEmpty {
-            let messageRole = error == nil ? "assistant" : (error is CancellationError ? "assistant_partial" : "assistant_error")
-            
-            if var conversation = currentConversation,
-               let lastMsgIndex = conversation.messages.lastIndex(where: { $0.role == "assistant_partial" }) {
-                
-                // Update the message directly in the currentConversation
-                conversation.messages[lastMsgIndex].role = messageRole
-                conversation.messages[lastMsgIndex].content = currentFullResponse
-                
-                // Generate title if needed
-                let updatedConv = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
-                currentConversation = updatedConv // Update local state
-                
-                logger.info("Updated final message in history. Role: \(messageRole). Awaiting final audio path for save.")
-                
-            } else {
-                logger.warning("Could not find partial message to update.")
-                let finalMessage = ChatMessage(id: UUID(), role: messageRole, content: currentFullResponse)
-                appendMessageAndUpdateHistory(finalMessage) // This already saves
-            }
-            
-        } else if error == nil {
-            // Handle empty response case if necessary
-            logger.info("🤖 LLM response was empty.")
-            // We might still need to save if title generation happened on an earlier message?
-            // If the conversation only had a user message and got an empty LLM response,
-            // title generation wouldn't run, and no save would occur. Let's ensure a save.
-            if let conversationToSave = currentConversation {
-                logger.info("Saving conversation state after empty LLM response.")
-                historyService?.addOrUpdateConversation(conversationToSave)
-            }
+        msg.content = currentFullResponse
+        conversation.messages[idx] = msg
+        currentConversation = conversation
+
+        historyService?.addOrUpdateConversation(conversation)
+
+        // Only fire the complete event when there was no error
+        if error == nil {
+            llmCompleteSubject.send()
         }
-        // Error cases don't need a special save here, the state before error is likely saved.
-        
-        isLLMStreamComplete = true
-        llmCompleteSubject.send()
     }
     
     // MARK: - Unified SSE & Decoding Helpers
@@ -267,11 +221,12 @@ class ChatService: ObservableObject {
         req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Prepare input messages with input_text/output_text content
-        let input = currentConversation?.messages.map { msg -> [String: Any] in
+        // Prepare only valid messages (drop assistant_partial, assistant_error, etc.)
+        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+        let input = sanitized.map { msg -> [String: Any] in
             let type = (msg.role == "assistant") ? "output_text" : "input_text"
             return ["role": msg.role, "content": [["type": type, "text": msg.content]]]
-        } ?? []
+        }
 
         var body: [String: Any] = [
             "model": modelId,
@@ -308,11 +263,11 @@ class ChatService: ObservableObject {
         req.addValue(key, forHTTPHeaderField: "x-api-key")
         req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
-        // Corrected: Transforming [ChatMessage] to [[String: Any]]
-        var messagesPayload: [[String: Any]] = currentConversation?.messages.map { message in
-            // Create content as array with a single dictionary inside
-            return ["role": message.role, "content": [["type": "text", "text": message.content]]] as [String: Any]
-        } ?? []
+        // Only include valid roles
+        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+        var messagesPayload: [[String: Any]] = sanitized.map { message in
+            ["role": message.role, "content": [["type": "text", "text": message.content]]]
+        }
         
         // Tag last message for ephemeral caching
         if !messagesPayload.isEmpty {
@@ -367,13 +322,14 @@ class ChatService: ObservableObject {
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Prepare contents array (only messages)
-        let contents = currentConversation?.messages.map { message in
+        // Only include valid roles
+        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+        let contents = sanitized.map { message in
             [
                 "role": message.role == "user" ? "user" : "model",
                 "parts": [["text": message.content]]
             ]
-        } ?? []
+        }
 
         // Build generationConfig, disabling thinking for flash model
         var generationConfig: [String: Any] = [

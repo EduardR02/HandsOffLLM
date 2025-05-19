@@ -76,6 +76,10 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     private let baseMinChunkLength: Int = 60
     private let ttsChunkGrowthFactor: Double = 2.25
     private var prevTTSChunkSize: Int? = nil
+
+    // Add a per-TTS-fetch session ID
+    private var ttsSessionId: UUID = UUID()
+
     private var listeningSessionId: UUID?  // ignore stale callbacks
     
     func setTTSContext(conversationID: UUID, messageID: UUID) {
@@ -448,24 +452,35 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
             return
         }
 
+        // Capture the current session
+        let session = ttsSessionId
         isFetchingTTS = true
+
         ttsFetchTask = Task { [weak self] in
             guard let self = self else { return }
+            // Bail out immediately if session was invalidated
+            guard self.ttsSessionId == session else { return }
+
             defer {
                 Task { @MainActor in
                     self.isFetchingTTS = false
+                    // Only drive the scheduler if we're still in this session
+                    guard self.ttsSessionId == session else { return }
                     self.scheduleNext()
                 }
             }
+
             do {
                 if let data = try await fetchOpenAITTSAudio(
                     apiKey: apiKey,
                     text: text,
                     instruction: self.settingsService.activeTTSInstruction
                 ) {
-                    // enqueue for playback
-                    logger.info("Enqueued TTS chunk for playback \(self.currentTTSChunkIndex).")
-                    self.audioQueue.append(data)
+                    // only queue if session is still valid, still save though
+                    if self.ttsSessionId == session {
+                        logger.info("Enqueued TTS chunk for playback \(self.currentTTSChunkIndex).")
+                        self.audioQueue.append(data)
+                    }
                     // Batch disk writes off the main actor to reduce UI I/O
                     let chunkIndex = self.currentTTSChunkIndex
                     self.currentTTSChunkIndex += 1
@@ -844,12 +859,12 @@ class AudioService: NSObject, ObservableObject, SFSpeechRecognizerDelegate, AVAu
     
     /// Completely tears down speech-to-text, TTS fetch & playback.
     func teardown() {
+        // Invalidate any in-flight TTS fetches
+        ttsSessionId = UUID()
         // 1) stop listening
         if isListening { stopListeningCleanup() }
-        // 2) cancel any TTS fetch
-        cancelTTSFetch()
-        // 3) stop playback
-        if isSpeaking { stopSpeaking() }
+        // 2) stop playback and fetch
+        stopSpeaking()  // if not speaking still clears existing buffers
     }
 
     func cancelTTSFetch() {
