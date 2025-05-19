@@ -100,7 +100,7 @@ struct VoiceIndicatorView: View {
             let minAmplitude    = defaultMinAmplitude
             var targetAmp       = max(norm, minAmplitude)
             switch state {
-                case .processingLLM, .fetchingTTS: targetAmp = 0.5
+                case .processingLLM, .fetchingTTS: targetAmp = 0.4
                 case .idle, .error:                 targetAmp = minAmplitude
                 default:                           targetAmp = minAmplitude + (1 - minAmplitude) * norm
             }
