@@ -39,45 +39,57 @@ class HistoryService: ObservableObject {
         if let audioURL = audioFolderURL {
             try? FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
         }
-        loadIndex()
-
-        // NEW: once-a-day purge of audio files older than 7 days
-        scheduleDailyAudioCleanup()
+        Task {
+            await loadIndex()
+            await scheduleDailyAudioCleanup()
+        }
     }
     
     // MARK: - Index Persistence
-    private func loadIndex() {
-        guard let url = indexFileURL, FileManager.default.fileExists(atPath: url.path) else {
-            // No index file: rebuild from conversation JSON files
-            rebuildIndexFromFiles()
+    private func loadIndex() async {
+        guard let url = indexFileURL else {
+            logger.warning("Index file URL is nil, rebuilding.")
+            await rebuildIndexFromFiles()
             return
         }
+
+        let fileExists = await Task.detached { FileManager.default.fileExists(atPath: url.path) }.value
+
+        if !fileExists {
+            logger.info("Index file not found, rebuilding.")
+            await rebuildIndexFromFiles()
+            return
+        }
+        
         do {
-            let data = try Data(contentsOf: url)
+            let data = try await Task.detached { try Data(contentsOf: url) }.value
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             indexEntries = try decoder.decode([ConversationIndexEntry].self, from: data)
         } catch {
-            logger.error("Failed to load index: \(error.localizedDescription)")
-            // On error, also attempt rebuild
-            rebuildIndexFromFiles()
+            logger.error("Failed to load index: \(error.localizedDescription), rebuilding.")
+            await rebuildIndexFromFiles()
         }
     }
     
-    private func saveIndex() {
+    private func saveIndex() async {
         guard let url = indexFileURL else {
-            logger.error("Could not get index file URL.")
+            logger.error("Could not get index file URL for saving.")
             return
         }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(indexEntries)
-            try data.write(to: url, options: [.atomicWrite])
-        } catch {
-            logger.error("Failed to save index: \(error.localizedDescription)")
-        }
+        let entriesToSave = self.indexEntries
+        let capturedLogger = self.logger
+        await Task.detached {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(entriesToSave)
+                try data.write(to: url, options: [.atomicWrite])
+            } catch {
+                capturedLogger.error("Failed to save index in background: \(error.localizedDescription)")
+            }
+        }.value
     }
     
     // MARK: - Full Conversation Storage
@@ -85,44 +97,29 @@ class HistoryService: ObservableObject {
         convFolderURL?.appendingPathComponent("\(id.uuidString).json")
     }
     
-    private func loadFullConversation(id: UUID) -> Conversation? {
-        guard let url = conversationFileURL(for: id),
-              FileManager.default.fileExists(atPath: url.path) else {
-            return nil
-        }
-        do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(Conversation.self, from: data)
-        } catch {
-            logger.error("Failed to load conversation \(id): \(error.localizedDescription)")
-            return nil
-        }
-    }
-    
-    private func saveConversationFile(_ conversation: Conversation) {
+    private func saveConversationFile(_ conversation: Conversation) async {
         guard let url = conversationFileURL(for: conversation.id) else {
             logger.error("Could not get file URL for conversation \(conversation.id)")
             return
         }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(conversation)
-            try data.write(to: url, options: [.atomicWrite])
-            logger.info("Saved conversation file for \(conversation.id)")
-        } catch {
-            logger.error("Failed to save conversation \(conversation.id): \(error.localizedDescription)")
-        }
+        let capturedLogger = self.logger
+        await Task.detached {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(conversation)
+                try data.write(to: url, options: [.atomicWrite])
+            } catch {
+                capturedLogger.error("Failed to save conversation \(conversation.id) in background: \(error.localizedDescription)")
+            }
+        }.value
     }
     
     // MARK: - Conversation Management
     
-    func addOrUpdateConversation(_ conversation: Conversation) {
-        // Persist full conversation to file and update indexEntries
-        saveConversationFile(conversation)
+    func addOrUpdateConversation(_ conversation: Conversation) async {
+        await saveConversationFile(conversation)
         let entry = ConversationIndexEntry(id: conversation.id,
                                            title: conversation.title,
                                            createdAt: conversation.createdAt)
@@ -130,25 +127,33 @@ class HistoryService: ObservableObject {
             indexEntries[idx] = entry
         } else {
             indexEntries.insert(entry, at: 0)
+            indexEntries.sort { $0.createdAt > $1.createdAt } // Maintain sort order
         }
-        saveIndex()
+        await saveIndex()
     }
     
-    private func removeConversationAssets(id: UUID) {
+    private func removeConversationAssets(id: UUID) async {
+        let capturedLogger = self.logger
         if let fileURL = conversationFileURL(for: id) {
-            try? FileManager.default.removeItem(at: fileURL)
+            await Task.detached {
+                do { try FileManager.default.removeItem(at: fileURL) }
+                catch { capturedLogger.warning("Failed to remove conversation file \(id): \(error.localizedDescription)")}
+            }.value
         }
         if let audioDir = audioFolderURL?.appendingPathComponent(id.uuidString) {
-            try? FileManager.default.removeItem(at: audioDir)
+            await Task.detached {
+                do { try FileManager.default.removeItem(at: audioDir) }
+                catch { capturedLogger.warning("Failed to remove audio directory for conversation \(id): \(error.localizedDescription)")}
+            }.value
         }
         if let idx = indexEntries.firstIndex(where: { $0.id == id }) {
             indexEntries.remove(at: idx)
         }
     }
     
-    func deleteConversation(id: UUID) {
-        removeConversationAssets(id: id)
-        saveIndex()
+    func deleteConversation(id: UUID) async {
+        await removeConversationAssets(id: id)
+        await saveIndex()
         logger.info("Deleted conversation with id \(id).")
     }
     
@@ -156,11 +161,19 @@ class HistoryService: ObservableObject {
         // If set for preview, return from memory
         if let conv = previewStore[id] { return conv }
         guard let url = conversationFileURL(for: id) else { return nil }
+
+        let capturedLogger = self.logger
         return await Task.detached {
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try? decoder.decode(Conversation.self, from: data)
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            do {
+                let data = try Data(contentsOf: url)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                return try decoder.decode(Conversation.self, from: data)
+            } catch {
+                capturedLogger.error("Background error loading conversation detail \(id): \(error.localizedDescription)")
+                return nil
+            }
         }.value
     }
     
@@ -229,19 +242,26 @@ class HistoryService: ObservableObject {
         return result
     }
     
-    func saveAudioData(conversationID: UUID, messageID: UUID, data: Data, ext: String, chunkIndex: Int) throws -> String {
+    func saveAudioData(conversationID: UUID, messageID: UUID, data: Data, ext: String, chunkIndex: Int) async throws -> String {
         guard let docs = documentsURL else {
             throw NSError(domain: "HistoryService", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Documents directory not found"]) }
         let audioDir = docs.appendingPathComponent("Audio").appendingPathComponent(conversationID.uuidString)
-        try FileManager.default.createDirectory(at: audioDir,
-                                                withIntermediateDirectories: true)
         let filename = "\(messageID.uuidString)-\(chunkIndex).\(ext)"
         let fileURL = audioDir.appendingPathComponent(filename)
-        try data.write(to: fileURL, options: .atomicWrite)
-        let relPath = "Audio/\(conversationID.uuidString)/\(filename)"
         
-        return relPath // Just return the path
+        let capturedLogger = self.logger
+        try await Task.detached {
+            do {
+                try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true, attributes: nil)
+                try data.write(to: fileURL, options: .atomicWrite)
+            } catch {
+                capturedLogger.error("Failed to save audio data for msg \(messageID) chunk \(chunkIndex) in background: \(error.localizedDescription)")
+                throw error // Rethrow to be caught by the caller
+            }
+        }.value
+        
+        return "Audio/\(conversationID.uuidString)/\(filename)"
     }
     
     /// SwiftUI preview factory: sets indexEntries and in-memory conversations
@@ -256,73 +276,74 @@ class HistoryService: ObservableObject {
     }
     
     /// Rebuilds the index by scanning stored conversation files.
-    private func rebuildIndexFromFiles() {
-        guard let folder = convFolderURL else {
-            indexEntries = []
-            return
-        }
-        do {
-            let files = try FileManager.default.contentsOfDirectory(at: folder,
-                                                                   includingPropertiesForKeys: nil,
-                                                                   options: .skipsHiddenFiles)
-                .filter { $0.pathExtension == "json" }
-            
-            var rebuiltEntries: [ConversationIndexEntry] = []
+    private func rebuildIndexFromFiles() async {
+        guard let folder = convFolderURL else { indexEntries = []; return }
+
+        let entries: [ConversationIndexEntry] = await Task.detached {
+            let fileURLs = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: .skipsHiddenFiles))?
+                              .filter { $0.pathExtension == "json" } ?? []
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            
-            for fileURL in files {
-                if let data = try? Data(contentsOf: fileURL),
-                   let entry = try? decoder.decode(ConversationIndexEntry.self, from: data) {
-                    rebuiltEntries.append(entry)
-                } else {
-                    logger.warning("Could not decode ConversationIndexEntry from file: \(fileURL.lastPathComponent)")
+            return fileURLs.compactMap { url in
+                (try? Data(contentsOf: url)).flatMap { data in
+                    try? decoder.decode(ConversationIndexEntry.self, from: data)
                 }
             }
-            
-            indexEntries = rebuiltEntries.sorted { $0.createdAt > $1.createdAt }
-            saveIndex()
-            logger.info("Rebuilt index from \(self.indexEntries.count) files.")
-        } catch {
-            logger.error("Failed to rebuild index: \(error.localizedDescription)")
-            indexEntries = []
-        }
+        }.value
+
+        indexEntries = entries.sorted { $0.createdAt > $1.createdAt }
+        logger.info("Rebuilt index from \(self.indexEntries.count) conversation files.")
+        await saveIndex()
     }
 
     // → only run deletion once per calendar day
-    private func scheduleDailyAudioCleanup() {
+    private func scheduleDailyAudioCleanup() async {
         let key = "HistoryService.lastAudioCleanupDate"
         let defaults = UserDefaults.standard
-        if let last = defaults.object(forKey: key) as? Date,
-           Calendar.current.isDateInToday(last) {
-            return
+        if let lastCleanupDate = defaults.object(forKey: key) as? Date,
+           Calendar.current.isDateInToday(lastCleanupDate) {
+            return 
         }
-        cleanupOldAudioFiles(olderThan: 7)
+        await cleanupOldAudioFiles(olderThan: 7)
         defaults.set(Date(), forKey: key)
     }
 
     // → walk the Audio folder and delete files > days old
-    private func cleanupOldAudioFiles(olderThan days: Int) {
-        logger.info("Cleaning up old audio files older than \(days) days")
-        guard let root = audioFolderURL else { return }
-        let cutoff = Date().addingTimeInterval(-TimeInterval(days * 24 * 3600))
-        let fm = FileManager.default
+    private func cleanupOldAudioFiles(olderThan days: Int) async {
+        logger.info("Starting cleanup of audio files older than \(days) days.")
+        guard let audioRootURL = audioFolderURL else {
+            logger.warning("Audio folder URL is nil. Cannot perform cleanup.")
+            return
+        }
+        let cutoffDate = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+        
+        let capturedLogger = self.logger
+        await Task.detached {
+            let fm = FileManager.default
+            guard let conversationAudioDirs = try? fm.contentsOfDirectory(
+                at: audioRootURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .creationDateKey], // Include creationDateKey for directories
+                options: .skipsHiddenFiles
+            ) else {
+                capturedLogger.warning("Could not list conversation audio directories for cleanup.")
+                return
+            }
 
-        // List only the per-conversation subdirectories
-        if let subdirs = try? fm.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: [.creationDateKey],
-                options: [.skipsHiddenFiles]
-           ) {
-            for dirURL in subdirs {
-                // If the folder itself is older than the cutoff, delete the entire dir
-                if let created = try? dirURL.resourceValues(
-                                   forKeys: [.creationDateKey]
-                               ).creationDate,
-                   created < cutoff {
-                    try? fm.removeItem(at: dirURL)
+            for dirURL in conversationAudioDirs {
+                guard (try? dirURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+                
+                do {
+                    // Check the creation date of the directory itself
+                    let directoryAttributes = try dirURL.resourceValues(forKeys: [.creationDateKey])
+                    if let creationDate = directoryAttributes.creationDate, creationDate < cutoffDate {
+                        try fm.removeItem(at: dirURL)
+                        // capturedLogger.info("Cleaned up old audio directory: \(dirURL.lastPathComponent)")
+                    }
+                } catch {
+                    capturedLogger.warning("Error processing or deleting audio directory \(dirURL.lastPathComponent): \(error)")
                 }
             }
-        }
+        }.value
+        logger.info("Audio cleanup task completed.")
     }
 }

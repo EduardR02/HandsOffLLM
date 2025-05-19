@@ -146,7 +146,9 @@ class ChatService: ObservableObject {
         conversation.messages[idx] = msg
         currentConversation = conversation
 
-        historyService?.addOrUpdateConversation(conversation)
+        Task { // Ensure historyService call is within a Task for await
+            await historyService?.addOrUpdateConversation(conversation)
+        }
 
         // Only fire the complete event when there was no error
         if error == nil {
@@ -478,8 +480,10 @@ class ChatService: ObservableObject {
         
         // Persist intermediate state (e.g., user messages, partial assistant messages)
         if let conversationToSave = currentConversation {
-            logger.debug("Saving intermediate conversation state in appendMessageAndUpdateHistory for message role \(message.role)")
-            historyService?.addOrUpdateConversation(conversationToSave)
+            // logger.debug("Saving intermediate conversation state in appendMessageAndUpdateHistory for message role \(message.role)")
+            Task {
+                await historyService?.addOrUpdateConversation(conversationToSave)
+            }
         }
     }
     
@@ -507,9 +511,11 @@ class ChatService: ObservableObject {
         // --- NEW: Trigger final save ---
         // Check if LLM is done AND this path is for the *last* message
         if isLLMStreamComplete, let lastMessage = currentConversation!.messages.last, lastMessage.id == messageID {
-            logger.info("✅ Final audio path received for completed LLM stream. Triggering final save.")
+            // logger.info("✅ Final audio path received for completed LLM stream. Triggering final save.")
             if let conversationToSave = currentConversation {
-                historyService?.addOrUpdateConversation(conversationToSave)
+                Task {
+                    await historyService?.addOrUpdateConversation(conversationToSave)
+                }
             }
         }
     }

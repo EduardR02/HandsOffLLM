@@ -19,17 +19,19 @@ struct HistoryView: View {
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var viewModel: ChatViewModel
 
-    @State private var groupedConversations: [(String, [ConversationIndexEntry])] = []
+    private var groupedConversations: [(String, [ConversationIndexEntry])] {
+        historyService.groupIndexByDate()
+    }
 
     var body: some View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
 
             List {
-                ForEach(groupedConversations, id: \.0) { section, entries in
-                    Section(header: Text(section)
+                ForEach(groupedConversations, id: \.0) { sectionName, entriesInSection in
+                    Section(header: Text(sectionName)
                                 .foregroundColor(Theme.secondaryText)) {
-                        ForEach(entries) { entry in
+                        ForEach(entriesInSection) { entry in
                             NavigationLink(
                                 // important, this is so that the view is not created until the link is tapped, no cpu spike on load!
                                 destination: LazyView(
@@ -52,7 +54,7 @@ struct HistoryView: View {
                             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                         }
                         .onDelete { offsets in
-                            deleteConversations(in: section, at: offsets)
+                            deleteConversations(inSectionNamed: sectionName, at: offsets)
                         }
                     }
                 }
@@ -61,19 +63,17 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .listStyle(.insetGrouped)
-        .onAppear {
-            groupedConversations = historyService.groupIndexByDate()
-        }
     }
 
-    private func deleteConversations(in section: String, at offsets: IndexSet) {
-        guard let entries = groupedConversations.first(where: { $0.0 == section })?.1 else { return }
-        let ids = offsets.map { entries[$0].id }
-        for id in ids {
-            historyService.deleteConversation(id: id)
+    private func deleteConversations(inSectionNamed sectionName: String, at offsets: IndexSet) {
+        guard let entriesInSection = groupedConversations.first(where: { $0.0 == sectionName })?.1 else { return }
+        let idsToDelete = offsets.map { entriesInSection[$0].id }
+        
+        Task {
+            for id in idsToDelete {
+                await historyService.deleteConversation(id: id)
+            }
         }
-        // Refresh the grouped list after deletion
-        groupedConversations = historyService.groupIndexByDate()
     }
 }
 
