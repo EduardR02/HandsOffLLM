@@ -80,11 +80,37 @@ struct ChatDetailView: View {
             if message.role == "user" { Spacer() } // Align user messages right
             
             VStack(alignment: message.role == "user" ? .trailing : .leading) {
-                Text(message.content)
-                    .padding(10)
-                    .background(messageBackgroundColor(role: message.role))
-                    .foregroundColor(messageForegroundColor(role: message.role))
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                if message.content.isEmpty && message.role.starts(with: "assistant") {
+                    Text("No response received")
+                        .italic()
+                        .foregroundColor(Theme.secondaryText)
+                        .padding(10)
+                        .background(messageBackgroundColor(role: message.role))
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                } else {
+                    Text(message.content)
+                        .padding(10)
+                        .background(messageBackgroundColor(role: message.role))
+                        .foregroundColor(messageForegroundColor(role: message.role))
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                        .overlay(
+                            message.role == "assistant_partial" ? 
+                                ZStack(alignment: .bottom) {
+                                    RoundedRectangle(cornerRadius: 20)
+                                        .stroke(Theme.secondaryText.opacity(0.4), lineWidth: 1)
+                                    
+                                    Text("interrupted")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.secondaryText)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule().fill(Theme.background.opacity(0.8))
+                                        )
+                                        .offset(y: 10)
+                                } : nil
+                        )
+                }
                 
                 // Add buttons below assistant messages     
                 if message.role.starts(with: "assistant") { // Covers assistant, assistant_partial, assistant_error
@@ -96,7 +122,7 @@ struct ChatDetailView: View {
                             let isMissing = missingAudioMessageId == message.id
                             Image(systemName: "waveform")
                                 .foregroundColor(isMissing ? Theme.errorText : Theme.primaryText)
-                                .symbolEffect(.wiggle.left.byLayer, options: isMissing ? .repeat(.periodic(delay: 10)): .repeat(.continuous), isActive: isMissing || isPlaying)  // periodic with delay is hack so we can just play it once
+                                .symbolEffect(.wiggle.left.byLayer, options: isMissing ? .repeat(.periodic(delay: 10)): .repeat(.continuous), isActive: isMissing || isPlaying)
                                 .animation(.easeInOut(duration: 0.2), value: isMissing)
                         }
                         .buttonStyle(.borderless)
@@ -109,13 +135,13 @@ struct ChatDetailView: View {
                         }
                         .buttonStyle(.borderless)
                         .tint(Theme.primaryText)
-                        .font(.body) // Increased font size
+                        .font(.body)
                     }
                     .padding(.top, 2)
                     .padding(.leading, 10)
                 }
             }
-            .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.role == "user" ? .trailing : .leading) // Limit width
+            .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.role == "user" ? .trailing : .leading)
             .textSelection(.enabled)
             
             if message.role != "user" { Spacer() } // Align assistant messages left
@@ -138,6 +164,7 @@ struct ChatDetailView: View {
     private func messageBackgroundColor(role: String) -> Color {
         switch role {
         case "user": return Theme.menuAccent
+        case "assistant_partial": return Theme.background.opacity(0.6)
         default: return Color.clear // Assistant messages will have no distinct background
         }
     }
@@ -145,7 +172,8 @@ struct ChatDetailView: View {
         switch role {
         case "user": return Theme.primaryText
         case "assistant": return Theme.primaryText
-        case "assistant_partial", "assistant_error": return Theme.errorText
+        case "assistant_partial": return Theme.secondaryText
+        case "assistant_error": return Theme.errorText
         default: return Theme.primaryText
         }
     }
