@@ -114,6 +114,19 @@ struct ClaudeEvent: Decodable {
     let delta: Delta?
 }
 
+struct XAIResponseEvent: Decodable {
+    struct ChoiceDelta: Decodable {
+        let content: String?
+        let reasoning_content: String?
+    }
+
+    struct Choice: Decodable {
+        let delta: ChoiceDelta?
+    }
+
+    let choices: [Choice]?
+}
+
 // MARK: - Error Enum
 enum LlmError: Error, LocalizedError {
     case apiKeyMissing(provider: String)
@@ -144,5 +157,6 @@ enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case gemini = "Gemini"
     case claude = "Claude"
     case openai = "OpenAI"
+    case xai = "xAI"
     var id: String { self.rawValue }
 }

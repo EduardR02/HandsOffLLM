@@ -190,7 +190,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading) {
                             Text("Web Search (Experimental)")
                                 .foregroundColor(Theme.primaryText)
-                            Text("Only GPT-4.1 models")
+                            Text("GPT-4.1 and Grok 4 models")
                                 .font(.caption)
                                 .foregroundColor(Theme.secondaryText)
                         }

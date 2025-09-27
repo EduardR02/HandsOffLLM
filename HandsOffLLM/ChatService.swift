@@ -207,6 +207,8 @@ class ChatService: ObservableObject {
             return try makeClaudeRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
         case .openai:
             return try makeOpenAIRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
+        case .xai:
+            return try makeXAIRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
         }
     }
 
@@ -248,6 +250,54 @@ class ChatService: ObservableObject {
             body["instructions"] = sys
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
+
+    /// Construct xAI /v1/chat/completions request
+    private func makeXAIRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
+        guard let key = settingsService.xaiAPIKey, !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "xAI")
+        }
+        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
+            throw LlmError.invalidURL
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+
+        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+        var messagesPayload: [[String: Any]] = []
+
+        if let sys = systemPrompt, !sys.isEmpty {
+            messagesPayload.append([
+                "role": "system",
+                "content": [["type": "text", "text": sys]]
+            ])
+        }
+
+        for message in sanitized {
+            messagesPayload.append([
+                "role": message.role,
+                "content": [["type": "text", "text": message.content]]
+            ])
+        }
+
+        var requestBody: [String: Any] = [
+            "model": modelId,
+            "messages": messagesPayload,
+            "temperature": min(temperature, SettingsService.maxTempXAI),
+            "max_tokens": min(maxTokens, SettingsService.maxTokensXAI),
+            "stream": true,
+            "stream_options": ["include_usage": true]
+        ]
+
+        if settingsService.webSearchEnabled, modelId.contains("grok-4") {
+            requestBody["search_parameters"] = ["mode": "auto"]
+        }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         return req
     }
 
@@ -396,11 +446,25 @@ class ChatService: ObservableObject {
         return event.delta
     }
 
+    /// Decode a raw SSE chunk from xAI into text
+    private func decodeXAIChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let event = try? JSONDecoder().decode(XAIResponseEvent.self, from: data)
+        else { return nil }
+
+        guard let choices = event.choices, let delta = choices.first?.delta else {
+            return nil
+        }
+
+        return delta.content
+    }
+
     /// Map each provider to its SSE decoder
     private lazy var sseDecoders: [LLMProvider: (String) -> String?] = [
         .gemini: decodeGeminiChunk,
         .claude: decodeClaudeChunk,
-        .openai: decodeOpenAIChunk
+        .openai: decodeOpenAIChunk,
+        .xai: decodeXAIChunk
     ]
     
     // MARK: - Conversation Management

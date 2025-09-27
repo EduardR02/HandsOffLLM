@@ -12,4 +12,5 @@ struct APIKeys {
     static let anthropic: String? = "YOUR_ANTHROPIC_API_KEY"
     static let gemini: String? = "YOUR_GEMINI_API_KEY"
     static let openai: String? = "YOUR_OPENAI_API_KEY"
+    static let xai: String? = "YOUR_XAI_API_KEY"
 }

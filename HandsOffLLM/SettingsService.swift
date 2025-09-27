@@ -18,10 +18,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
     let availableModels: [ModelInfo] = [
         // Claude
         ModelInfo(id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", description: "Highly capable, creative, and fast", provider: .claude),
-        ModelInfo(id: "claude-opus-4-20250514", name: "Claude Opus 4", description: "Most powerful, smartest, most creative model", provider: .claude),
+        ModelInfo(id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1", description: "Most powerful, smartest, most creative model", provider: .claude),
         // ModelInfo(id: "claude-3-7-sonnet-latest", name: "Claude 3.7 Sonnet", description: "Smartest, most capable", provider: .claude),
         // ModelInfo(id: "claude-3-5-sonnet-latest", name: "Claude 3.5 New Sonnet", description: "Smartest, most emotinally intelligent", provider: .claude),
-        ModelInfo(id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku", description: "Fast, good for simple responses", provider: .claude),
+        // ModelInfo(id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku", description: "Fast, good for simple responses", provider: .claude),
         // Gemini
         ModelInfo(id: "gemini-2.5-flash-preview-04-17", name: "Gemini 2.5 Flash", description: "Fast, very capable", provider: .gemini),
         ModelInfo(id: "gemini-2.5-pro-exp-03-25", name: "Gemini 2.5 Pro", description: "Highly intelligent, thinks before responding", provider: .gemini),
@@ -31,6 +31,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         ModelInfo(id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Fast, everyday tasks", provider: .openai),
         ModelInfo(id: "o4-mini", name: "o4 mini", description: "Thinks before responding, most capable", provider: .openai),
         ModelInfo(id: "chatgpt-4o-latest", name: "ChatGPT 4o", description: "Default model in ChatGPT", provider: .openai),
+        // xAI
+        ModelInfo(id: "grok-4", name: "Grok 4", description: "Frontier level intelligence", provider: .xai),
+        ModelInfo(id: "grok-4-fast", name: "Grok 4 Fast", description: "Ultra-fast responses with strong intelligence", provider: .xai),
+        ModelInfo(id: "grok-4-fast-non-reasoning", name: "Grok 4 Fast (No Reasoning)", description: "Instant responses", provider: .xai),
     ]
     
     let availableSystemPrompts: [PromptPreset] = [
@@ -92,6 +96,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     var anthropicAPIKey: String? { APIKeys.anthropic }
     var geminiAPIKey: String? { APIKeys.gemini }
     var openaiAPIKey: String? { APIKeys.openai }
+    var xaiAPIKey: String? { APIKeys.xai }
     
     // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
     let openAITTSModel = "gpt-4o-mini-tts"
@@ -107,7 +112,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     }
 
     let openAITTSFormat = "aac"     // Other options: opus, flac, pcm, mp3
-    let maxTTSChunkLength = 1000    // 1000 chars ≈ 1 minute of audio
+    let maxTTSChunkLength = 2000    // 2000 chars ≈ 2 minutes of audio
     
     // --- Advanced Defaults ---
     static let defaultAdvancedTemperature: Float = 1.0
@@ -208,9 +213,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
     static let maxTempOpenAI: Float = 2.0
     static let maxTokensOpenAI: Int = 16384
     static let maxTempAnthropic: Float = 1.0
-    static let maxTokensAnthropic: Int = 8192
+    static let maxTokensAnthropic: Int = 32000
     static let maxTempGemini: Float = 2.0
     static let maxTokensGemini: Int = 8192
+    static let maxTempXAI: Float = 2.0
+    static let maxTokensXAI: Int = 131072
     
     // MARK: - Personalization getters
     var speechRecognitionLocale: Locale {
@@ -298,6 +305,9 @@ class SettingsService: ObservableObject { // Make ObservableObject
         }
         if openaiAPIKey == nil || openaiAPIKey!.isEmpty || openaiAPIKey == "YOUR_OPENAI_API_KEY" {
             logger.warning("OpenAI API Key (for TTS) is not set in APIKeys.swift.")
+        }
+        if xaiAPIKey == nil || xaiAPIKey!.isEmpty || xaiAPIKey == "YOUR_XAI_API_KEY" {
+            logger.warning("xAI API Key is not set in APIKeys.swift.")
         }
         
         // Validation for active prompt can be simplified or removed if defaults handle it
