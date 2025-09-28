@@ -241,7 +241,7 @@ class ChatService: ObservableObject {
         ]
         // Include web search if enabled and supported model
         if settingsService.webSearchEnabled,
-           ["gpt-4.1", "gpt-4.1-mini"].contains(where: modelId.contains) {
+           ["gpt-4.1", "gpt-4.1-mini", "gpt-5"].contains(where: modelId.contains) {
             body["tools"] = [["type": "web_search_preview"]]
         }
 
@@ -249,6 +249,12 @@ class ChatService: ObservableObject {
         if let sys = systemPrompt, !sys.isEmpty {
             body["instructions"] = sys
         }
+
+        if modelId.contains("gpt-5"),
+           let effort = settingsService.openAIReasoningEffortOpt {
+            body["reasoning"] = ["effort": effort.rawValue]
+        }
+
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return req
     }
@@ -288,7 +294,7 @@ class ChatService: ObservableObject {
             "model": modelId,
             "messages": messagesPayload,
             "temperature": min(temperature, SettingsService.maxTempXAI),
-            "max_tokens": min(maxTokens, SettingsService.maxTokensXAI),
+            "max_completion_tokens": min(maxTokens, SettingsService.maxTokensXAI),
             "stream": true,
             "stream_options": ["include_usage": true]
         ]

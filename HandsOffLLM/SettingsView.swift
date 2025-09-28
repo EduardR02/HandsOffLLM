@@ -117,7 +117,29 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
-                
+
+                Section("OpenAI Reasoning") {
+                    Picker(selection: Binding(
+                        get: { settingsService.openAIReasoningEffort },
+                        set: { settingsService.updateOpenAIReasoningEffort($0) }
+                    )) {
+                        ForEach(OpenAIReasoningEffort.allCases, id: \.self) { effort in
+                            Text(effort.displayName).tag(effort)
+                                .foregroundColor(Theme.primaryText)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Reasoning Effort")
+                                .foregroundColor(Theme.primaryText)
+                            Text("Choose how long GPT-5 thinks before replying.")
+                                .font(.caption)
+                                .foregroundColor(Theme.secondaryText)
+                        }
+                    }
+                    .tint(Theme.secondaryAccent)
+                }
+                .listRowBackground(Theme.menuAccent)
+
                 // MARK: - Prompt Presets
                 Section("Customize Chat Experience") {
                     NavigationLink {

@@ -45,6 +45,7 @@ struct PromptPreset: Identifiable, Codable, Hashable {
 struct SettingsData: Codable {
     // Model Selections: Store the ID of the selected model for each provider
     var selectedModelIdPerProvider: [LLMProvider: String] = [:]
+    var openAIReasoningEffort: OpenAIReasoningEffort?
     
     // Preset Selections: Store the ID of the selected preset
     var selectedSystemPromptPresetId: String?
@@ -125,6 +126,22 @@ struct XAIResponseEvent: Decodable {
     }
 
     let choices: [Choice]?
+}
+
+enum OpenAIReasoningEffort: String, CaseIterable, Codable, Equatable {
+    case minimal
+    case low
+    case medium
+    case high
+
+    var displayName: String {
+        switch self {
+        case .minimal: return "Minimal"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
+    }
 }
 
 // MARK: - Error Enum

@@ -27,6 +27,8 @@ class SettingsService: ObservableObject { // Make ObservableObject
         ModelInfo(id: "gemini-2.5-pro-exp-03-25", name: "Gemini 2.5 Pro", description: "Highly intelligent, thinks before responding", provider: .gemini),
         ModelInfo(id: "gemini-2.0-flash", name: "Gemini 2 Flash", description: "Very fast, everyday tasks", provider: .gemini),
         // OpenAI models
+        ModelInfo(id: "gpt-5", name: "GPT-5", description: "Newest OpenAI flagship", provider: .openai),
+        ModelInfo(id: "gpt-5-mini", name: "GPT-5 Mini", description: "Fast GPT-5 family model", provider: .openai),
         ModelInfo(id: "gpt-4.1", name: "GPT-4.1", description: "Smart and versatile", provider: .openai),
         ModelInfo(id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Fast, everyday tasks", provider: .openai),
         ModelInfo(id: "o4-mini", name: "o4 mini", description: "Thinks before responding, most capable", provider: .openai),
@@ -204,6 +206,14 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.webSearchEnabled ?? false
     }
     
+    var openAIReasoningEffort: OpenAIReasoningEffort {
+        settings.openAIReasoningEffort ?? .medium
+    }
+
+    var openAIReasoningEffortOpt: OpenAIReasoningEffort? {
+        settings.openAIReasoningEffort
+    }
+
     // Energy Saver Mode
     var energySaverEnabled: Bool {
         settings.energySaverEnabled ?? false
@@ -325,6 +335,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.selectedModelIdPerProvider[provider] = modelId
         saveSettings()
         // Could potentially trigger other actions if needed
+    }
+
+    func updateOpenAIReasoningEffort(_ effort: OpenAIReasoningEffort) {
+        settings.openAIReasoningEffort = effort
+        saveSettings()
     }
     
     func updateSelectedSystemPrompt(presetId: String?) {
@@ -458,6 +473,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
             let defaultSpeed: Float = 2.0
             settings.selectedDefaultPlaybackSpeed = defaultSpeed
             logger.info("Setting default playback speed: \(defaultSpeed)x")
+            changed = true
+        }
+        if settings.openAIReasoningEffort == nil {
+            settings.openAIReasoningEffort = .medium
+            logger.info("Setting default OpenAI reasoning effort: medium")
             changed = true
         }
         if changed {
