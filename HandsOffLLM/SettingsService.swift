@@ -17,6 +17,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // --- Available Options (Hardcoded Placeholders) ---
     let availableModels: [ModelInfo] = [
         // Claude
+        ModelInfo(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", description: "Incredibly smart, creative, and capable model", provider: .claude),
         ModelInfo(id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", description: "Highly capable, creative, and fast", provider: .claude),
         ModelInfo(id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1", description: "Most powerful, smartest, most creative model", provider: .claude),
         // ModelInfo(id: "claude-3-7-sonnet-latest", name: "Claude 3.7 Sonnet", description: "Smartest, most capable", provider: .claude),

@@ -473,6 +473,97 @@ class ChatService: ObservableObject {
         .xai: decodeXAIChunk
     ]
     
+    // MARK: - Chat Title Generation
+    
+    private struct TitleGenerationConfig {
+        static let model = "grok-4-fast-non-reasoning"
+        static let temperature: Float = 0.5
+        static let maxTokens = 50
+        static let systemPrompt = """
+            You generate concise titles for chat conversations. The title will be displayed in a list to help users identify and find their chats later.
+            
+            Your task: Create a short, descriptive title (2-6 words) that captures the main topic or intent of the user's message.
+            
+            CRITICAL RULES:
+            - Output ONLY the title text
+            - Do NOT answer the user's question
+            - Do NOT add quotes, punctuation, or explanations
+            - Do NOT prefix with "Title:" or similar
+            
+            Examples:
+            User: "How do I reset my iPhone?" → iPhone Reset Guide
+            User: "What's the weather like in Tokyo?" → Tokyo Weather Inquiry
+            User: "Can you help me write a resume?" → Resume Writing Help
+            """
+    }
+    
+    private func makeNonStreamingXAIRequest(modelId: String, systemPrompt: String, userMessage: String, temperature: Float, maxTokens: Int) async throws -> String {
+        guard let key = settingsService.xaiAPIKey, !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "xAI")
+        }
+        
+        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
+            throw LlmError.invalidURL
+        }
+        
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        
+        let messagesPayload: [[String: Any]] = [
+            ["role": "system", "content": [["type": "text", "text": systemPrompt]]],
+            ["role": "user", "content": [["type": "text", "text": userMessage]]]
+        ]
+        
+        let requestBody: [String: Any] = [
+            "model": modelId,
+            "messages": messagesPayload,
+            "temperature": temperature,
+            "max_completion_tokens": maxTokens,
+            "stream": false
+        ]
+        
+        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        
+        let (data, response) = try await urlSession.data(for: req)
+        
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+            throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1, body: errorBody)
+        }
+        
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw LlmError.responseDecodingError(NSError(domain: "ChatService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to parse xAI response"]))
+        }
+        
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func generateChatTitle(for userMessage: String) async -> String {
+        do {
+            return try await makeNonStreamingXAIRequest(
+                modelId: TitleGenerationConfig.model,
+                systemPrompt: TitleGenerationConfig.systemPrompt,
+                userMessage: userMessage,
+                temperature: TitleGenerationConfig.temperature,
+                maxTokens: TitleGenerationConfig.maxTokens
+            )
+        } catch {
+            logger.warning("LLM title generation failed: \(error.localizedDescription). Using fallback.")
+            return generateFallbackTitle(for: userMessage)
+        }
+    }
+    
+    private func generateFallbackTitle(for userMessage: String) -> String {
+        let words = userMessage.split(separator: " ").prefix(5)
+        return words.joined(separator: " ")
+    }
+    
     // MARK: - Conversation Management
     func resetConversationContext(
         messagesToLoad: [ChatMessage]? = nil,
@@ -538,14 +629,19 @@ class ChatService: ObservableObject {
         // Append directly to the @Published property's messages
         currentConversation?.messages.append(message)
         
-        // Generate title if needed (operates on the @Published property)
-        if var conversation = currentConversation, conversation.title == nil && conversation.messages.count > 1 {
-            let updatedConv = historyService?.generateTitleIfNeeded(for: conversation) ?? conversation
-            if updatedConv.title != conversation.title {
-                currentConversation = updatedConv // Update @Published if title changed
+        // Generate LLM-based title after first user message (async, non-blocking)
+        if let conversation = currentConversation,
+           conversation.title == nil,
+           message.role == "user",
+           conversation.messages.count == 1 {
+            Task { [weak self] in
+                guard let self = self else { return }
+                let generatedTitle = await self.generateChatTitle(for: message.content)
+                self.currentConversation?.title = generatedTitle
+                if let updatedConv = self.currentConversation {
+                    await self.historyService?.addOrUpdateConversation(updatedConv)
+                }
             }
-            // Use updated for persistence check below
-            conversation = updatedConv
         }
         
         // Persist intermediate state (e.g., user messages, partial assistant messages)
