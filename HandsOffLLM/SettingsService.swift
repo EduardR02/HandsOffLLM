@@ -100,6 +100,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     var geminiAPIKey: String? { APIKeys.gemini }
     var openaiAPIKey: String? { APIKeys.openai }
     var xaiAPIKey: String? { APIKeys.xai }
+    var mistralAPIKey: String? { APIKeys.mistral }
     
     // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
     let openAITTSModel = "gpt-4o-mini-tts"
@@ -215,9 +216,17 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.openAIReasoningEffort
     }
 
+    var claudeReasoningEnabled: Bool {
+        settings.claudeReasoningEnabled ?? false
+    }
+
     // Energy Saver Mode
     var energySaverEnabled: Bool {
         settings.energySaverEnabled ?? false
+    }
+    
+    var vadSilenceThreshold: Double {
+        settings.vadSilenceThreshold ?? 1.5
     }
     
     // Max/min caps from API definitions
@@ -231,18 +240,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
     static let maxTokensXAI: Int = 131072
     
     // MARK: - Personalization getters
-    var speechRecognitionLocale: Locale {
-        Locale(identifier: settings.speechRecognitionLanguage ?? "en-US")
-    }
-
     var userProfilePrompt: String {
         var lines: [String] = []
         if let name = settings.userDisplayName, !name.isEmpty {
             lines.append("The user prefers to be addressed as \"\(name)\".")
-        }
-        if let localeId = settings.speechRecognitionLanguage,
-           let languageName = Locale.current.localizedString(forIdentifier: localeId) {
-            lines.append("Speech recognition language: \(languageName) (\(localeId)).")
         }
         if let desc = settings.userProfileDescription, !desc.isEmpty {
             lines.append("Additional information: \(desc)")
@@ -320,8 +321,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         if xaiAPIKey == nil || xaiAPIKey!.isEmpty || xaiAPIKey == "YOUR_XAI_API_KEY" {
             logger.warning("xAI API Key is not set in APIKeys.swift.")
         }
+        if mistralAPIKey == nil || mistralAPIKey!.isEmpty || mistralAPIKey == "YOUR_MISTRAL_API_KEY" {
+            logger.warning("Mistral API Key is not set in APIKeys.swift.")
+        }
         
-        // Validation for active prompt can be simplified or removed if defaults handle it
         if activeSystemPrompt == nil || activeSystemPrompt!.isEmpty {
             logger.warning("Active system prompt is currently empty.")
         }
@@ -340,6 +343,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     func updateOpenAIReasoningEffort(_ effort: OpenAIReasoningEffort) {
         settings.openAIReasoningEffort = effort
+        saveSettings()
+    }
+    
+    func updateClaudeReasoningEnabled(_ enabled: Bool) {
+        settings.claudeReasoningEnabled = enabled
         saveSettings()
     }
     
@@ -381,6 +389,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
     func updateEnergySaverEnabled(_ enabled: Bool) {
         updateAdvancedSetting(keyPath: \.energySaverEnabled, value: enabled)
     }
+    
+    func updateVADSilenceThreshold(_ threshold: Double) {
+        updateAdvancedSetting(keyPath: \.vadSilenceThreshold, value: threshold)
+    }
 
     /// Apply a temporary session-only override of system prompt and TTS instruction
     func setSessionOverride(systemPrompt: String?, ttsInstruction: String?) {
@@ -397,13 +409,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
     /// Atomically update all profile fields and persist once.
     /// If `completedInitialSetup` is true, we flip that flag, but never clear it.
     func updateUserProfile(
-        language: String,
         displayName: String,
         description: String,
         enabled: Bool,
         completedInitialSetup: Bool
     ) {
-        settings.speechRecognitionLanguage = language
         settings.userDisplayName = displayName
         settings.userProfileDescription = description
         settings.userProfileEnabled = enabled
@@ -420,14 +430,16 @@ class SettingsService: ObservableObject { // Make ObservableObject
         validateKeysAndPrompts()
         logger.info("SettingsService initialized.")
         
-        setDefaultModelsIfNeeded()
-        setDefaultPromptsIfNeeded()
-        setDefaultUISettingsIfNeeded()
-        setDefaultUserProfileSettingsIfNeeded()
+        let modelsChanged = setDefaultModelsIfNeeded()
+        let promptsChanged = setDefaultPromptsIfNeeded()
+        let uiChanged = setDefaultUISettingsIfNeeded()
+        if modelsChanged || promptsChanged || uiChanged {
+            saveSettings()
+        }
     }
     
     // --- Default Selections ---
-    private func setDefaultModelsIfNeeded() {
+    private func setDefaultModelsIfNeeded() -> Bool {
         var changed = false
         for provider in LLMProvider.allCases {
             if settings.selectedModelIdPerProvider[provider] == nil {
@@ -439,12 +451,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
                 }
             }
         }
-        if changed {
-            saveSettings()
-        }
+        return changed
     }
     
-    private func setDefaultPromptsIfNeeded() {
+    private func setDefaultPromptsIfNeeded() -> Bool {
         var changed = false
         if settings.selectedSystemPromptPresetId == nil {
             settings.selectedSystemPromptPresetId = Self.defaultSystemPromptId
@@ -456,12 +466,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
             logger.info("Setting default TTS instruction preset: \(Self.defaultTTSInstructionPromptId)")
             changed = true
         }
-        if changed {
-            saveSettings()
-        }
+        return changed
     }
     
-    private func setDefaultUISettingsIfNeeded() {
+    private func setDefaultUISettingsIfNeeded() -> Bool {
         var changed = false
         if settings.selectedDefaultProvider == nil {
             // Explicitly set Claude as the default if no provider is selected
@@ -481,16 +489,15 @@ class SettingsService: ObservableObject { // Make ObservableObject
             logger.info("Setting default OpenAI reasoning effort: medium")
             changed = true
         }
-        if changed {
-            saveSettings()
+        if settings.claudeReasoningEnabled == nil {
+            settings.claudeReasoningEnabled = false
+            changed = true
         }
-    }
-
-    private func setDefaultUserProfileSettingsIfNeeded() {
-        var changed = false
-        if settings.speechRecognitionLanguage == nil {
-            settings.speechRecognitionLanguage = "en-US"; changed = true
+        if settings.vadSilenceThreshold == nil {
+            settings.vadSilenceThreshold = 1.5
+            logger.info("Setting default VAD silence threshold: \(self.vadSilenceThreshold)")
+            changed = true
         }
-        if changed { saveSettings() }
+        return changed
     }
 }

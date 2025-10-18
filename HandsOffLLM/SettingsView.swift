@@ -15,6 +15,7 @@ struct SettingsView: View {
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
     @State private var showingAdvanced = false // State for DisclosureGroup
     @State private var tempDefaultPlaybackSpeed: Float = 2.0
+    @State private var tempVADSilenceThreshold: Double = 1.0
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
     
     var body: some View {
@@ -118,7 +119,7 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Theme.menuAccent)
 
-                Section("OpenAI Reasoning") {
+                Section("Reasoning") {
                     Picker(selection: Binding(
                         get: { settingsService.openAIReasoningEffort },
                         set: { settingsService.updateOpenAIReasoningEffort($0) }
@@ -129,9 +130,22 @@ struct SettingsView: View {
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Reasoning Effort")
-                                .foregroundColor(Theme.primaryText)
+                            Text("OpenAI Reasoning Effort")
                             Text("Choose how long GPT-5 thinks before replying.")
+                                .font(.caption)
+                                .foregroundColor(Theme.secondaryText)
+                        }
+                    }
+                    .tint(Theme.secondaryAccent)
+                    
+                    Toggle(isOn: Binding(
+                        get: { settingsService.claudeReasoningEnabled },
+                        set: { settingsService.updateClaudeReasoningEnabled($0) }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Claude Reasoning")
+                                .foregroundColor(Theme.primaryText)
+                            Text("Let Claude think before replying.")
                                 .font(.caption)
                                 .foregroundColor(Theme.secondaryText)
                         }
@@ -202,6 +216,48 @@ struct SettingsView: View {
                     .tint(Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+
+                // MARK: - Voice Detection
+                Section("Voice Detection") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Silence Duration")
+                                .foregroundColor(Theme.primaryText)
+                            Spacer()
+                            Text(String(format: "%.1fs", tempVADSilenceThreshold))
+                                .font(.system(.body, design: .monospaced, weight: .regular))
+                                .monospacedDigit()
+                                .foregroundColor(Theme.secondaryAccent)
+                        }
+                        
+                        Slider(
+                            value: $tempVADSilenceThreshold,
+                            in: 0.5...5.0,
+                            step: 0.1,
+                            onEditingChanged: { editing in
+                                if !editing {
+                                    let quant = (tempVADSilenceThreshold * 10).rounded() / 10
+                                    if settingsService.vadSilenceThreshold != quant {
+                                        settingsService.updateVADSilenceThreshold(quant)
+                                    }
+                                    tempVADSilenceThreshold = quant
+                                }
+                            }
+                        )
+                        .tint(Theme.accent)
+                        
+                        Text("How long to wait after you finish speaking before answering")
+                            .font(.caption)
+                            .foregroundColor(Theme.secondaryText)
+                    }
+                    .onAppear {
+                        tempVADSilenceThreshold = settingsService.vadSilenceThreshold
+                    }
+                    .onChange(of: settingsService.vadSilenceThreshold) { _, newValue in
+                        tempVADSilenceThreshold = newValue
+                    }
+                }
+                .listRowBackground(Theme.menuAccent)
                 
                 // MARK: - Experimental Features
                 Section("Experimental Features") {
@@ -230,7 +286,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading) {
                             Text("Energy Saver Mode")
                                  .foregroundColor(Theme.primaryText)
-                            Text("Static circle mode, reduces energy usage by ~35%")
+                            Text("Circle won't move - reduces energy usage by ~95%")
                                 .font(.caption)
                                 .foregroundColor(Theme.secondaryText)
                         }

@@ -46,6 +46,7 @@ struct SettingsData: Codable {
     // Model Selections: Store the ID of the selected model for each provider
     var selectedModelIdPerProvider: [LLMProvider: String] = [:]
     var openAIReasoningEffort: OpenAIReasoningEffort?
+    var claudeReasoningEnabled: Bool? = nil
     
     // Preset Selections: Store the ID of the selected preset
     var selectedSystemPromptPresetId: String?
@@ -68,15 +69,14 @@ struct SettingsData: Codable {
     var energySaverEnabled: Bool? = false
 
     // Personalization Settings
-    var speechRecognitionLanguage: String?
     var userDisplayName: String?
     var userProfileDescription: String?
     var userProfileEnabled: Bool = true
     var hasCompletedInitialSetup: Bool = false
     
-    // Default values can be set here or when initializing SettingsService
+    var vadSilenceThreshold: Double? = 1.0
+    
     init() {
-        // Sensible defaults if needed
     }
 }
 
@@ -87,6 +87,29 @@ struct OpenAITTSRequest: Codable {
     let voice: String
     let response_format: String
     let instructions: String?
+}
+
+// MARK: - Mistral Transcription API Structures
+struct MistralTranscriptionResponse: Codable {
+    let model: String
+    let text: String
+    let language: String?
+    let segments: [MistralTranscriptionSegment]?
+    let usage: MistralTranscriptionUsage?
+}
+
+struct MistralTranscriptionSegment: Codable {
+    let text: String
+    let start: Double
+    let end: Double
+    let type: String
+}
+
+struct MistralTranscriptionUsage: Codable {
+    let prompt_tokens: Int?
+    let completion_tokens: Int?
+    let total_tokens: Int?
+    let prompt_audio_seconds: Double?
 }
 
 // MARK: - API response structures

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB3AE0BA2E91BDBC00137F0D /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = BB3AE0B92E91BDBC00137F0D /* FluidAudio */; };
 		BB53B9942DA6701600DECCF3 /* APIkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9932DA6701600DECCF3 /* APIkeys.swift */; };
 		BB53B9962DA6710300DECCF3 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = BB53B9952DA6710300DECCF3 /* .gitignore */; };
 		BB53B9982DA6759100DECCF3 /* Prompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9972DA6759100DECCF3 /* Prompts.swift */; };
@@ -74,6 +75,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB3AE0BA2E91BDBC00137F0D /* FluidAudio in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -137,6 +139,7 @@
 			);
 			name = HandsOffLLM;
 			packageProductDependencies = (
+				BB3AE0B92E91BDBC00137F0D /* FluidAudio */,
 			);
 			productName = HandsOffLLM;
 			productReference = BB1744592DA5355D00738173 /* HandsOffLLM.app */;
@@ -220,6 +223,9 @@
 			);
 			mainGroup = BB1744502DA5355D00738173;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BB3AE0B82E91BDBC00137F0D /* XCRemoteSwiftPackageReference "FluidAudio" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BB17445A2DA5355D00738173 /* Products */;
 			projectDirPath = "";
@@ -431,7 +437,6 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to connect to and route audio to headphones and speakers.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app needs microphone access to capture your voice for transcription.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app needs access to speech recognition to transcribe your voice commands.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -465,7 +470,6 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to connect to and route audio to headphones and speakers.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app needs microphone access to capture your voice for transcription.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app needs access to speech recognition to transcribe your voice commands.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -592,6 +596,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BB3AE0B82E91BDBC00137F0D /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BB3AE0B92E91BDBC00137F0D /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BB3AE0B82E91BDBC00137F0D /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BB1744512DA5355D00738173 /* Project object */;
 }
