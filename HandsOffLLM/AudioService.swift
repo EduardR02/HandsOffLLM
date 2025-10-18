@@ -2,8 +2,41 @@ import Foundation
 import AVFoundation
 import OSLog
 import Combine
-import UIKit
 import FluidAudio
+
+private struct CaptureBuffers {
+    var capturedSamples: [Float] = []
+    var vadSamples: [Float] = []
+    var speechStartIndex: Int? = nil
+    var speechEndIndex: Int? = nil
+    var captureStartTime: Date? = nil
+
+    mutating func reset(includeSpeechMarks: Bool = true) {
+        capturedSamples.removeAll()
+        vadSamples.removeAll()
+        if includeSpeechMarks {
+            speechStartIndex = nil
+            speechEndIndex = nil
+        }
+        captureStartTime = nil
+    }
+}
+
+private struct TTSState {
+    var textBuffer: String = ""
+    var llmFinished: Bool = false
+    var audioQueue: [Data] = []
+    var nextChunkIndex: Int = 0
+    var previousChunkSize: Int? = nil
+
+    mutating func resetSession() {
+        textBuffer.removeAll(keepingCapacity: true)
+        llmFinished = false
+        audioQueue.removeAll(keepingCapacity: true)
+        nextChunkIndex = 0
+        previousChunkSize = nil
+    }
+}
 
 @MainActor
 class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
@@ -12,6 +45,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     @Published var isListening: Bool = false
     @Published var isSpeaking: Bool = false
+    @Published var isTranscribing: Bool = false
     private var lastMeasuredAudioLevel: Float = -50
     @MainActor
     var rawAudioLevel: Float {
@@ -37,59 +71,45 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     let errorSubject = PassthroughSubject<Error, Never>()
     let ttsChunkSavedSubject = PassthroughSubject<(messageID: UUID, path: String), Never>()
     let ttsPlaybackCompleteSubject = PassthroughSubject<Void, Never>()
+    let voiceEventSubject = PassthroughSubject<VoiceLoopEvent, Never>()
     
-    private var textBuffer: String = ""
-    private var llmDone: Bool = false
-    private var audioQueue: [Data] = []
+    private var ttsState = TTSState()
     private var ttsFetchTask: Task<Void, Never>? = nil
     @Published private(set) var isFetchingTTS: Bool = false
-    
+
     private let audioEngine = AVAudioEngine()
     private var currentAudioPlayer: AVAudioPlayer?
-    
-    private var silenceTimer: DispatchSourceTimer?
     
     private let settingsService: SettingsService
     private let historyService: HistoryService
     private var mistralTranscriptionService: MistralTranscriptionService?
-    
+
     private var currentTTSConversationID: UUID?
     private var currentTTSMessageID: UUID?
-    private var currentTTSChunkIndex: Int = 0
-    
+
     private let baseMinChunkLength: Int = 60
     private let ttsChunkGrowthFactor: Double = 2.25
-    private var prevTTSChunkSize: Int? = nil
 
     private var ttsSessionId: UUID = UUID()
-    
+
     private var replayQueue: [String] = []
-    
+
     private var vadManager: VadManager?
     private var vadStreamState: VadStreamState?
-    private var capturedAudioSamples: [Float] = []
+    private var captureBuffers = CaptureBuffers()
     private var isProcessingTranscription: Bool = false
-    private var vadSampleBuffer: [Float] = []
     static private let vadChunkSize = 4096  // Matches Silero's expected input
+    private let maxCaptureDurationSeconds: Double = 60
+    private let defaultListeningCooldown: TimeInterval = 0.15
+    private var listeningCooldownEndTime: Date?
 
     // For VAD-based trimming
-    private var speechStartIndex: Int? = nil
-    private var speechEndIndex: Int? = nil
-
     private lazy var vadSegmentationConfig: VadSegmentationConfig = {
         var config = VadSegmentationConfig.default  // Start with library defaults
         config.minSilenceDuration = settingsService.vadSilenceThreshold  // Override: user set hysteresis end, default is 1.5s
         config.maxSpeechDuration = .infinity  // Override: Unlimited talks
         return config
     }()
-    
-    func setTTSContext(conversationID: UUID, messageID: UUID) {
-        if currentTTSConversationID != conversationID || currentTTSMessageID != messageID {
-            currentTTSConversationID = conversationID
-            currentTTSMessageID = messageID
-            currentTTSChunkIndex = 0
-        }
-    }
     
     func replayAudioFiles(_ paths: [String]) {
         logger.info("Replaying saved audio files: \(paths)")
@@ -116,6 +136,16 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     private var routeChangeObserver: Any?
     private var isReconfiguringRoute: Bool = false
+    private let externalPreferredOutputs: Set<AVAudioSession.Port> = [
+        .bluetoothHFP,
+        .bluetoothA2DP,
+        .bluetoothLE,
+        .carAudio,
+        .headphones,
+        .headsetMic,
+        .lineOut,
+        .airPlay
+    ]
     
     init(settingsService: SettingsService, historyService: HistoryService) {
         self.settingsService = settingsService
@@ -140,7 +170,9 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             logger.info("VAD initialized successfully with default config")
         } catch {
             logger.error("Failed to initialize VAD: \(error.localizedDescription)")
-            errorSubject.send(AudioError.vadInitializationError(error.localizedDescription))
+            let audioError = AudioError.vadInitializationError(error.localizedDescription)
+            errorSubject.send(audioError)
+            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
         }
     }
 
@@ -152,17 +184,18 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                                     options: [
                                         .allowBluetooth,
                                         .allowBluetoothA2DP,
-                                        .allowAirPlay
+                                        .allowAirPlay,
+                                        .defaultToSpeaker
                                     ])
+            try session.setPreferredSampleRate(16_000)
+            try session.setPreferredInputNumberOfChannels(1)
             try session.setActive(true)
-            let btTypes: [AVAudioSession.Port] = [.bluetoothHFP, .bluetoothA2DP, .bluetoothLE]
-            let hasBT = session.currentRoute.outputs.contains { btTypes.contains($0.portType) }
-            if !hasBT {
-                try session.overrideOutputAudioPort(.speaker)
-            }
+            enforcePreferredOutputRoute(using: session)
         } catch {
             logger.error("Audio session configuration error: \(error.localizedDescription)")
-            errorSubject.send(AudioError.audioSessionError(error.localizedDescription))
+            let audioError = AudioError.audioSessionError(error.localizedDescription)
+            errorSubject.send(audioError)
+            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
         }
         
         if routeChangeObserver == nil {
@@ -195,58 +228,68 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    func startListening() {
+    func startListening(useCooldown: Bool = true) {
         guard !isListening && !isSpeaking else { return }
         
         isListening = true
         isSpeaking = false
-        capturedAudioSamples = []
-        vadSampleBuffer = []
-        speechStartIndex = nil
-        speechEndIndex = nil
+        isTranscribing = false
+        captureBuffers.reset()
         isProcessingTranscription = false
+        listeningCooldownEndTime = useCooldown ? Date().addingTimeInterval(defaultListeningCooldown) : nil
+        if listeningCooldownEndTime == nil {
+            captureBuffers.captureStartTime = Date()
+        }
         
         Task {
             vadStreamState = await vadManager?.makeStreamState()
         }
         
         logger.notice("🎤 Listening started with VAD events…")
+        voiceEventSubject.send(.listeningStarted)
     }
     
-    func stopListeningCleanup() {
+    func stopListeningCleanup(resetTranscribing: Bool = true) {
         let wasListening = isListening
-        capturedAudioSamples.removeAll()
-        vadSampleBuffer.removeAll()
+        captureBuffers.reset(includeSpeechMarks: resetTranscribing)
         vadStreamState = nil
-        speechStartIndex = nil
-        speechEndIndex = nil
-        
         isListening = false
+        if resetTranscribing {
+            isTranscribing = false
+        }
         isProcessingTranscription = false
+        listeningCooldownEndTime = nil
         
         if wasListening {
             logger.notice("🎙️ Listening stopped (Cleanup).")
+            if resetTranscribing {
+                voiceEventSubject.send(.listeningStopped)
+            }
         }
     }
     
     private func stopListeningAndSendTranscription() async {
-        guard !isProcessingTranscription && isListening && !capturedAudioSamples.isEmpty else { return }
+        guard !isProcessingTranscription && isListening && !captureBuffers.capturedSamples.isEmpty else { return }
         isProcessingTranscription = true
+        isTranscribing = true
+        voiceEventSubject.send(.transcriptionBegan)
+        defer { isProcessingTranscription = false }
         
         do {
             // Trim to speech bounds using VAD events (if available)
-            var trimmedSamples = capturedAudioSamples
-            if let startIdx = speechStartIndex, let endIdx = speechEndIndex, startIdx < capturedAudioSamples.count, endIdx > startIdx {
-                let actualEnd = min(capturedAudioSamples.count, endIdx)
-                trimmedSamples = Array(capturedAudioSamples[max(0, startIdx)..<actualEnd])
+            var trimmedSamples = captureBuffers.capturedSamples
+            if let startIdx = captureBuffers.speechStartIndex, let endIdx = captureBuffers.speechEndIndex, startIdx < captureBuffers.capturedSamples.count, endIdx > startIdx {
+                let actualEnd = min(captureBuffers.capturedSamples.count, endIdx)
+                trimmedSamples = Array(captureBuffers.capturedSamples[max(0, startIdx)..<actualEnd])
                 logger.info("Trimmed to VAD bounds: \(trimmedSamples.count) samples")
             } else {
-                logger.info("No VAD events - sending full buffer: \(self.capturedAudioSamples.count) samples")
+                logger.info("No VAD events - sending full buffer: \(self.captureBuffers.capturedSamples.count) samples")
             }
             
             if trimmedSamples.isEmpty {
                 logger.info("🎤 Trimmed audio empty - continuing to listen.")
-                isProcessingTranscription = false
+                isTranscribing = false
+                voiceEventSubject.send(.listeningStarted)
                 return
             }
             
@@ -255,8 +298,10 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             
             guard let transcriptionService = mistralTranscriptionService else {
                 logger.error("Mistral transcription service not available - continuing to listen.")
-                errorSubject.send(AudioError.transcriptionError("Mistral API key not available"))
-                isProcessingTranscription = false
+                let audioError = AudioError.transcriptionError("Mistral API key not available")
+                errorSubject.send(audioError)
+                voiceEventSubject.send(.transcriptionFailed(audioError.localizedDescription))
+                isTranscribing = false
                 return
             }
             
@@ -265,24 +310,40 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let trimmedText = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedText.isEmpty {
                 logger.info("🎤 Sending transcription to ViewModel: '\(trimmedText)'")
+                voiceEventSubject.send(.transcriptionDelivered)
                 transcriptionSubject.send(trimmedText)
             } else {
                 logger.info("🎤 Transcription empty - continuing to listen.")
-                isProcessingTranscription = false
+                isTranscribing = false
+                voiceEventSubject.send(.listeningStarted)
                 return
             }
         } catch {
             logger.error("🚨 Transcription error: \(error.localizedDescription) - continuing to listen.")
-            errorSubject.send(AudioError.transcriptionError(error.localizedDescription))
-            isProcessingTranscription = false
+            let audioError = AudioError.transcriptionError(error.localizedDescription)
+            errorSubject.send(audioError)
+            voiceEventSubject.send(.transcriptionFailed(audioError.localizedDescription))
+            isTranscribing = false
             return
         }
         
         // Only cleanup on successful non-empty send (go to idle)
-        isProcessingTranscription = false
-        stopListeningCleanup()
+        stopListeningCleanup(resetTranscribing: false)
+        captureBuffers.reset()
+        isTranscribing = false
     }
     
+    private func enforcePreferredOutputRoute(using session: AVAudioSession = AVAudioSession.sharedInstance()) {
+        let outputs = session.currentRoute.outputs
+        let hasPreferredExternal = outputs.contains { externalPreferredOutputs.contains($0.portType) }
+        guard !hasPreferredExternal else { return }
+        do {
+            try session.overrideOutputAudioPort(.speaker)
+        } catch {
+            logger.warning("Failed to override output to speaker: \(error.localizedDescription)")
+        }
+    }
+
     private func convertSamplesToAudioData(samples: [Float]) throws -> Data {
         let sampleRate: UInt32 = 16000
         let channels: UInt16 = 1
@@ -333,320 +394,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let minDb: Float = -50.0
         let maxDb: Float = 0.0
         return max(minDb, min(dbValue, maxDb))
-    }
-    
-    func processTTSChunk(textChunk: String, isLastChunk: Bool) {
-        logger.debug("Received text chunk (\(textChunk.count) chars). IsLast: \(isLastChunk)")
-        textBuffer.append(textChunk)
-        if isLastChunk { llmDone = true }
-        scheduleNext()
-    }
-    
-    func stopSpeaking() {
-        let wasSpeaking = self.isSpeaking
-        cancelTTSFetch()
-        
-        if let player = self.currentAudioPlayer {
-            if player.isPlaying {
-                player.stop()
-            }
-            self.currentAudioPlayer = nil
-            logger.info("Audio player stopped.")
-        }
-        
-        self.audioQueue.removeAll()
-        self.textBuffer = ""
-        self.llmDone = false
-        self.prevTTSChunkSize = nil
-        
-        self.currentTTSChunkIndex = 0
-        
-        if wasSpeaking {
-            self.isSpeaking = false
-            logger.notice("⏹️ TTS interrupted/stopped by request.")
-        }
-    }
-    
-    private func scheduleNext() {
-        if !audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
-            let data = audioQueue.removeFirst()
-            playAudioData(data)
-        }
-
-        guard !isFetchingTTS else { return }
-
-        let idx = findNextTTSChunk()
-        if idx > 0 {
-            logger.debug("Fetching next TTS chunk: \(idx) chars")
-            let chunk = String(textBuffer.prefix(idx))
-            textBuffer.removeFirst(idx)
-            fetchAudio(for: chunk)
-            return
-        }
-
-        if llmDone && audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
-            ttsPlaybackCompleteSubject.send()
-            llmDone = false
-            prevTTSChunkSize = nil
-        }
-    }
-
-    private func fetchAudio(for text: String) {
-        guard let apiKey = settingsService.openaiAPIKey,
-              !apiKey.isEmpty,
-              apiKey != "YOUR_OPENAI_API_KEY"
-        else {
-            logger.error("OpenAI API key missing")
-            return
-        }
-
-        let session = ttsSessionId
-        isFetchingTTS = true
-
-        ttsFetchTask = Task { [weak self] in
-            guard let self = self else { return }
-            guard self.ttsSessionId == session else { return }
-
-            defer {
-                Task { @MainActor in
-                    self.isFetchingTTS = false
-                    guard self.ttsSessionId == session else { return }
-                    self.scheduleNext()
-                }
-            }
-
-            do {
-                if let data = try await fetchOpenAITTSAudio(
-                    apiKey: apiKey,
-                    text: text,
-                    instruction: self.settingsService.activeTTSInstruction
-                ) {
-                    if self.ttsSessionId == session {
-                        logger.info("Enqueued TTS chunk for playback \(self.currentTTSChunkIndex).")
-                        self.audioQueue.append(data)
-                    }
-                    let chunkIndex = self.currentTTSChunkIndex
-                    self.currentTTSChunkIndex += 1
-                    if let convID = self.currentTTSConversationID, let msgID = self.currentTTSMessageID {
-                        let dataCopy = data
-                        Task.detached(priority: .utility) { [weak self] in
-                            guard let self = self else { return }
-                            do {
-                                let relPath = try await self.historyService.saveAudioData(
-                                    conversationID: convID,
-                                    messageID: msgID,
-                                    data: dataCopy,
-                                    ext: self.settingsService.openAITTSFormat,
-                                    chunkIndex: chunkIndex
-                                )
-                                await MainActor.run {
-                                    self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
-                                }
-                            } catch {
-                                self.logger.error("🗄️ Failed to save TTS chunk \(chunkIndex): \(error.localizedDescription)")
-                            }
-                        }
-                    }
-                }
-            } catch {
-                logger.error("🚨 OpenAI TTS Error: \(error.localizedDescription)")
-            }
-        }
-    }
-    
-    private func findNextTTSChunk() -> Int {
-        let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, ttsRate))
-        if textBuffer.isEmpty || (!llmDone && textBuffer.count < scaledMinChunkLength) {
-            return 0
-        }
-
-        let maxSetting = settingsService.maxTTSChunkLength
-        let maxChunkLength = prevTTSChunkSize.map { min(Int(Double($0) * ttsChunkGrowthFactor), maxSetting) } ?? maxSetting
-
-        if textBuffer.count <= maxChunkLength && llmDone {
-            prevTTSChunkSize = textBuffer.count
-            return textBuffer.count
-        }
-
-        let potentialChunk = textBuffer.prefix(maxChunkLength)
-        var splitIdx = potentialChunk.count
-
-        let lookaheadMargin = min(100, potentialChunk.count)
-        let searchStart = potentialChunk.index(potentialChunk.endIndex, offsetBy: -lookaheadMargin)
-        let searchRange = searchStart..<potentialChunk.endIndex
-
-        if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange)?.upperBound {
-            splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSentenceEnd)
-        } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange)?.upperBound {
-            splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastComma)
-        } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange)?.upperBound {
-            if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
-                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
-            }
-        }
-
-        if splitIdx < scaledMinChunkLength && !llmDone {
-            return 0
-        }
-        prevTTSChunkSize = splitIdx
-        return splitIdx
-    }
-    
-    private func configurePlayer(_ player: AVAudioPlayer) {
-        player.delegate = self
-        player.enableRate = true
-        player.isMeteringEnabled = true
-        player.rate = ttsRate
-    }
-    
-    @MainActor private func playAudioData(_ data: Data) {
-        guard !data.isEmpty else {
-            logger.warning("Attempted to play empty audio data.")
-            scheduleNext()
-            return
-        }
-
-        do {
-            let player = try AVAudioPlayer(data: data)
-            configurePlayer(player)
-            currentAudioPlayer = player
-
-            if currentAudioPlayer?.play() == true {
-                isSpeaking = true
-                logger.info("▶️ Playback started.")
-            } else {
-                logger.error("🚨 Failed to start audio playback (play() returned false).")
-                currentAudioPlayer = nil
-                isSpeaking = false
-                errorSubject.send(AudioError.audioPlaybackError(NSError(domain: "AudioService", code: 1, userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer.play() returned false"])))
-                scheduleNext()
-            }
-        } catch {
-            logger.error("🚨 Failed to initialize or play audio: \(error.localizedDescription)")
-            errorSubject.send(AudioError.audioPlaybackError(error))
-            currentAudioPlayer = nil
-            isSpeaking = false
-            scheduleNext()
-        }
-    }
-    
-    private func updatePlayerRate() {
-        Task { @MainActor [weak self] in
-            guard let self = self, let player = self.currentAudioPlayer, player.enableRate else { return }
-            player.rate = self.ttsRate
-            logger.info("Player rate updated to \(self.ttsRate)x")
-        }
-    }
-    
-    private func fetchOpenAITTSAudio(apiKey: String, text: String, instruction: String?) async throws -> Data? {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            logger.warning("Attempted to synthesize empty text.")
-            return nil
-        }
-        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
-            throw LlmError.invalidURL
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
-        let payload = OpenAITTSRequest(
-            model: settingsService.openAITTSModel,
-            input: text,
-            voice: settingsService.openAITTSVoice,
-            response_format: settingsService.openAITTSFormat,
-            instructions: instruction
-        )
-        
-        do { request.httpBody = try JSONEncoder().encode(payload) }
-        catch { throw LlmError.requestEncodingError(error) }
-        
-        let (data, response): (Data, URLResponse)
-        do { (data, response) = try await urlSession.data(for: request) }
-        catch { throw LlmError.networkError(error) }
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LlmError.networkError(URLError(.badServerResponse))
-        }
-        
-        guard (200...299).contains(httpResponse.statusCode) else {
-            var errorDetails = ""
-            if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
-            logger.error("🚨 OpenAI TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
-            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
-        }
-        
-        guard !data.isEmpty else {
-            logger.warning("Received empty audio data from OpenAI TTS API for non-empty text.")
-            return nil
-        }
-        return data
-    }
-    
-    func playAudioFile(relativePath: String) {
-        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            logger.error("Could not find Documents directory for audio playback.")
-            return
-        }
-        let fileURL = docs.appendingPathComponent(relativePath)
-
-        do {
-            let data = try Data(contentsOf: fileURL)
-            currentAudioPlayer?.stop()
-            let player = try AVAudioPlayer(data: data)
-            configurePlayer(player)
-            currentAudioPlayer = player
-            if currentAudioPlayer?.play() == true {
-                isSpeaking = true
-                logger.info("▶️ Playback started for file: \(relativePath)")
-            } else {
-                logger.error("Failed to play audio file at: \(relativePath)")
-                isSpeaking = false
-            }
-        } catch {
-            logger.error("Error loading or playing audio file \(relativePath): \(error.localizedDescription)")
-            errorSubject.send(AudioError.audioPlaybackError(error))
-        }
-    }
-    
-    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor [weak self] in
-            guard let self = self, player === self.currentAudioPlayer else {
-                self?.logger.warning("Unknown/outdated player finished.")
-                return
-            }
-            self.logger.info("⏹️ Playback finished (success: \(flag)).")
-            self.currentAudioPlayer = nil
-
-            if !self.replayQueue.isEmpty {
-                self.playNextReplay()
-            } else {
-                if self.audioQueue.isEmpty {
-                    self.isSpeaking = false
-                }
-                self.scheduleNext()
-            }
-        }
-    }
-    
-    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.logger.error("🚨 Audio player decode error: \(error?.localizedDescription ?? "Unknown error")")
-            guard player === self.currentAudioPlayer else {
-                self.logger.warning("Decode error delegate called for an unknown or outdated player.")
-                return
-            }
-            self.currentAudioPlayer = nil
-            self.errorSubject.send(AudioError.audioPlaybackError(error ?? NSError(domain: "AudioService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown decode error"])))
-
-            if self.isSpeaking {
-                self.isSpeaking = false
-            }
-            self.scheduleNext()
-        }
     }
     
     func cleanupForBackground() {
@@ -718,6 +465,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                  logger.info("🎤 Reconfiguring audio engine tap after delay.")
                  audioEngine.inputNode.removeTap(onBus: 0) 
                  configureAudioEngineTap()
+                 enforcePreferredOutputRoute()
             }
         }
     }
@@ -738,17 +486,34 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
         guard hardwareInputFormat.sampleRate > 0 else {
             logger.error("🚨 Invalid hardware input format (sample rate 0).")
-            errorSubject.send(AudioError.audioEngineError("Invalid input format (sample rate 0)"))
+            let audioError = AudioError.audioEngineError("Invalid input format (sample rate 0)")
+            errorSubject.send(audioError)
+            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
             if audioEngine.isRunning { audioEngine.stop() }
             return
         }
 
-        let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-        
-        guard let converter = AVAudioConverter(from: hardwareInputFormat, to: desiredFormat) else {
-            logger.error("🚨 Failed to create audio converter")
-            errorSubject.send(AudioError.audioEngineError("Failed to create audio converter"))
-            return
+        let desiredSampleRate: Double = 16_000
+        let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                          sampleRate: desiredSampleRate,
+                                          channels: 1,
+                                          interleaved: false)!
+        let needsConversion = hardwareInputFormat.sampleRate != desiredSampleRate ||
+                              hardwareInputFormat.channelCount != 1 ||
+                              hardwareInputFormat.commonFormat != .pcmFormatFloat32
+
+        let converter: AVAudioConverter?
+        if needsConversion {
+            guard let created = AVAudioConverter(from: hardwareInputFormat, to: desiredFormat) else {
+                logger.error("🚨 Failed to create audio converter")
+                let audioError = AudioError.audioEngineError("Failed to create audio converter")
+                errorSubject.send(audioError)
+                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
+                return
+            }
+            converter = created
+        } else {
+            converter = nil
         }
 
         input.installTap(onBus: 0, bufferSize: 2048, format: hardwareInputFormat) { [weak self] buffer, _ in
@@ -757,23 +522,33 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             Task { @MainActor in
                 if self.isListening {
                     self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
-                    
-                    let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: AVAudioFrameCount(Double(buffer.frameLength) * 16000.0 / hardwareInputFormat.sampleRate))!
-                    
-                    var error: NSError?
-                    let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                        outStatus.pointee = .haveData
-                        return buffer
+
+                    let processedBuffer: AVAudioPCMBuffer
+                    if let converter = converter {
+                        let targetFrames = AVAudioFrameCount(Double(buffer.frameLength) * desiredSampleRate / hardwareInputFormat.sampleRate)
+                        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: targetFrames) else {
+                            self.logger.error("Failed to allocate converted audio buffer.")
+                            return
+                        }
+
+                        var error: NSError?
+                        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                            outStatus.pointee = .haveData
+                            return buffer
+                        }
+
+                        converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
+
+                        if let error = error {
+                            self.logger.error("Audio conversion error: \(error.localizedDescription)")
+                            return
+                        }
+                        processedBuffer = convertedBuffer
+                    } else {
+                        processedBuffer = buffer
                     }
-                    
-                    converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
-                    
-                    if let error = error {
-                        self.logger.error("Audio conversion error: \(error.localizedDescription)")
-                        return
-                    }
-                    
-                    await self.processAudioBuffer(convertedBuffer)
+
+                    await self.processAudioBuffer(processedBuffer)
                 }
             }
         }
@@ -784,7 +559,9 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 try audioEngine.start()
             } catch {
                 logger.error("🚨 Audio engine startup error: \(error.localizedDescription)")
-                errorSubject.send(AudioError.audioEngineError("Engine start failed: \(error.localizedDescription)"))
+                let audioError = AudioError.audioEngineError("Engine start failed: \(error.localizedDescription)")
+                errorSubject.send(audioError)
+                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
                 input.removeTap(onBus: 0)
             }
         }
@@ -793,15 +570,35 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) async {
         guard let channelData = buffer.floatChannelData?[0] else { return }
         let samples = Array(UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength)))
+
+        if let cooldownEnd = listeningCooldownEndTime {
+            if Date() < cooldownEnd {
+                return
+            } else {
+                listeningCooldownEndTime = nil
+                captureBuffers.reset(includeSpeechMarks: false)
+            }
+        }
         
-        capturedAudioSamples.append(contentsOf: samples)
-        vadSampleBuffer.append(contentsOf: samples)
+        captureBuffers.capturedSamples.append(contentsOf: samples)
+        captureBuffers.vadSamples.append(contentsOf: samples)
         
-        guard let vadManager = vadManager, var state = vadStreamState else { return }
+        if captureBuffers.captureStartTime == nil { captureBuffers.captureStartTime = Date() }
         
-        while vadSampleBuffer.count >= Self.vadChunkSize {
-            let vadChunk = Array(vadSampleBuffer.prefix(Self.vadChunkSize))
-            vadSampleBuffer.removeFirst(Self.vadChunkSize)
+        if captureBuffers.speechStartIndex == nil,
+           let start = captureBuffers.captureStartTime,
+           Date().timeIntervalSince(start) >= maxCaptureDurationSeconds,
+           !isProcessingTranscription {
+            logger.notice("⌛ No speech end detected for \(Int(self.maxCaptureDurationSeconds))s. Returning to idle.")
+            stopListeningCleanup()
+            return
+        }
+
+        guard let vadManager = vadManager, let state = vadStreamState else { return }
+        
+        while captureBuffers.vadSamples.count >= Self.vadChunkSize {
+            let vadChunk = Array(captureBuffers.vadSamples.prefix(Self.vadChunkSize))
+            captureBuffers.vadSamples.removeFirst(Self.vadChunkSize)
             
             do {
                 let result = try await vadManager.processStreamingChunk(
@@ -817,12 +614,12 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 switch result.event?.kind {
                 case .speechStart:
                     logger.info("🎤 Speech start detected at sample \(result.event?.sampleIndex ?? 0).")
-                    speechStartIndex = result.event?.sampleIndex
+                    captureBuffers.speechStartIndex = result.event?.sampleIndex
                     // Continue listening
                     
                 case .speechEnd:
                     logger.info("🛑 Speech end detected at sample \(result.event?.sampleIndex ?? 0).")
-                    speechEndIndex = result.event?.sampleIndex
+                    captureBuffers.speechEndIndex = result.event?.sampleIndex
                     await stopListeningAndSendTranscription()
                     
                 case .none:
@@ -838,20 +635,398 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    func teardown() {
-        ttsSessionId = UUID()
-        if isListening {
-            stopListeningCleanup()  // Handles cancel-like reset
-        }
-        stopSpeaking()
-    }
+}
 
+// MARK: - TTS pipeline
+@MainActor
+extension AudioService {
+    func processTTSChunk(textChunk: String, isLastChunk: Bool) {
+        logger.debug("Received text chunk (\(textChunk.count) chars). IsLast: \(isLastChunk)")
+        ttsState.textBuffer.append(textChunk)
+        if isLastChunk { ttsState.llmFinished = true }
+        scheduleNext()
+    }
+    
+    func stopSpeaking() {
+        let wasSpeaking = self.isSpeaking
+        cancelTTSFetch()
+        
+        if let player = self.currentAudioPlayer {
+            if player.isPlaying {
+                player.stop()
+            }
+            self.currentAudioPlayer = nil
+            logger.info("Audio player stopped.")
+        }
+        
+        ttsState.resetSession()
+        
+        if wasSpeaking {
+            self.isSpeaking = false
+            logger.notice("⏹️ TTS interrupted/stopped by request.")
+        }
+        
+        if replayQueue.isEmpty && currentAudioPlayer == nil && !isFetchingTTS {
+            if isListening {
+                voiceEventSubject.send(.listeningStarted)
+            } else {
+                voiceEventSubject.send(.resetToIdle)
+            }
+        }
+    }
+    
+    func setTTSContext(conversationID: UUID, messageID: UUID) {
+        if currentTTSConversationID != conversationID || currentTTSMessageID != messageID {
+            currentTTSConversationID = conversationID
+            currentTTSMessageID = messageID
+            ttsState.nextChunkIndex = 0
+        }
+    }
+    
+    func playAudioFile(relativePath: String) {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            logger.error("Could not find Documents directory for audio playback.")
+            return
+        }
+        let fileURL = docs.appendingPathComponent(relativePath)
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            currentAudioPlayer?.stop()
+            let player = try AVAudioPlayer(data: data)
+            configurePlayer(player)
+            currentAudioPlayer = player
+            enforcePreferredOutputRoute()
+            if currentAudioPlayer?.play() == true {
+                isSpeaking = true
+                logger.info("▶️ Playback started for file: \(relativePath)")
+                voiceEventSubject.send(.ttsSpeakingStarted)
+            } else {
+                logger.error("Failed to play audio file at: \(relativePath)")
+                isSpeaking = false
+                let audioError = AudioError.audioPlaybackError(NSError(domain: "AudioService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to play audio file."]))
+                errorSubject.send(audioError)
+                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
+            }
+        } catch {
+            logger.error("Error loading or playing audio file \(relativePath): \(error.localizedDescription)")
+            let audioError = AudioError.audioPlaybackError(error)
+            errorSubject.send(audioError)
+            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
+        }
+    }
+    
     func cancelTTSFetch() {
         guard isFetchingTTS else { return }
         ttsFetchTask?.cancel()
         ttsFetchTask = nil
         isFetchingTTS = false
         logger.info("TTS fetch task cancelled.")
+    }
+    
+    func teardown() {
+        ttsSessionId = UUID()
+        if isListening {
+            stopListeningCleanup()  // Handles cancel-like reset
+        }
+        stopSpeaking()
+        voiceEventSubject.send(.resetToIdle)
+    }
+    
+    func scheduleNext() {
+        if !ttsState.audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
+            let data = ttsState.audioQueue.removeFirst()
+            playAudioData(data)
+        }
+
+        guard !isFetchingTTS else { return }
+
+        let idx = findNextTTSChunk()
+        if idx > 0 {
+            logger.debug("Fetching next TTS chunk: \(idx) chars")
+            let chunk = String(ttsState.textBuffer.prefix(idx))
+            ttsState.textBuffer.removeFirst(idx)
+            fetchAudio(for: chunk)
+            return
+        }
+
+        if ttsState.llmFinished && ttsState.audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
+            ttsPlaybackCompleteSubject.send()
+            voiceEventSubject.send(.ttsCompleted)
+            ttsState.llmFinished = false
+            ttsState.previousChunkSize = nil
+        }
+        else if currentAudioPlayer?.isPlaying != true && ttsState.audioQueue.isEmpty {
+            voiceEventSubject.send(.ttsWaiting)
+        }
+    }
+    
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self = self, player === self.currentAudioPlayer else {
+                self?.logger.warning("Unknown/outdated player finished.")
+                return
+            }
+            self.logger.info("⏹️ Playback finished (success: \(flag)).")
+            self.currentAudioPlayer = nil
+
+            if !self.replayQueue.isEmpty {
+                self.playNextReplay()
+            } else {
+                if self.ttsState.audioQueue.isEmpty {
+                    self.isSpeaking = false
+                }
+                let hadPendingLLM = self.ttsState.llmFinished
+                self.scheduleNext()
+                if !hadPendingLLM && self.replayQueue.isEmpty && self.ttsState.audioQueue.isEmpty && self.currentAudioPlayer == nil {
+                    if self.isListening {
+                        self.voiceEventSubject.send(.listeningStarted)
+                    } else {
+                        self.voiceEventSubject.send(.resetToIdle)
+                    }
+                }
+            }
+        }
+    }
+    
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            self.logger.error("🚨 Audio player decode error: \(error?.localizedDescription ?? "Unknown error")")
+            guard player === self.currentAudioPlayer else {
+                self.logger.warning("Decode error delegate called for an unknown or outdated player.")
+                return
+            }
+            self.currentAudioPlayer = nil
+            let audioError = AudioError.audioPlaybackError(error ?? NSError(domain: "AudioService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown decode error"]))
+            self.errorSubject.send(audioError)
+            self.voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
+
+            if self.isSpeaking {
+                self.isSpeaking = false
+            }
+            self.scheduleNext()
+        }
+    }
+}
+
+// MARK: - TTS helpers
+@MainActor
+extension AudioService {
+    func fetchAudio(for text: String) {
+        guard let apiKey = settingsService.openaiAPIKey,
+              !apiKey.isEmpty,
+              apiKey != "YOUR_OPENAI_API_KEY"
+        else {
+            logger.error("OpenAI API key missing")
+            return
+        }
+
+        let session = ttsSessionId
+        isFetchingTTS = true
+        voiceEventSubject.send(.ttsFetchStarted)
+
+        ttsFetchTask = Task { [weak self] in
+            guard let self = self else { return }
+            guard self.ttsSessionId == session else { return }
+
+            let chunkIndex = self.ttsState.nextChunkIndex
+            let capturedConversationID = self.currentTTSConversationID
+            let capturedMessageID = self.currentTTSMessageID
+
+            defer {
+                Task { @MainActor in
+                    self.isFetchingTTS = false
+                    guard self.ttsSessionId == session else { return }
+                    self.scheduleNext()
+                }
+            }
+
+            do {
+                if let data = try await fetchOpenAITTSAudio(
+                    apiKey: apiKey,
+                    text: text,
+                    instruction: self.settingsService.activeTTSInstruction
+                ) {
+                    let isCurrentSession = (self.ttsSessionId == session)
+
+                    if isCurrentSession {
+                        self.logger.info("Enqueued TTS chunk \(chunkIndex) for playback.")
+                        self.ttsState.audioQueue.append(data)
+                        if self.ttsState.nextChunkIndex <= chunkIndex {
+                            self.ttsState.nextChunkIndex = chunkIndex + 1
+                        } else {
+                            self.ttsState.nextChunkIndex = max(self.ttsState.nextChunkIndex, chunkIndex + 1)
+                        }
+                    } else {
+                        self.logger.debug("Discarding playback queue update for stale TTS session \(session).")
+                    }
+
+                    if let convID = capturedConversationID, let msgID = capturedMessageID {
+                        let dataCopy = data
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            do {
+                                let relPath = try await self.historyService.saveAudioData(
+                                    conversationID: convID,
+                                    messageID: msgID,
+                                    data: dataCopy,
+                                    ext: self.settingsService.openAITTSFormat,
+                                    chunkIndex: chunkIndex
+                                )
+                                self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
+                            } catch {
+                                self.logger.error("🗄️ Failed to save TTS chunk \(chunkIndex): \(error.localizedDescription)")
+                            }
+                        }
+                    }
+                }
+            } catch {
+                if error is CancellationError {
+                    self.logger.notice("OpenAI TTS fetch cancelled for session \(session).")
+                } else {
+                    self.logger.error("🚨 OpenAI TTS Error: \(error.localizedDescription)")
+                    self.voiceEventSubject.send(.encounteredError("OpenAI TTS Error: \(error.localizedDescription)"))
+                }
+            }
+        }
+    }
+    
+    func findNextTTSChunk() -> Int {
+        let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, ttsRate))
+        if ttsState.textBuffer.isEmpty || (!ttsState.llmFinished && ttsState.textBuffer.count < scaledMinChunkLength) {
+            return 0
+        }
+
+        let maxSetting = settingsService.maxTTSChunkLength
+        let maxChunkLength = ttsState.previousChunkSize.map { min(Int(Double($0) * ttsChunkGrowthFactor), maxSetting) } ?? maxSetting
+
+        if ttsState.textBuffer.count <= maxChunkLength && ttsState.llmFinished {
+            ttsState.previousChunkSize = ttsState.textBuffer.count
+            return ttsState.textBuffer.count
+        }
+
+        let potentialChunk = ttsState.textBuffer.prefix(maxChunkLength)
+        var splitIdx = potentialChunk.count
+
+        let lookaheadMargin = min(100, potentialChunk.count)
+        let searchStart = potentialChunk.index(potentialChunk.endIndex, offsetBy: -lookaheadMargin)
+        let searchRange = searchStart..<potentialChunk.endIndex
+
+        if let lastSentenceEnd = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?"), options: .backwards, range: searchRange)?.upperBound {
+            splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSentenceEnd)
+        } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange)?.upperBound {
+            splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastComma)
+        } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange)?.upperBound {
+            if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
+                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
+            }
+        }
+
+        if splitIdx < scaledMinChunkLength && !ttsState.llmFinished {
+            return 0
+        }
+        ttsState.previousChunkSize = splitIdx
+        return splitIdx
+    }
+    
+    func configurePlayer(_ player: AVAudioPlayer) {
+        player.delegate = self
+        player.enableRate = true
+        player.isMeteringEnabled = true
+        player.rate = ttsRate
+    }
+    
+    func playAudioData(_ data: Data) {
+        guard !data.isEmpty else {
+            logger.warning("Attempted to play empty audio data.")
+            scheduleNext()
+            return
+        }
+
+        do {
+            let player = try AVAudioPlayer(data: data)
+            configurePlayer(player)
+            currentAudioPlayer = player
+            enforcePreferredOutputRoute()
+
+            if currentAudioPlayer?.play() == true {
+                isSpeaking = true
+                logger.info("▶️ Playback started.")
+                voiceEventSubject.send(.ttsSpeakingStarted)
+            } else {
+                logger.error("🚨 Failed to start audio playback (play() returned false).")
+                currentAudioPlayer = nil
+                isSpeaking = false
+                let audioError = AudioError.audioPlaybackError(NSError(domain: "AudioService", code: 1, userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer.play() returned false"]))
+                errorSubject.send(audioError)
+                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
+                scheduleNext()
+            }
+        } catch {
+            logger.error("🚨 Failed to initialize or play audio: \(error.localizedDescription)")
+            let audioError = AudioError.audioPlaybackError(error)
+            errorSubject.send(audioError)
+            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
+            currentAudioPlayer = nil
+            isSpeaking = false
+            scheduleNext()
+        }
+    }
+    
+    func updatePlayerRate() {
+        Task { @MainActor [weak self] in
+            guard let self = self, let player = self.currentAudioPlayer, player.enableRate else { return }
+            player.rate = self.ttsRate
+            logger.info("Player rate updated to \(self.ttsRate)x")
+        }
+    }
+    
+    func fetchOpenAITTSAudio(apiKey: String, text: String, instruction: String?) async throws -> Data? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.warning("Attempted to synthesize empty text.")
+            return nil
+        }
+        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
+            throw LlmError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        
+        let payload = OpenAITTSRequest(
+            model: settingsService.openAITTSModel,
+            input: text,
+            voice: settingsService.openAITTSVoice,
+            response_format: settingsService.openAITTSFormat,
+            instructions: instruction
+        )
+        
+        do { request.httpBody = try JSONEncoder().encode(payload) }
+        catch { throw LlmError.requestEncodingError(error) }
+        
+        let (data, response): (Data, URLResponse)
+        do { (data, response) = try await urlSession.data(for: request) }
+        catch { throw LlmError.networkError(error) }
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LlmError.networkError(URLError(.badServerResponse))
+        }
+        
+        guard (200...299).contains(httpResponse.statusCode) else {
+            var errorDetails = ""
+            if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
+            logger.error("🚨 OpenAI TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
+        }
+        
+        guard !data.isEmpty else {
+            logger.warning("Received empty audio data from OpenAI TTS API for non-empty text.")
+            return nil
+        }
+        return data
     }
 }
 

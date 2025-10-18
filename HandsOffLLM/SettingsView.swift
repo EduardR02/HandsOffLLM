@@ -13,9 +13,11 @@ struct SettingsView: View {
     // or @EnvironmentObject if passed from parent (preferred)
     @EnvironmentObject var settingsService: SettingsService
     @EnvironmentObject var viewModel: ChatViewModel // Add ViewModel
-    @State private var showingAdvanced = false // State for DisclosureGroup
+    @EnvironmentObject var historyService: HistoryService
     @State private var tempDefaultPlaybackSpeed: Float = 2.0
     @State private var tempVADSilenceThreshold: Double = 1.0
+    @State private var audioAutoDeleteEnabled = true
+    @State private var showingAudioPurgeConfirmation = false
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
     
     var body: some View {
@@ -84,12 +86,6 @@ struct SettingsView: View {
                             .font(.system(.body, design: .monospaced, weight: .regular))
                             .monospacedDigit()
                             .foregroundColor(Theme.secondaryAccent)
-                    }
-                    .onAppear {
-                        tempDefaultPlaybackSpeed = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
-                    }
-                    .onChange(of: settingsService.settings.selectedDefaultPlaybackSpeed) { oldValue, newValue in
-                        tempDefaultPlaybackSpeed = newValue ?? 2.0
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -250,12 +246,6 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundColor(Theme.secondaryText)
                     }
-                    .onAppear {
-                        tempVADSilenceThreshold = settingsService.vadSilenceThreshold
-                    }
-                    .onChange(of: settingsService.vadSilenceThreshold) { _, newValue in
-                        tempVADSilenceThreshold = newValue
-                    }
                 }
                 .listRowBackground(Theme.menuAccent)
                 
@@ -294,6 +284,48 @@ struct SettingsView: View {
                     .tint(Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+
+                Section("Audio Storage") {
+                    Toggle(isOn: Binding(
+                        get: { audioAutoDeleteEnabled },
+                        set: { newValue in
+                            audioAutoDeleteEnabled = newValue
+                            let retention = newValue ? 7 : 0
+                            historyService.updateAudioRetentionDays(retention)
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Delete recordings after 7 days")
+                                .foregroundColor(Theme.primaryText)
+                            Text(audioAutoDeleteEnabled
+                                 ? "Keeps only the latest week of audio clips to free space. Chat transcripts stay intact."
+                                 : "Keeps all audio clips on this device until you delete them. Chat transcripts stay intact.")
+                                .font(.caption)
+                                .foregroundColor(Theme.secondaryText)
+                        }
+                    }
+                    .tint(Theme.secondaryAccent)
+
+                    Button(role: .destructive) {
+                        showingAudioPurgeConfirmation = true
+                    } label: {
+                        Label("Delete Saved Audio", systemImage: "trash")
+                    }
+                    .foregroundColor(.red)
+                    .confirmationDialog(
+                        "Delete all saved audio clips?",
+                        isPresented: $showingAudioPurgeConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete Audio", role: .destructive) {
+                            Task { await historyService.purgeAllAudio() }
+                        }
+                        Button("Cancel", role: .cancel) { }
+                    } message: {
+                        Text("Audio clips live entirely on this device. Removing them frees storage—your chat transcripts stay intact.")
+                    }
+                }
+                .listRowBackground(Theme.menuAccent)
                 
                 // MARK: - Advanced Settings
                 Section("Advanced Settings") {
@@ -305,6 +337,24 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+            }
+            .onAppear {
+                tempDefaultPlaybackSpeed = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
+                let retentionDays = historyService.audioRetentionDays
+                audioAutoDeleteEnabled = retentionDays != 0
+                if retentionDays != 0 && retentionDays != 7 {
+                    historyService.updateAudioRetentionDays(7)
+                }
+                tempVADSilenceThreshold = settingsService.vadSilenceThreshold
+            }
+            .onChange(of: settingsService.settings.selectedDefaultPlaybackSpeed) { _, newValue in
+                tempDefaultPlaybackSpeed = newValue ?? 2.0
+            }
+            .onChange(of: historyService.audioRetentionDays) { _, newValue in
+                audioAutoDeleteEnabled = newValue != 0
+            }
+            .onChange(of: settingsService.vadSilenceThreshold) { _, newValue in
+                tempVADSilenceThreshold = newValue
             }
             .scrollContentBackground(.hidden)
             .foregroundColor(Theme.primaryText)
@@ -769,13 +819,16 @@ struct AdvancedSettingsView: View {
 }
 
 #Preview {
-    // Mock service for preview
-    let settings = SettingsService()
-    // You might want to pre-populate settingsService.settings for a better preview
-    
-    return NavigationStack { // Add NavigationStack for preview context
+    let env = PreviewEnvironment.make()
+
+    NavigationStack {
         SettingsView()
     }
-    .environmentObject(settings)
+    .environmentObject(env.settings)
+    .environmentObject(env.viewModel)
+    .environmentObject(env.history)
+    .environmentObject(env.audio)
+    .environmentObject(env.chat)
+    .environmentObject(env.coordinator)
     .preferredColorScheme(.dark)
 }

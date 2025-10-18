@@ -318,17 +318,15 @@ private struct MenuRowContent: View {
 
 
 #Preview {
-    let settings = SettingsService()
-    let history = HistoryService()
-    let audio = AudioService(settingsService: settings, historyService: history)
-    let chat = ChatService(settingsService: settings, historyService: history)
-    let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
-    
-    return NavigationStack {
-        ContentView(viewModel: viewModel)
+    let env = PreviewEnvironment.make()
+
+    NavigationStack {
+        ContentView(viewModel: env.viewModel)
     }
-    .environmentObject(settings)
-    .environmentObject(history)
-    .environmentObject(audio)
+    .environmentObject(env.settings)
+    .environmentObject(env.history)
+    .environmentObject(env.audio)
+    .environmentObject(env.chat)
+    .environmentObject(env.coordinator)
     .preferredColorScheme(.dark)
 }

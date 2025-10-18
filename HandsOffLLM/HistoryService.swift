@@ -13,6 +13,7 @@ class HistoryService: ObservableObject {
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "HistoryService")
     // Published metadata index (for list views)
     @Published var indexEntries: [ConversationIndexEntry] = []
+    @Published var audioRetentionDays: Int
     // In-memory store for SwiftUI previews
     private var previewStore: [UUID: Conversation] = [:]
     
@@ -32,6 +33,12 @@ class HistoryService: ObservableObject {
     }
     
     init() {
+        let defaults = UserDefaults.standard
+        if let stored = defaults.object(forKey: "HistoryService.audioRetentionDays") as? Int {
+            audioRetentionDays = max(0, stored)
+        } else {
+            audioRetentionDays = 7
+        }
         // Ensure directories exist
         if let convURL = convFolderURL {
             try? FileManager.default.createDirectory(at: convURL, withIntermediateDirectories: true)
@@ -297,19 +304,25 @@ class HistoryService: ObservableObject {
     }
 
     // → only run deletion once per calendar day
-    private func scheduleDailyAudioCleanup() async {
+    private func scheduleDailyAudioCleanup(force: Bool = false) async {
+        guard audioRetentionDays > 0 else { return }
         let key = "HistoryService.lastAudioCleanupDate"
         let defaults = UserDefaults.standard
-        if let lastCleanupDate = defaults.object(forKey: key) as? Date,
+        if !force,
+           let lastCleanupDate = defaults.object(forKey: key) as? Date,
            Calendar.current.isDateInToday(lastCleanupDate) {
             return 
         }
-        await cleanupOldAudioFiles(olderThan: 7)
+        await cleanupOldAudioFiles(olderThan: audioRetentionDays)
         defaults.set(Date(), forKey: key)
     }
 
     // → walk the Audio folder and delete files > days old
     private func cleanupOldAudioFiles(olderThan days: Int) async {
+        guard days > 0 else {
+            logger.info("Audio retention set to keep forever; skipping cleanup.")
+            return
+        }
         logger.info("Starting cleanup of audio files older than \(days) days.")
         guard let audioRootURL = audioFolderURL else {
             logger.warning("Audio folder URL is nil. Cannot perform cleanup.")
@@ -345,5 +358,48 @@ class HistoryService: ObservableObject {
             }
         }.value
         logger.info("Audio cleanup task completed.")
+    }
+
+    func updateAudioRetentionDays(_ days: Int) {
+        let normalized = max(0, days)
+        guard normalized != audioRetentionDays else { return }
+        audioRetentionDays = normalized
+        let defaults = UserDefaults.standard
+        defaults.set(normalized, forKey: "HistoryService.audioRetentionDays")
+        if normalized == 0 {
+            defaults.removeObject(forKey: "HistoryService.lastAudioCleanupDate")
+        } else {
+            Task {
+                await scheduleDailyAudioCleanup(force: true)
+            }
+        }
+    }
+
+    func purgeAllAudio() async {
+        logger.notice("Purging all saved audio on user request.")
+        guard let audioRootURL = audioFolderURL else {
+            logger.warning("Audio folder URL is nil. Nothing to purge.")
+            return
+        }
+        let capturedLogger = logger
+        await Task.detached {
+            let fm = FileManager.default
+            guard let contents = try? fm.contentsOfDirectory(at: audioRootURL,
+                                                             includingPropertiesForKeys: nil,
+                                                             options: .skipsHiddenFiles) else {
+                capturedLogger.warning("Failed to enumerate audio folder while purging.")
+                return
+            }
+            for url in contents {
+                do {
+                    try fm.removeItem(at: url)
+                } catch {
+                    capturedLogger.warning("Failed to remove audio item \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }.value
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: "HistoryService.lastAudioCleanupDate")
+        capturedLogger.info("Audio purge completed.")
     }
 }

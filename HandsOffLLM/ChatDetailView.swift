@@ -207,27 +207,27 @@ struct ChatDetailView: View {
 }
 
 #Preview {
-    // Mock data for preview
-    var convo = Conversation(messages: [
-        ChatMessage(id: UUID(), role: "user", content: "Tell me a joke."),
-        ChatMessage(id: UUID(), role: "assistant", content: "Why don't scientists trust atoms? Because they make up everything!"),
-        ChatMessage(id: UUID(), role: "user", content: "That was funny."),
-        ChatMessage(id: UUID(), role: "assistant_partial", content: "I'm glad you think"),
-    ], createdAt: Date())
-    convo.title = "Joke Chat"
-    let history = HistoryService.preview(with: [convo])
-    
-    let settings = SettingsService()
-    let audio = AudioService(settingsService: settings, historyService: history)
-    let chat = ChatService(settingsService: settings, historyService: history)
-    let viewModel = ChatViewModel(audioService: audio, chatService: chat, settingsService: settings, historyService: history)
-    
-    return NavigationStack { // Add NavigationStack for preview context
-        ChatDetailView(rootIsActive: .constant(false), conversationId: convo.id)
+    let conversation: Conversation = {
+        var convo = Conversation(messages: [
+            ChatMessage(id: UUID(), role: "user", content: "Tell me a joke."),
+            ChatMessage(id: UUID(), role: "assistant", content: "Why don't scientists trust atoms? Because they make up everything!"),
+            ChatMessage(id: UUID(), role: "user", content: "That was funny."),
+            ChatMessage(id: UUID(), role: "assistant_partial", content: "I'm glad you think")
+        ], createdAt: Date())
+        convo.title = "Joke Chat"
+        return convo
+    }()
+    let history = HistoryService.preview(with: [conversation])
+    let env = PreviewEnvironment.make(history: history)
+
+    NavigationStack { // Add NavigationStack for preview context
+        ChatDetailView(rootIsActive: .constant(false), conversationId: conversation.id)
     }
-    .environmentObject(viewModel)
-    .environmentObject(audio)
-    .environmentObject(settings) // Make sure all required env objects are present
-    .environmentObject(history)
+    .environmentObject(env.viewModel)
+    .environmentObject(env.audio)
+    .environmentObject(env.settings)
+    .environmentObject(env.history)
+    .environmentObject(env.chat)
+    .environmentObject(env.coordinator)
     .preferredColorScheme(.dark)
 }

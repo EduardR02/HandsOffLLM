@@ -35,21 +35,23 @@ class ChatViewModel: ObservableObject {
     private let chatService: ChatService
     private let settingsService: SettingsService
     private let historyService: HistoryService
+    private let loopCoordinator: VoiceLoopCoordinator
     
     private var cancellables = Set<AnyCancellable>()
     
-    init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService) {
+    init(audioService: AudioService, chatService: ChatService, settingsService: SettingsService, historyService: HistoryService, loopCoordinator: VoiceLoopCoordinator) {
         self.audioService = audioService
         self.chatService = chatService
         self.settingsService = settingsService
         self.historyService = historyService
+        self.loopCoordinator = loopCoordinator
         logger.info("ChatViewModel initialized.")
         
         // Audio Service Events
-        // Transcription → only forwards to ChatService (state flip happens in CombineLatest)
+        // Transcription → only forwards to ChatService
         audioService.transcriptionSubject
             .sink { [weak self] transcription in
-                guard let self = self, self.state == .listening else { return }
+                guard let self = self else { return }
                 self.logger.info("Received transcription: '\(transcription)'")
                 self.chatService.processTranscription(transcription, provider: self.selectedProvider)
             }
@@ -130,22 +132,35 @@ class ChatViewModel: ObservableObject {
         self.selectedProvider = settingsService.settings.selectedDefaultProvider
             ?? (settingsService.settings.selectedModelIdPerProvider.keys.first ?? .claude)
 
-        Publishers
-            .CombineLatest4(
-                audioService.$isListening,
-                chatService.$isProcessingLLM,
-                audioService.$isFetchingTTS,
-                audioService.$isSpeaking
-            )
+        loopCoordinator.$phase
             .receive(on: RunLoop.main)
-            .map { listening, processing, fetching, speaking in
-                if speaking       { return .speakingTTS }
-                else if processing{ return .processingLLM }
-                else if fetching  { return .fetchingTTS }
-                else if listening { return .listening }
-                else              { return .idle }
+            .sink { [weak self] phase in
+                self?.apply(phase: phase)
             }
-            .assign(to: &$state)
+            .store(in: &cancellables)
+    }
+
+    private func apply(phase: VoicePhase) {
+        switch phase {
+        case .idle:
+            lastError = nil
+            state = .idle
+        case .listening:
+            lastError = nil
+            state = .listening
+        case .transcribing, .waitingForLLM:
+            lastError = nil
+            state = .processingLLM
+        case .fetchingTTS:
+            lastError = nil
+            state = .fetchingTTS
+        case .speaking:
+            lastError = nil
+            state = .speakingTTS
+        case .error(let message):
+            lastError = message
+            state = .error
+        }
     }
 
     // MARK: - User Actions
@@ -168,7 +183,7 @@ class ChatViewModel: ObservableObject {
     }
 
     func startListening() {
-        audioService.startListening()
+        audioService.startListening(useCooldown: false)
     }
 
     func stopListening() {
@@ -178,7 +193,6 @@ class ChatViewModel: ObservableObject {
     // MARK: - Error Handling
     private func handleError(_ error: Error) {
         lastError = error.localizedDescription
-        state = .error
     }
     
     // Method to trigger startup listening (if needed externally)

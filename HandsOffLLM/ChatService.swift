@@ -15,6 +15,7 @@ class ChatService: ObservableObject {
     let llmChunkSubject = PassthroughSubject<String, Never>()    // Sends LLM text chunks
     let llmErrorSubject = PassthroughSubject<Error, Never>()      // Reports LLM errors
     let llmCompleteSubject = PassthroughSubject<Void, Never>()   // Signals end of LLM stream
+    let voiceEventSubject = PassthroughSubject<VoiceLoopEvent, Never>()
     
     // --- Internal State ---
     private var llmTask: Task<Void, Never>? = nil
@@ -61,7 +62,8 @@ class ChatService: ObservableObject {
         isProcessingLLM = true
         currentFullResponse = "" // Reset accumulator
         isLLMStreamComplete = false // ← Reset flag
-        
+        voiceEventSubject.send(.llmStarted)
+
         // Start the LLM fetch task
         llmTask = Task { [weak self] in
             guard let self = self else { return }
@@ -74,6 +76,7 @@ class ChatService: ObservableObject {
         llmTask?.cancel()
         llmTask = nil
         isProcessingLLM = false
+        voiceEventSubject.send(.resetToIdle)
     }
     
     // MARK: - LLM Fetching Logic
@@ -96,12 +99,26 @@ class ChatService: ObservableObject {
             let activeMaxTokens = settingsService.activeMaxTokens
             // --- End Get ACTIVE settings ---
 
-            let request = try buildRequest(for: provider,
-                                           modelId: activeModelId,
-                                           systemPrompt: activeSystemPrompt,
-                                           temperature: activeTemperature,
-                                           maxTokens: activeMaxTokens)
-            let stream = try await makeStream(for: provider, request: request)
+            let limits = providerLimits(for: provider)
+            let context = LLMClientContext(
+                messages: sanitizedHistory(),
+                systemPrompt: activeSystemPrompt,
+                temperature: activeTemperature,
+                maxTokens: activeMaxTokens,
+                modelId: activeModelId,
+                temperatureCap: limits.temperature,
+                tokenCap: limits.maxTokens,
+                openAIKey: settingsService.openaiAPIKey,
+                xaiKey: settingsService.xaiAPIKey,
+                anthropicKey: settingsService.anthropicAPIKey,
+                geminiKey: settingsService.geminiAPIKey,
+                webSearchEnabled: settingsService.webSearchEnabled,
+                openAIReasoningEffort: settingsService.openAIReasoningEffortOpt,
+                claudeReasoningEnabled: settingsService.claudeReasoningEnabled
+            )
+            let client = LLMClientFactory.client(for: provider)
+            let request = try client.makeRequest(with: context)
+            let stream = try await makeStream(request: request, decoder: client.decodeChunk)
 
             // 1) insert one placeholder
             let placeholder = ChatMessage(id: UUID(), role: "assistant_partial", content: "")
@@ -150,22 +167,33 @@ class ChatService: ObservableObject {
             await historyService?.addOrUpdateConversation(conversation)
         }
 
-        // Only fire the complete event when there was no error
-        if error == nil {
+        if let err = error {
+            if err is CancellationError {
+                logger.notice("LLM stream cancelled; keeping existing loop state.")
+            } else {
+                voiceEventSubject.send(.llmCompleted(success: false))
+                voiceEventSubject.send(.encounteredError(err.localizedDescription))
+            }
+        } else {
+            voiceEventSubject.send(.llmCompleted(success: true))
             llmCompleteSubject.send()
         }
     }
     
     // MARK: - Unified SSE & Decoding Helpers
-    private func makeStream(for provider: LLMProvider, request: URLRequest) async throws -> AsyncThrowingStream<String, Error> {
+    private func makeStream(request: URLRequest, decoder: @escaping (String) -> String?) async throws -> AsyncThrowingStream<String, Error> {
         let (bytesSequence, response) = try await urlSession.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let (data, _) = try await urlSession.data(for: request)
-            let errorBody = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            var errorData = Data()
+            for try await byte in bytesSequence {
+                errorData.append(byte)
+            }
+            let errorBody = String(data: errorData, encoding: .utf8) ?? "<non-utf8 body>"
             logger.error("❌ HTTP Error : \(errorBody)")
-            throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1, body: errorBody)
+            throw LlmError.invalidResponse(statusCode: http.statusCode, body: errorBody)
+        } else if !(response is HTTPURLResponse) {
+            throw LlmError.networkError(URLError(.badServerResponse))
         }
-        let decode = sseDecoders[provider]!
         return AsyncThrowingStream { continuation in
             Task {
                 do {
@@ -177,7 +205,7 @@ class ChatService: ObservableObject {
                             guard let text = String(data: buffer, encoding: .utf8) else { buffer.removeAll(); continue }
                             if text.hasPrefix("data:") {
                                 let payload = text.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-                                if let chunk = decode(payload) {
+                                if let chunk = decoder(payload) {
                                     continuation.yield(chunk)
                                 }
                             }
@@ -192,287 +220,6 @@ class ChatService: ObservableObject {
         }
     }
 
-    // MARK: - Request Builders
-
-    /// Build URLRequest for the given provider
-    private func buildRequest(for provider: LLMProvider,
-                              modelId: String,
-                              systemPrompt: String?,
-                              temperature: Float,
-                              maxTokens: Int) throws -> URLRequest {
-        switch provider {
-        case .gemini:
-            return try makeGeminiRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
-        case .claude:
-            return try makeClaudeRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
-        case .openai:
-            return try makeOpenAIRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
-        case .xai:
-            return try makeXAIRequest(modelId: modelId, systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
-        }
-    }
-
-    /// Construct OpenAI /v1/responses request
-    private func makeOpenAIRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
-        guard let key = settingsService.openaiAPIKey, !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "OpenAI")
-        }
-        guard let url = URL(string: "https://api.openai.com/v1/responses") else {
-            throw LlmError.invalidURL
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        // Prepare only valid messages (drop assistant_partial, assistant_error, etc.)
-        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
-        let input = sanitized.map { msg -> [String: Any] in
-            let type = (msg.role == "assistant") ? "output_text" : "input_text"
-            return ["role": msg.role, "content": [["type": type, "text": msg.content]]]
-        }
-
-        var body: [String: Any] = [
-            "model": modelId,
-            "input": input,
-            "stream": true,
-            "temperature": min(temperature, SettingsService.maxTempOpenAI),
-            "max_output_tokens": min(maxTokens, SettingsService.maxTokensOpenAI)
-        ]
-        // Include web search if enabled and supported model
-        if settingsService.webSearchEnabled,
-           ["gpt-4.1", "gpt-4.1-mini", "gpt-5"].contains(where: modelId.contains) {
-            body["tools"] = [["type": "web_search_preview"]]
-        }
-
-        // Include instructions if provided
-        if let sys = systemPrompt, !sys.isEmpty {
-            body["instructions"] = sys
-        }
-
-        if modelId.contains("gpt-5"),
-           let effort = settingsService.openAIReasoningEffortOpt {
-            body["reasoning"] = ["effort": effort.rawValue]
-        }
-
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return req
-    }
-
-    /// Construct xAI /v1/chat/completions request
-    private func makeXAIRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
-        guard let key = settingsService.xaiAPIKey, !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "xAI")
-        }
-        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
-            throw LlmError.invalidURL
-        }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-
-        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
-        var messagesPayload: [[String: Any]] = []
-
-        if let sys = systemPrompt, !sys.isEmpty {
-            messagesPayload.append([
-                "role": "system",
-                "content": [["type": "text", "text": sys]]
-            ])
-        }
-
-        for message in sanitized {
-            messagesPayload.append([
-                "role": message.role,
-                "content": [["type": "text", "text": message.content]]
-            ])
-        }
-
-        var requestBody: [String: Any] = [
-            "model": modelId,
-            "messages": messagesPayload,
-            "temperature": min(temperature, SettingsService.maxTempXAI),
-            "max_completion_tokens": min(maxTokens, SettingsService.maxTokensXAI),
-            "stream": true,
-            "stream_options": ["include_usage": true]
-        ]
-
-        if settingsService.webSearchEnabled, modelId.contains("grok-4") {
-            requestBody["search_parameters"] = ["mode": "auto"]
-        }
-
-        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        return req
-    }
-
-    /// Construct Anthropic /v1/messages request
-    private func makeClaudeRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
-        guard let key = settingsService.anthropicAPIKey, !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "Claude")
-        }
-        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
-            throw LlmError.invalidURL
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue(key, forHTTPHeaderField: "x-api-key")
-        req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-        // Only include valid roles
-        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
-        var messagesPayload: [[String: Any]] = sanitized.map { message in
-            ["role": message.role, "content": [["type": "text", "text": message.content]]]
-        }
-        
-        // Tag last message for ephemeral caching
-        if !messagesPayload.isEmpty {
-            var last = messagesPayload.removeLast()
-            // Get the content array and add cache_control to its first item
-            if var contentArray = last["content"] as? [[String: Any]] {
-                contentArray[0]["cache_control"] = ["type": "ephemeral"]
-                last["content"] = contentArray
-            }
-            messagesPayload.append(last)
-        }
-        
-        let canThink = modelId.contains("sonnet-4") || modelId.contains("opus-4")
-        let isThinking = canThink && settingsService.claudeReasoningEnabled
-        
-        var payload: [String: Any] = [
-            "model": modelId,
-            "messages": messagesPayload,
-            "max_tokens": min(maxTokens, SettingsService.maxTokensAnthropic),
-            "stream": true
-        ]
-        // Include instructions if provided
-        if let sys = systemPrompt, !sys.isEmpty {
-            payload["system"] = sys
-        }
-        if !isThinking {
-            payload["temperature"] = min(temperature, SettingsService.maxTempAnthropic)
-        }
-        if isThinking {
-            let thinkingBudget = max(1024, maxTokens - 4000)
-            payload["thinking"] = [
-                "type": "enabled",
-                "budget_tokens": thinkingBudget
-            ]
-        }
-
-        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        return req
-    }
-
-    /// Construct Gemini request with safety and generationConfig
-    private func makeGeminiRequest(modelId: String, systemPrompt: String?, temperature: Float, maxTokens: Int) throws -> URLRequest {
-        guard let key = settingsService.geminiAPIKey, !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "Gemini")
-        }
-        // Use stable API version for text-only voice app
-        let apiVersion = "v1beta"
-        let responseType = "streamGenerateContent"
-        let urlString = "https://generativelanguage.googleapis.com/\(apiVersion)/models/\(modelId):\(responseType)?alt=sse&key=\(key)"
-        guard let url = URL(string: urlString) else { throw LlmError.invalidURL }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        // Only include valid roles
-        let sanitized = currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
-        let contents = sanitized.map { message in
-            [
-                "role": message.role == "user" ? "user" : "model",
-                "parts": [["text": message.content]]
-            ]
-        }
-
-        // Build generationConfig, disabling thinking for flash model
-        var generationConfig: [String: Any] = [
-            "temperature": min(temperature, SettingsService.maxTempGemini),
-            "maxOutputTokens": min(maxTokens, SettingsService.maxTokensGemini),
-            "responseMimeType": "text/plain"
-        ]
-        if modelId.contains("2.5-flash") {
-            generationConfig["thinking_config"] = ["thinkingBudget": 0]
-        }
-        var body: [String: Any] = [
-            "contents": contents,
-            "safetySettings": getGeminiSafetySettings(),
-            "generationConfig": generationConfig
-        ]
-
-        if let sys = systemPrompt, !sys.isEmpty {
-            body["systemInstruction"] = ["parts": [["text": sys]]]
-        }
-        
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return req
-    }
-
-    /// Provide Gemini safety settings
-    private func getGeminiSafetySettings() -> [[String: String]] {
-        [
-            ["category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"],
-            ["category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"],
-            ["category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"],
-            ["category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"]
-        ]
-    }
-    
-    // MARK: - SSE Decoding
-
-    /// Decode a raw SSE chunk from Gemini into text
-    private func decodeGeminiChunk(_ raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-            let response = try? JSONDecoder().decode(GeminiResponse.self, from: data),
-              let text = response.candidates?.first?.content?.parts?.first?.text
-        else { return nil }
-        return text
-    }
-
-    /// Decode a raw SSE chunk from Claude into text
-    private func decodeClaudeChunk(_ raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-              let event = try? JSONDecoder().decode(ClaudeEvent.self, from: data),
-              (event.type == "content_block_delta" || event.type == "message_delta"),
-              let text = event.delta?.text
-        else { return nil }
-        return text
-    }
-
-    /// Decode a raw SSE chunk from OpenAI into text
-    private func decodeOpenAIChunk(_ raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-            let event = try? JSONDecoder().decode(OpenAIResponseEvent.self, from: data),
-            event.type == "response.output_text.delta"
-        else { return nil }
-        return event.delta
-    }
-
-    /// Decode a raw SSE chunk from xAI into text
-    private func decodeXAIChunk(_ raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-              let event = try? JSONDecoder().decode(XAIResponseEvent.self, from: data)
-        else { return nil }
-
-        guard let choices = event.choices, let delta = choices.first?.delta else {
-            return nil
-        }
-
-        return delta.content
-    }
-
-    /// Map each provider to its SSE decoder
-    private lazy var sseDecoders: [LLMProvider: (String) -> String?] = [
-        .gemini: decodeGeminiChunk,
-        .claude: decodeClaudeChunk,
-        .openai: decodeOpenAIChunk,
-        .xai: decodeXAIChunk
-    ]
-    
     // MARK: - Chat Title Generation
     
     private struct TitleGenerationConfig {
@@ -577,36 +324,31 @@ class ChatService: ObservableObject {
         cancelProcessing()
         isLLMStreamComplete = false
         
-        // Perform async load inside Task to keep API sync
-        Task { @MainActor in
-            var conversationToSet: Conversation?
+        // Seed a usable conversation immediately so callers can append safely.
+        let seededConversation = Conversation(
+            id: existingConversationId ?? UUID(),
+            messages: messagesToLoad ?? [],
+            createdAt: Date(),
+            parentConversationId: parentId,
+            ttsAudioPaths: initialAudioPaths
+        )
+        currentConversation = seededConversation
+        
+        guard let existingId = existingConversationId else { return }
+        
+        // If we were asked to revive an existing conversation, load it in the background
+        Task { @MainActor [weak self] in
+            guard let self = self,
+                  let loadedConv = await self.historyService?.loadConversationDetail(id: existingId) else { return }
             
-            if let existingId = existingConversationId {
-                if let loadedConv = await historyService?.loadConversationDetail(id: existingId) {
-                    conversationToSet = loadedConv
-                }
-            }
-            
-            // Overwrite messages if provided
+            var conversationToSet = loadedConv
             if let messages = messagesToLoad {
-                conversationToSet?.messages = messages
+                conversationToSet.messages = messages
             }
-            
-            // Inject audio paths if provided
             if let audioPaths = initialAudioPaths {
-                conversationToSet?.ttsAudioPaths = audioPaths
+                conversationToSet.ttsAudioPaths = audioPaths
             }
-            
-            if conversationToSet == nil {
-                conversationToSet = Conversation(
-                    id: UUID(),
-                    messages: messagesToLoad ?? [],
-                    createdAt: Date(),
-                    parentConversationId: parentId,
-                    ttsAudioPaths: initialAudioPaths
-                )
-            }
-            currentConversation = conversationToSet
+            self.currentConversation = conversationToSet
         }
     }
     
@@ -689,5 +431,313 @@ class ChatService: ObservableObject {
     deinit {
         logger.info("ChatService deinit.")
         llmTask?.cancel()
+    }
+
+    private func sanitizedHistory() -> [ChatMessage] {
+        currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+    }
+
+    private func providerLimits(for provider: LLMProvider) -> (temperature: Float, maxTokens: Int) {
+        switch provider {
+        case .openai:
+            return (SettingsService.maxTempOpenAI, SettingsService.maxTokensOpenAI)
+        case .claude:
+            return (SettingsService.maxTempAnthropic, SettingsService.maxTokensAnthropic)
+        case .gemini:
+            return (SettingsService.maxTempGemini, SettingsService.maxTokensGemini)
+        case .xai:
+            return (SettingsService.maxTempXAI, SettingsService.maxTokensXAI)
+        }
+    }
+}
+
+struct LLMClientContext {
+    let messages: [ChatMessage]
+    let systemPrompt: String?
+    let temperature: Float
+    let maxTokens: Int
+    let modelId: String
+    let temperatureCap: Float
+    let tokenCap: Int
+    let openAIKey: String?
+    let xaiKey: String?
+    let anthropicKey: String?
+    let geminiKey: String?
+    let webSearchEnabled: Bool
+    let openAIReasoningEffort: OpenAIReasoningEffort?
+    let claudeReasoningEnabled: Bool
+}
+
+protocol LLMClient {
+    func makeRequest(with context: LLMClientContext) throws -> URLRequest
+    func decodeChunk(_ raw: String) -> String?
+}
+
+struct OpenAIClient: LLMClient {
+    func makeRequest(with context: LLMClientContext) throws -> URLRequest {
+        guard let rawKey = context.openAIKey else {
+            throw LlmError.apiKeyMissing(provider: "OpenAI")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, key != "YOUR_OPENAI_API_KEY" else {
+            throw LlmError.apiKeyMissing(provider: "OpenAI")
+        }
+        guard let url = URL(string: "https://api.openai.com/v1/responses") else {
+            throw LlmError.invalidURL
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let inputPayload = context.messages.map { msg -> [String: Any] in
+            let type = (msg.role == "assistant") ? "output_text" : "input_text"
+            return [
+                "role": msg.role,
+                "content": [["type": type, "text": msg.content]]
+            ]
+        }
+
+        var body: [String: Any] = [
+            "model": context.modelId,
+            "input": inputPayload,
+            "stream": true,
+            "temperature": min(context.temperature, context.temperatureCap),
+            "max_output_tokens": min(context.maxTokens, context.tokenCap)
+        ]
+
+        if context.webSearchEnabled,
+           ["gpt-4.1", "gpt-4.1-mini", "gpt-5"].contains(where: context.modelId.contains) {
+            body["tools"] = [["type": "web_search_preview"]]
+        }
+
+        if let sys = context.systemPrompt, !sys.isEmpty {
+            body["instructions"] = sys
+        }
+
+        if context.modelId.contains("gpt-5"),
+           let effort = context.openAIReasoningEffort {
+            body["reasoning"] = ["effort": effort.rawValue]
+        }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
+
+    func decodeChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let event = try? JSONDecoder().decode(OpenAIResponseEvent.self, from: data),
+              event.type == "response.output_text.delta"
+        else { return nil }
+        return event.delta
+    }
+}
+
+struct XAIClient: LLMClient {
+    func makeRequest(with context: LLMClientContext) throws -> URLRequest {
+        guard let rawKey = context.xaiKey else {
+            throw LlmError.apiKeyMissing(provider: "xAI")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "xAI")
+        }
+        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
+            throw LlmError.invalidURL
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+
+        var messagesPayload: [[String: Any]] = context.messages.map { message in
+            [
+                "role": message.role,
+                "content": [["type": "text", "text": message.content]]
+            ]
+        }
+
+        if let sys = context.systemPrompt, !sys.isEmpty {
+            messagesPayload.insert([
+                "role": "system",
+                "content": [["type": "text", "text": sys]]
+            ], at: 0)
+        }
+
+        var requestBody: [String: Any] = [
+            "model": context.modelId,
+            "messages": messagesPayload,
+            "temperature": min(context.temperature, context.temperatureCap),
+            "max_completion_tokens": min(context.maxTokens, context.tokenCap),
+            "stream": true,
+            "stream_options": ["include_usage": true]
+        ]
+
+        if context.webSearchEnabled, context.modelId.contains("grok-4") {
+            requestBody["search_parameters"] = ["mode": "auto"]
+        }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        return req
+    }
+
+    func decodeChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let event = try? JSONDecoder().decode(XAIResponseEvent.self, from: data) else { return nil }
+        guard let choices = event.choices, let delta = choices.first?.delta else {
+            return nil
+        }
+        return delta.content
+    }
+}
+
+struct ClaudeClient: LLMClient {
+    func makeRequest(with context: LLMClientContext) throws -> URLRequest {
+        guard let rawKey = context.anthropicKey else {
+            throw LlmError.apiKeyMissing(provider: "Claude")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "Claude")
+        }
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw LlmError.invalidURL
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue(key, forHTTPHeaderField: "x-api-key")
+        req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+        var messagesPayload: [[String: Any]] = context.messages.map { message in
+            ["role": message.role, "content": [["type": "text", "text": message.content]]]
+        }
+
+        if !messagesPayload.isEmpty {
+            var last = messagesPayload.removeLast()
+            if var contentArray = last["content"] as? [[String: Any]] {
+                contentArray[0]["cache_control"] = ["type": "ephemeral"]
+                last["content"] = contentArray
+            }
+            messagesPayload.append(last)
+        }
+
+        let canThink = context.modelId.contains("sonnet-4") || context.modelId.contains("opus-4")
+        let isThinking = canThink && context.claudeReasoningEnabled
+
+        var payload: [String: Any] = [
+            "model": context.modelId,
+            "messages": messagesPayload,
+            "max_tokens": min(context.maxTokens, context.tokenCap),
+            "stream": true
+        ]
+
+        if let sys = context.systemPrompt, !sys.isEmpty {
+            payload["system"] = sys
+        }
+        if !isThinking {
+            payload["temperature"] = min(context.temperature, context.temperatureCap)
+        }
+        if isThinking {
+            let thinkingBudget = max(1024, context.maxTokens - 4000)
+            payload["thinking"] = [
+                "type": "enabled",
+                "budget_tokens": thinkingBudget
+            ]
+        }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        return req
+    }
+
+    func decodeChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let event = try? JSONDecoder().decode(ClaudeEvent.self, from: data),
+              (event.type == "content_block_delta" || event.type == "message_delta"),
+              let text = event.delta?.text
+        else { return nil }
+        return text
+    }
+}
+
+struct GeminiClient: LLMClient {
+    func makeRequest(with context: LLMClientContext) throws -> URLRequest {
+        guard let rawKey = context.geminiKey else {
+            throw LlmError.apiKeyMissing(provider: "Gemini")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            throw LlmError.apiKeyMissing(provider: "Gemini")
+        }
+        let apiVersion = "v1beta"
+        let responseType = "streamGenerateContent"
+        let urlString = "https://generativelanguage.googleapis.com/\(apiVersion)/models/\(context.modelId):\(responseType)?alt=sse&key=\(key)"
+        guard let url = URL(string: urlString) else { throw LlmError.invalidURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let contents = context.messages.map { message in
+            [
+                "role": message.role == "user" ? "user" : "model",
+                "parts": [["text": message.content]]
+            ]
+        }
+
+        var generationConfig: [String: Any] = [
+            "temperature": min(context.temperature, context.temperatureCap),
+            "maxOutputTokens": min(context.maxTokens, context.tokenCap),
+            "responseMimeType": "text/plain"
+        ]
+        if context.modelId.contains("2.5-flash") {
+            generationConfig["thinking_config"] = ["thinkingBudget": 0]
+        }
+
+        var body: [String: Any] = [
+            "contents": contents,
+            "safetySettings": GeminiClient.safetySettings(),
+            "generationConfig": generationConfig
+        ]
+
+        if let sys = context.systemPrompt, !sys.isEmpty {
+            body["systemInstruction"] = ["parts": [["text": sys]]]
+        }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
+
+    func decodeChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let response = try? JSONDecoder().decode(GeminiResponse.self, from: data),
+              let text = response.candidates?.first?.content?.parts?.first?.text
+        else { return nil }
+        return text
+    }
+
+    private static func safetySettings() -> [[String: String]] {
+        [
+            ["category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"],
+            ["category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"],
+            ["category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"],
+            ["category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"]
+        ]
+    }
+}
+
+struct LLMClientFactory {
+    static func client(for provider: LLMProvider) -> LLMClient {
+        switch provider {
+        case .openai:
+            return OpenAIClient()
+        case .claude:
+            return ClaudeClient()
+        case .gemini:
+            return GeminiClient()
+        case .xai:
+            return XAIClient()
+        }
     }
 }
