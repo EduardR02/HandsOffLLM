@@ -138,6 +138,46 @@ class HistoryService: ObservableObject {
         }
         await saveIndex()
     }
+
+    func updateConversationTitle(conversationId: UUID, newTitle: String) async {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        var didMutateIndex = false
+        if let idx = indexEntries.firstIndex(where: { $0.id == conversationId }) {
+            let existing = indexEntries[idx]
+            if existing.title != trimmed {
+                let updated = ConversationIndexEntry(id: existing.id,
+                                                     title: trimmed,
+                                                     createdAt: existing.createdAt)
+                indexEntries[idx] = updated
+                didMutateIndex = true
+            }
+        }
+        if didMutateIndex { await saveIndex() }
+
+        guard let url = conversationFileURL(for: conversationId) else { return }
+        let capturedLogger = self.logger
+        await Task.detached {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            encoder.dateEncodingStrategy = .iso8601
+
+            do {
+                guard FileManager.default.fileExists(atPath: url.path) else { return }
+                let data = try Data(contentsOf: url)
+                var conversation = try decoder.decode(Conversation.self, from: data)
+                if conversation.title == trimmed { return }
+                conversation.title = trimmed
+                let updatedData = try encoder.encode(conversation)
+                try updatedData.write(to: url, options: [.atomicWrite])
+            } catch {
+                capturedLogger.error("Failed to update title for conversation \(conversationId): \(error.localizedDescription)")
+            }
+        }.value
+    }
     
     private func removeConversationAssets(id: UUID) async {
         let capturedLogger = self.logger

@@ -303,7 +303,18 @@ class ChatService: ObservableObject {
         let words = userMessage.split(separator: " ").prefix(5)
         return words.joined(separator: " ")
     }
-    
+
+    private func applyGeneratedTitle(_ title: String, to conversationId: UUID) async {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if currentConversation?.id == conversationId {
+            currentConversation?.title = trimmed
+        }
+
+        await historyService?.updateConversationTitle(conversationId: conversationId, newTitle: trimmed)
+    }
+
     // MARK: - Conversation Management
     func resetConversationContext(
         messagesToLoad: [ChatMessage]? = nil,
@@ -369,13 +380,11 @@ class ChatService: ObservableObject {
            conversation.title == nil,
            message.role == "user",
            conversation.messages.count == 1 {
+            let conversationId = conversation.id
             Task { [weak self] in
                 guard let self = self else { return }
                 let generatedTitle = await self.generateChatTitle(for: message.content)
-                self.currentConversation?.title = generatedTitle
-                if let updatedConv = self.currentConversation {
-                    await self.historyService?.addOrUpdateConversation(updatedConv)
-                }
+                await self.applyGeneratedTitle(generatedTitle, to: conversationId)
             }
         }
         
