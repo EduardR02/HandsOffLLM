@@ -1,4 +1,5 @@
 import SwiftUI
+import simd
 
 // A Shape that draws a circle whose radius is modulated by two sine-waves.
 // phase and amplitude animate over time to create a fluid, wavy border.
@@ -57,6 +58,75 @@ fileprivate struct AmpHolder {
     static var displayedAmp: Double = defaultMinAmplitude
 }
 
+private extension Color {
+    func simdRGBA() -> SIMD4<Float> {
+        #if canImport(UIKit)
+        let uiColor = UIColor(self)
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        
+        if uiColor.getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return SIMD4(Float(r), Float(g), Float(b), Float(a))
+        }
+        
+        if let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
+           let converted = uiColor.cgColor.converted(to: sRGB, intent: .defaultIntent, options: nil),
+           let components = converted.components {
+            let red = components.count > 0 ? components[0] : 1
+            let green = components.count > 1 ? components[1] : red
+            let blue = components.count > 2 ? components[2] : green
+            let alpha = components.count > 3 ? components[3] : 1
+            return SIMD4(Float(red), Float(green), Float(blue), Float(alpha))
+        }
+        #elseif canImport(AppKit)
+        let nsColor = NSColor(self)
+        guard let color = nsColor.usingColorSpace(.genericRGB) else {
+            return SIMD4(1, 1, 1, 1)
+        }
+        return SIMD4(Float(color.redComponent),
+                     Float(color.greenComponent),
+                     Float(color.blueComponent),
+                     Float(color.alphaComponent))
+        #endif
+        return SIMD4(1, 1, 1, 1)
+    }
+    
+    func blended(with other: Color, amount: Double) -> Color {
+        let primary = simdRGBA()
+        let secondary = other.simdRGBA()
+        let t = Float(max(0.0, min(1.0, amount)))
+        let blend = primary * (1 - t) + secondary * t
+        return Color(.sRGB,
+                     red: Double(blend.x),
+                     green: Double(blend.y),
+                     blue: Double(blend.z),
+                     opacity: Double(blend.w))
+    }
+}
+
+private func normalizedPalette(_ colors: [Color]) -> [Color] {
+    guard !colors.isEmpty else {
+        return [Color.white, Color.white]
+    }
+    if colors.count == 1, let first = colors.first {
+        return [first, first]
+    }
+    return colors
+}
+
+private func blendedStrokePalette(fill: [Color], stroke: [Color]) -> [Color] {
+    let baseFill = normalizedPalette(fill)
+    let baseStroke = normalizedPalette(stroke)
+    let maxCount = max(baseFill.count, baseStroke.count)
+    return (0..<maxCount).map { index in
+        let strokeColor = baseStroke[index % baseStroke.count]
+        let fillColor = baseFill[index % baseFill.count]
+        return strokeColor.blended(with: fillColor, amount: 0.35)
+    }
+}
+
 struct VoiceIndicatorView: View {
     @Binding var state: ViewModelState
     @EnvironmentObject var audioService: AudioService
@@ -71,20 +141,36 @@ struct VoiceIndicatorView: View {
     @State private var strokeColors: [Color] = []
     
     private func updateColors(for state: ViewModelState) {
+        let fillPalette: [Color]
+        let strokePalette: [Color]
+        
         switch state {
         case .listening:
-            mainColors   = [Color.blue, Color(red: 11/255, green: 219/255, blue: 182/255), Color.cyan, Color.blue]
-            strokeColors = [Color.cyan, Color(red: 8/255, green: 164/255, blue: 167/255), Color.blue, Color.cyan]
+            fillPalette   = [Color.blue,
+                             Color(red: 11/255, green: 219/255, blue: 182/255),
+                             Color.cyan,
+                             Color.blue]
+            strokePalette = [Color.cyan,
+                             Color(red: 8/255, green: 164/255, blue: 167/255),
+                             Color.blue,
+                             Color.cyan]
         case .speakingTTS:
-            mainColors   = [Color.pink, Color.purple, Color.pink]
-            strokeColors = [Color.purple, Color.pink, Color.purple]
+            fillPalette   = [Color.pink, Color.purple, Color.pink]
+            strokePalette = [Color.purple, Color.pink, Color.purple]
         case .processingLLM, .fetchingTTS:
-            mainColors   = [Color.orange, Color.red, Color.yellow, Color.orange]
-            strokeColors = [Color.yellow, Color.red, Color.orange, Color.yellow]
+            fillPalette   = [Color.orange, Color.red, Color.yellow, Color.orange]
+            strokePalette = [Color.yellow, Color.red, Color.orange, Color.yellow]
         default:
-            mainColors   = [Color.gray.opacity(0.4), Color.gray.opacity(0.6), Color.gray.opacity(0.4)]
-            strokeColors = [Color.gray.opacity(0.6), Color.gray.opacity(0.4), Color.gray.opacity(0.6)]
+            fillPalette   = [Color.gray.opacity(0.4),
+                             Color.gray.opacity(0.6),
+                             Color.gray.opacity(0.4)]
+            strokePalette = [Color.gray.opacity(0.6),
+                             Color.gray.opacity(0.4),
+                             Color.gray.opacity(0.6)]
         }
+        
+        mainColors = normalizedPalette(fillPalette)
+        strokeColors = blendedStrokePalette(fill: mainColors, stroke: strokePalette)
     }
     
     // Extract common timeline rendering logic
@@ -115,6 +201,7 @@ struct VoiceIndicatorView: View {
 
                 WaveCircle(phase: phase, amplitude: ampToUse * 0.8, noiseOffset: 2)
                     .stroke(AngularGradient(gradient: Gradient(colors: strokeColors), center: .center), lineWidth: size * 0.04)
+                    .blendMode(.plusLighter)
                     .animation(.easeInOut(duration: 0.15), value: strokeColors)
             }
             .padding(size * 0.1)
