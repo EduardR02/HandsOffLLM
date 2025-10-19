@@ -15,7 +15,6 @@ class ChatService: ObservableObject {
     let llmChunkSubject = PassthroughSubject<String, Never>()    // Sends LLM text chunks
     let llmErrorSubject = PassthroughSubject<Error, Never>()      // Reports LLM errors
     let llmCompleteSubject = PassthroughSubject<Void, Never>()   // Signals end of LLM stream
-    let voiceEventSubject = PassthroughSubject<VoiceLoopEvent, Never>()
     
     // --- Internal State ---
     private var llmTask: Task<Void, Never>? = nil
@@ -62,7 +61,6 @@ class ChatService: ObservableObject {
         isProcessingLLM = true
         currentFullResponse = "" // Reset accumulator
         isLLMStreamComplete = false // ← Reset flag
-        voiceEventSubject.send(.llmStarted)
 
         // Start the LLM fetch task
         llmTask = Task { [weak self] in
@@ -76,7 +74,6 @@ class ChatService: ObservableObject {
         llmTask?.cancel()
         llmTask = nil
         isProcessingLLM = false
-        voiceEventSubject.send(.resetToIdle)
     }
     
     // MARK: - LLM Fetching Logic
@@ -170,12 +167,8 @@ class ChatService: ObservableObject {
         if let err = error {
             if err is CancellationError {
                 logger.notice("LLM stream cancelled; keeping existing loop state.")
-            } else {
-                voiceEventSubject.send(.llmCompleted(success: false))
-                voiceEventSubject.send(.encounteredError(err.localizedDescription))
             }
         } else {
-            voiceEventSubject.send(.llmCompleted(success: true))
             llmCompleteSubject.send()
         }
     }

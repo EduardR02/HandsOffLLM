@@ -71,7 +71,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     let errorSubject = PassthroughSubject<Error, Never>()
     let ttsChunkSavedSubject = PassthroughSubject<(messageID: UUID, path: String), Never>()
     let ttsPlaybackCompleteSubject = PassthroughSubject<Void, Never>()
-    let voiceEventSubject = PassthroughSubject<VoiceLoopEvent, Never>()
     
     private var ttsState = TTSState()
     private var ttsFetchTask: Task<Void, Never>? = nil
@@ -129,7 +128,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         replayQueue.removeAll()
         stopSpeaking()
     }
-    
+
     private lazy var urlSession: URLSession = {
         URLSession(configuration: .default)
     }()
@@ -172,7 +171,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             logger.error("Failed to initialize VAD: \(error.localizedDescription)")
             let audioError = AudioError.vadInitializationError(error.localizedDescription)
             errorSubject.send(audioError)
-            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
         }
     }
 
@@ -195,7 +193,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             logger.error("Audio session configuration error: \(error.localizedDescription)")
             let audioError = AudioError.audioSessionError(error.localizedDescription)
             errorSubject.send(audioError)
-            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
         }
         
         if routeChangeObserver == nil {
@@ -230,7 +227,9 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     func startListening(useCooldown: Bool = true) {
         guard !isListening && !isSpeaking else { return }
-        
+        if useCooldown {
+            logger.info("🎤 Listening started with cooldown.")
+        }
         isListening = true
         isSpeaking = false
         isTranscribing = false
@@ -246,7 +245,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
         
         logger.notice("🎤 Listening started with VAD events…")
-        voiceEventSubject.send(.listeningStarted)
     }
     
     func stopListeningCleanup(resetTranscribing: Bool = true) {
@@ -262,9 +260,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         
         if wasListening {
             logger.notice("🎙️ Listening stopped (Cleanup).")
-            if resetTranscribing {
-                voiceEventSubject.send(.listeningStopped)
-            }
         }
     }
     
@@ -272,7 +267,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard !isProcessingTranscription && isListening && !captureBuffers.capturedSamples.isEmpty else { return }
         isProcessingTranscription = true
         isTranscribing = true
-        voiceEventSubject.send(.transcriptionBegan)
         defer { isProcessingTranscription = false }
         
         do {
@@ -288,8 +282,11 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             
             if trimmedSamples.isEmpty {
                 logger.info("🎤 Trimmed audio empty - continuing to listen.")
+                captureBuffers.reset()
+                Task { @MainActor in
+                    vadStreamState = await vadManager?.makeStreamState()
+                }
                 isTranscribing = false
-                voiceEventSubject.send(.listeningStarted)
                 return
             }
             
@@ -300,7 +297,10 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 logger.error("Mistral transcription service not available - continuing to listen.")
                 let audioError = AudioError.transcriptionError("Mistral API key not available")
                 errorSubject.send(audioError)
-                voiceEventSubject.send(.transcriptionFailed(audioError.localizedDescription))
+                captureBuffers.reset()
+                Task { @MainActor in
+                    vadStreamState = await vadManager?.makeStreamState()
+                }
                 isTranscribing = false
                 return
             }
@@ -310,19 +310,24 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let trimmedText = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedText.isEmpty {
                 logger.info("🎤 Sending transcription to ViewModel: '\(trimmedText)'")
-                voiceEventSubject.send(.transcriptionDelivered)
                 transcriptionSubject.send(trimmedText)
             } else {
                 logger.info("🎤 Transcription empty - continuing to listen.")
+                captureBuffers.reset()
+                Task { @MainActor in
+                    vadStreamState = await vadManager?.makeStreamState()
+                }
                 isTranscribing = false
-                voiceEventSubject.send(.listeningStarted)
                 return
             }
         } catch {
             logger.error("🚨 Transcription error: \(error.localizedDescription) - continuing to listen.")
             let audioError = AudioError.transcriptionError(error.localizedDescription)
             errorSubject.send(audioError)
-            voiceEventSubject.send(.transcriptionFailed(audioError.localizedDescription))
+            captureBuffers.reset()
+            Task { @MainActor in
+                vadStreamState = await vadManager?.makeStreamState()
+            }
             isTranscribing = false
             return
         }
@@ -488,7 +493,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             logger.error("🚨 Invalid hardware input format (sample rate 0).")
             let audioError = AudioError.audioEngineError("Invalid input format (sample rate 0)")
             errorSubject.send(audioError)
-            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
             if audioEngine.isRunning { audioEngine.stop() }
             return
         }
@@ -508,7 +512,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 logger.error("🚨 Failed to create audio converter")
                 let audioError = AudioError.audioEngineError("Failed to create audio converter")
                 errorSubject.send(audioError)
-                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
                 return
             }
             converter = created
@@ -561,7 +564,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 logger.error("🚨 Audio engine startup error: \(error.localizedDescription)")
                 let audioError = AudioError.audioEngineError("Engine start failed: \(error.localizedDescription)")
                 errorSubject.send(audioError)
-                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
                 input.removeTap(onBus: 0)
             }
         }
@@ -665,14 +667,6 @@ extension AudioService {
             self.isSpeaking = false
             logger.notice("⏹️ TTS interrupted/stopped by request.")
         }
-        
-        if replayQueue.isEmpty && currentAudioPlayer == nil && !isFetchingTTS {
-            if isListening {
-                voiceEventSubject.send(.listeningStarted)
-            } else {
-                voiceEventSubject.send(.resetToIdle)
-            }
-        }
     }
     
     func setTTSContext(conversationID: UUID, messageID: UUID) {
@@ -700,19 +694,16 @@ extension AudioService {
             if currentAudioPlayer?.play() == true {
                 isSpeaking = true
                 logger.info("▶️ Playback started for file: \(relativePath)")
-                voiceEventSubject.send(.ttsSpeakingStarted)
             } else {
                 logger.error("Failed to play audio file at: \(relativePath)")
                 isSpeaking = false
                 let audioError = AudioError.audioPlaybackError(NSError(domain: "AudioService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to play audio file."]))
                 errorSubject.send(audioError)
-                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
             }
         } catch {
             logger.error("Error loading or playing audio file \(relativePath): \(error.localizedDescription)")
             let audioError = AudioError.audioPlaybackError(error)
             errorSubject.send(audioError)
-            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
         }
     }
     
@@ -730,7 +721,6 @@ extension AudioService {
             stopListeningCleanup()  // Handles cancel-like reset
         }
         stopSpeaking()
-        voiceEventSubject.send(.resetToIdle)
     }
     
     func scheduleNext() {
@@ -752,13 +742,10 @@ extension AudioService {
 
         if ttsState.llmFinished && ttsState.audioQueue.isEmpty && currentAudioPlayer?.isPlaying != true {
             ttsPlaybackCompleteSubject.send()
-            voiceEventSubject.send(.ttsCompleted)
             ttsState.llmFinished = false
             ttsState.previousChunkSize = nil
         }
-        else if currentAudioPlayer?.isPlaying != true && ttsState.audioQueue.isEmpty {
-            voiceEventSubject.send(.ttsWaiting)
-        }
+        // No else branch: UI derives state from service flags.
     }
     
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -779,11 +766,7 @@ extension AudioService {
                 let hadPendingLLM = self.ttsState.llmFinished
                 self.scheduleNext()
                 if !hadPendingLLM && self.replayQueue.isEmpty && self.ttsState.audioQueue.isEmpty && self.currentAudioPlayer == nil {
-                    if self.isListening {
-                        self.voiceEventSubject.send(.listeningStarted)
-                    } else {
-                        self.voiceEventSubject.send(.resetToIdle)
-                    }
+                    self.logger.debug("Audio playback finished; no queued audio remaining.")
                 }
             }
         }
@@ -800,7 +783,6 @@ extension AudioService {
             self.currentAudioPlayer = nil
             let audioError = AudioError.audioPlaybackError(error ?? NSError(domain: "AudioService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown decode error"]))
             self.errorSubject.send(audioError)
-            self.voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
 
             if self.isSpeaking {
                 self.isSpeaking = false
@@ -824,7 +806,6 @@ extension AudioService {
 
         let session = ttsSessionId
         isFetchingTTS = true
-        voiceEventSubject.send(.ttsFetchStarted)
 
         ttsFetchTask = Task { [weak self] in
             guard let self = self else { return }
@@ -884,9 +865,20 @@ extension AudioService {
             } catch {
                 if error is CancellationError {
                     self.logger.notice("OpenAI TTS fetch cancelled for session \(session).")
+                } else if let urlError = error as? URLError, urlError.code == .cancelled {
+                    self.logger.notice("OpenAI TTS fetch cancelled (URLError.cancelled) for session \(session).")
+                } else if (error as NSError).domain == NSURLErrorDomain,
+                          (error as NSError).code == NSURLErrorCancelled {
+                    self.logger.notice("OpenAI TTS fetch cancelled (NSError cancelled) for session \(session).")
+                } else if let llmError = error as? LlmError,
+                          case let .networkError(inner) = llmError,
+                          (inner is CancellationError) ||
+                          (inner as NSError).domain == NSURLErrorDomain && (inner as NSError).code == NSURLErrorCancelled ||
+                          (inner as? URLError)?.code == .cancelled {
+                    self.logger.notice("OpenAI TTS fetch cancelled (LlmError.networkError cancelled) for session \(session).")
                 } else {
                     self.logger.error("🚨 OpenAI TTS Error: \(error.localizedDescription)")
-                    self.voiceEventSubject.send(.encounteredError("OpenAI TTS Error: \(error.localizedDescription)"))
+                    self.errorSubject.send(AudioError.ttsFetchFailed(error))
                 }
             }
         }
@@ -953,21 +945,18 @@ extension AudioService {
             if currentAudioPlayer?.play() == true {
                 isSpeaking = true
                 logger.info("▶️ Playback started.")
-                voiceEventSubject.send(.ttsSpeakingStarted)
             } else {
                 logger.error("🚨 Failed to start audio playback (play() returned false).")
                 currentAudioPlayer = nil
                 isSpeaking = false
                 let audioError = AudioError.audioPlaybackError(NSError(domain: "AudioService", code: 1, userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer.play() returned false"]))
                 errorSubject.send(audioError)
-                voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
                 scheduleNext()
             }
         } catch {
             logger.error("🚨 Failed to initialize or play audio: \(error.localizedDescription)")
             let audioError = AudioError.audioPlaybackError(error)
             errorSubject.send(audioError)
-            voiceEventSubject.send(.encounteredError(audioError.localizedDescription))
             currentAudioPlayer = nil
             isSpeaking = false
             scheduleNext()

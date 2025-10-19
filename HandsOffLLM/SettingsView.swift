@@ -829,6 +829,5 @@ struct AdvancedSettingsView: View {
     .environmentObject(env.history)
     .environmentObject(env.audio)
     .environmentObject(env.chat)
-    .environmentObject(env.coordinator)
     .preferredColorScheme(.dark)
 }

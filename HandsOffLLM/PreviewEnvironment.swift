@@ -7,7 +7,6 @@ struct PreviewEnvironment {
     let history: HistoryService
     let audio: AudioService
     let chat: ChatService
-    let coordinator: VoiceLoopCoordinator
     let viewModel: ChatViewModel
 
     static func make(
@@ -21,19 +20,15 @@ struct PreviewEnvironment {
 
         let audioService = AudioService(settingsService: resolvedSettings, historyService: resolvedHistory)
         let chatService = ChatService(settingsService: resolvedSettings, historyService: resolvedHistory)
-        let coordinator = VoiceLoopCoordinator()
-        coordinator.bind(audioService: audioService, chatService: chatService)
         let viewModel = ChatViewModel(audioService: audioService,
                                       chatService: chatService,
                                       settingsService: resolvedSettings,
-                                      historyService: resolvedHistory,
-                                      loopCoordinator: coordinator)
+                                      historyService: resolvedHistory)
 
         return PreviewEnvironment(settings: resolvedSettings,
                                   history: resolvedHistory,
                                   audio: audioService,
                                   chat: chatService,
-                                  coordinator: coordinator,
                                   viewModel: viewModel)
     }
 }

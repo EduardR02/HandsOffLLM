@@ -228,6 +228,5 @@ struct ChatDetailView: View {
     .environmentObject(env.settings)
     .environmentObject(env.history)
     .environmentObject(env.chat)
-    .environmentObject(env.coordinator)
     .preferredColorScheme(.dark)
 }

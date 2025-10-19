@@ -16,7 +16,6 @@ struct HandsOffLLMApp: App {
     @StateObject var historyService: HistoryService
     @StateObject var audioService: AudioService
     @StateObject var chatService: ChatService
-    @StateObject var loopCoordinator: VoiceLoopCoordinator
     @StateObject var viewModel: ChatViewModel
     @Environment(\.scenePhase) private var scenePhase
     
@@ -28,14 +27,11 @@ struct HandsOffLLMApp: App {
         let localHistoryService = HistoryService()
         let localAudioService = AudioService(settingsService: localSettingsService, historyService: localHistoryService)
         let localChatService = ChatService(settingsService: localSettingsService, historyService: localHistoryService)
-        let localLoopCoordinator = VoiceLoopCoordinator()
-        localLoopCoordinator.bind(audioService: localAudioService, chatService: localChatService)
         let localViewModel = ChatViewModel(
             audioService: localAudioService,
             chatService: localChatService,
             settingsService: localSettingsService,
-            historyService: localHistoryService,
-            loopCoordinator: localLoopCoordinator
+            historyService: localHistoryService
         )
 
         // Initialize the StateObject wrapped properties
@@ -43,7 +39,6 @@ struct HandsOffLLMApp: App {
         _historyService = StateObject(wrappedValue: localHistoryService)
         _audioService = StateObject(wrappedValue: localAudioService)
         _chatService = StateObject(wrappedValue: localChatService)
-        _loopCoordinator = StateObject(wrappedValue: localLoopCoordinator)
         _viewModel = StateObject(wrappedValue: localViewModel)
         
         UIBarButtonItem.appearance().tintColor = UIColor(Theme.accent)
@@ -68,7 +63,6 @@ struct HandsOffLLMApp: App {
             .environmentObject(historyService)
             .environmentObject(audioService)
             .environmentObject(chatService)
-            .environmentObject(loopCoordinator)
             .environmentObject(viewModel)
             .preferredColorScheme(.dark)
         }

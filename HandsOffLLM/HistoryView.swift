@@ -130,6 +130,5 @@ struct HistoryView: View {
     .environmentObject(env.settings)
     .environmentObject(env.audio)
     .environmentObject(env.chat)
-    .environmentObject(env.coordinator)
     .preferredColorScheme(.dark)
 }
