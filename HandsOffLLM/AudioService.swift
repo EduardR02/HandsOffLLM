@@ -1,8 +1,25 @@
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
+@preconcurrency import AVFAudio
 import OSLog
 import Combine
 import FluidAudio
+
+private final class WeakBox<T: AnyObject>: @unchecked Sendable {
+    weak var value: T?
+
+    init(_ value: T) {
+        self.value = value
+    }
+}
+
+fileprivate func extractSamples(from buffer: AVAudioPCMBuffer) -> [Float]? {
+    guard let channelData = buffer.floatChannelData?[0] else { return nil }
+    let frameLength = Int(buffer.frameLength)
+    guard frameLength > 0 else { return [] }
+    let channelDataValue = UnsafeBufferPointer(start: channelData, count: frameLength)
+    return Array(channelDataValue)
+}
 
 private struct CaptureBuffers {
     var capturedSamples: [Float] = []
@@ -41,7 +58,7 @@ private struct TTSState {
 @MainActor
 class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
-    let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "AudioService")
+    nonisolated let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "AudioService")
     
     @Published var isListening: Bool = false
     @Published var isSpeaking: Bool = false
@@ -180,7 +197,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             try session.setCategory(.playAndRecord,
                                     mode: .default,
                                     options: [
-                                        .allowBluetooth,
+                                        .allowBluetoothHFP,
                                         .allowBluetoothA2DP,
                                         .allowAirPlay,
                                         .defaultToSpeaker
@@ -389,12 +406,11 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         return wavData
     }
     
-    private func calculatePowerLevel(buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData?[0] else { return -50.0 }
-        let channelDataValue = UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength))
+    private func calculatePowerLevel(samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return -50.0 }
         var rms: Float = 0.0
-        for sample in channelDataValue { rms += sample * sample }
-        rms = sqrt(rms / Float(buffer.frameLength))
+        for sample in samples { rms += sample * sample }
+        rms = sqrt(rms / Float(samples.count))
         let dbValue = (rms > 0) ? (20 * log10(rms)) : -160.0
         let minDb: Float = -50.0
         let maxDb: Float = 0.0
@@ -519,42 +535,25 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             converter = nil
         }
 
-        input.installTap(onBus: 0, bufferSize: 2048, format: hardwareInputFormat) { [weak self] buffer, _ in
-            guard let self = self else { return }
-            
-            Task { @MainActor in
-                if self.isListening {
-                    self.lastMeasuredAudioLevel = self.calculatePowerLevel(buffer: buffer)
-
-                    let processedBuffer: AVAudioPCMBuffer
-                    if let converter = converter {
-                        let targetFrames = AVAudioFrameCount(Double(buffer.frameLength) * desiredSampleRate / hardwareInputFormat.sampleRate)
-                        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: targetFrames) else {
-                            self.logger.error("Failed to allocate converted audio buffer.")
-                            return
-                        }
-
-                        var error: NSError?
-                        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                            outStatus.pointee = .haveData
-                            return buffer
-                        }
-
-                        converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
-
-                        if let error = error {
-                            self.logger.error("Audio conversion error: \(error.localizedDescription)")
-                            return
-                        }
-                        processedBuffer = convertedBuffer
-                    } else {
-                        processedBuffer = buffer
-                    }
-
-                    await self.processAudioBuffer(processedBuffer)
-                }
+        let weakSelf = WeakBox(self)
+        let onSamples: @Sendable ([Float]) -> Void = { [weakSelf] samples in
+            Task { @MainActor [samples] in
+                guard let service = weakSelf.value, service.isListening else { return }
+                service.lastMeasuredAudioLevel = service.calculatePowerLevel(samples: samples)
+                await service.processAudioSamples(samples)
             }
         }
+
+        let tapBlock = Self.makeTapHandler(
+            converter: converter,
+            desiredFormat: desiredFormat,
+            desiredSampleRate: desiredSampleRate,
+            hardwareSampleRate: hardwareInputFormat.sampleRate,
+            logger: logger,
+            onSamples: onSamples
+        )
+
+        input.installTap(onBus: 0, bufferSize: 2048, format: hardwareInputFormat, block: tapBlock)
 
         if !audioEngine.isRunning {
             audioEngine.prepare()
@@ -569,9 +568,53 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) async {
-        guard let channelData = buffer.floatChannelData?[0] else { return }
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength)))
+    nonisolated private static func makeTapHandler(
+        converter: AVAudioConverter?,
+        desiredFormat: AVAudioFormat,
+        desiredSampleRate: Double,
+        hardwareSampleRate: Double,
+        logger: Logger,
+        onSamples: @escaping @Sendable ([Float]) -> Void
+    ) -> AVAudioNodeTapBlock {
+        return { buffer, _ in
+            let samples: [Float]
+            if let converter {
+                let targetFrames = AVAudioFrameCount(Double(buffer.frameLength) * desiredSampleRate / hardwareSampleRate)
+                guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: desiredFormat, frameCapacity: targetFrames) else {
+                    logger.error("Failed to allocate converted audio buffer.")
+                    return
+                }
+
+                var error: NSError?
+                let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                    outStatus.pointee = .haveData
+                    return buffer
+                }
+
+                converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
+
+                if let error {
+                    logger.error("Audio conversion error: \(error.localizedDescription)")
+                    return
+                }
+
+                guard let convertedSamples = extractSamples(from: convertedBuffer) else {
+                    logger.error("Failed to read converted audio samples.")
+                    return
+                }
+                samples = convertedSamples
+            } else {
+                guard let rawSamples = extractSamples(from: buffer) else { return }
+                samples = rawSamples
+            }
+
+            guard !samples.isEmpty else { return }
+            onSamples(samples)
+        }
+    }
+    
+    private func processAudioSamples(_ samples: [Float]) async {
+        guard !samples.isEmpty else { return }
 
         if let cooldownEnd = listeningCooldownEndTime {
             if Date() < cooldownEnd {

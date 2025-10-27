@@ -77,6 +77,7 @@ struct HistoryView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     // --- Make Dummy Conversations Multi-Turn ---
     let convo1: Conversation = {
@@ -132,3 +133,4 @@ struct HistoryView: View {
     .environmentObject(env.chat)
     .preferredColorScheme(.dark)
 }
+#endif

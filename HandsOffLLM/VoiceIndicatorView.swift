@@ -54,6 +54,7 @@ struct WaveCircle: Shape {
 fileprivate let defaultMinAmplitude: Double = 0.15
 
 // File-level amp holder for smoothing state between frames
+@MainActor
 fileprivate struct AmpHolder {
     static var displayedAmp: Double = defaultMinAmplitude
 }

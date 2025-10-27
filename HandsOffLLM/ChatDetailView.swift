@@ -206,6 +206,7 @@ struct ChatDetailView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     let conversation: Conversation = {
         var convo = Conversation(messages: [
@@ -230,3 +231,4 @@ struct ChatDetailView: View {
     .environmentObject(env.chat)
     .preferredColorScheme(.dark)
 }
+#endif

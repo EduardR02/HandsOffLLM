@@ -818,6 +818,7 @@ struct AdvancedSettingsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     let env = PreviewEnvironment.make()
 
@@ -831,3 +832,4 @@ struct AdvancedSettingsView: View {
     .environmentObject(env.chat)
     .preferredColorScheme(.dark)
 }
+#endif

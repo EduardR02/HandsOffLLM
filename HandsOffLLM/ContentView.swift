@@ -316,7 +316,7 @@ private struct MenuRowContent: View {
     }
 }
 
-
+#if DEBUG
 #Preview {
     let env = PreviewEnvironment.make()
 
@@ -329,3 +329,4 @@ private struct MenuRowContent: View {
     .environmentObject(env.chat)
     .preferredColorScheme(.dark)
 }
+#endif
