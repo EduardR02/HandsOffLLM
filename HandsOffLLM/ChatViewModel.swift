@@ -200,12 +200,16 @@ class ChatViewModel: ObservableObject {
     func loadConversationHistory(_ conversation: Conversation, upTo messageIndex: Int) {
         logger.info("Loading conversation \(conversation.id) up to index \(messageIndex)")
         cancelProcessingAndSpeaking()
-        
+
         Task { @MainActor in
             let messagesToLoad = Array(conversation.messages.prefix(through: messageIndex))
+            let isLastMessage = messageIndex == conversation.messages.count - 1
             var audioPathsToLoad: [UUID: [String]]? = nil
-            
+            var parentTitle: String? = nil
+
             if let fullParentConversation = await historyService.loadConversationDetail(id: conversation.id) {
+                parentTitle = fullParentConversation.title
+
                 if let parentAudioPaths = fullParentConversation.ttsAudioPaths {
                     audioPathsToLoad = [:]
                     for msg in messagesToLoad {
@@ -218,13 +222,28 @@ class ChatViewModel: ObservableObject {
             } else {
                 logger.warning("Could not load full parent conversation \(conversation.id)")
             }
-            
-            chatService.resetConversationContext(
-                messagesToLoad: messagesToLoad,
-                existingConversationId: nil,
-                parentId: conversation.id,
-                initialAudioPaths: audioPathsToLoad
-            )
+
+            if isLastMessage {
+                // Continue the existing conversation instead of forking
+                logger.info("Continuing existing conversation (last message)")
+                chatService.resetConversationContext(
+                    messagesToLoad: messagesToLoad,
+                    existingConversationId: conversation.id,
+                    parentId: nil,
+                    initialAudioPaths: audioPathsToLoad,
+                    initialTitle: parentTitle
+                )
+            } else {
+                // Fork to a new conversation
+                logger.info("Forking new conversation from parent")
+                chatService.resetConversationContext(
+                    messagesToLoad: messagesToLoad,
+                    existingConversationId: nil,
+                    parentId: conversation.id,
+                    initialAudioPaths: audioPathsToLoad,
+                    initialTitle: parentTitle
+                )
+            }
         }
     }
     

@@ -19,6 +19,8 @@ struct HistoryView: View {
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var viewModel: ChatViewModel
 
+    @State private var conversationToRename: ConversationIndexEntry?
+
     private var groupedConversations: [(String, [ConversationIndexEntry])] {
         historyService.groupIndexByDate()
     }
@@ -49,6 +51,14 @@ struct HistoryView: View {
                                         .font(.caption)
                                         .foregroundColor(Theme.secondaryText)
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .simultaneousGesture(
+                                    LongPressGesture(minimumDuration: 0.4)
+                                        .onEnded { _ in
+                                            conversationToRename = entry
+                                        }
+                                )
                             }
                             .listRowBackground(Theme.menuAccent)
                             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
@@ -60,6 +70,22 @@ struct HistoryView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .sheet(item: $conversationToRename) { entry in
+                RenameConversationSheet(
+                    title: entry.title ?? "",
+                    onSave: { newTitle in
+                        Task {
+                            await historyService.updateConversationTitle(conversationId: entry.id, newTitle: newTitle)
+                        }
+                        conversationToRename = nil
+                    },
+                    onCancel: {
+                        conversationToRename = nil
+                    }
+                )
+                .presentationDetents([.height(200)])
+                .presentationDragIndicator(.visible)
+            }
         }
         .navigationTitle("History")
         .listStyle(.insetGrouped)
@@ -68,12 +94,74 @@ struct HistoryView: View {
     private func deleteConversations(inSectionNamed sectionName: String, at offsets: IndexSet) {
         guard let entriesInSection = groupedConversations.first(where: { $0.0 == sectionName })?.1 else { return }
         let idsToDelete = offsets.map { entriesInSection[$0].id }
-        
+
         Task {
             for id in idsToDelete {
                 await historyService.deleteConversation(id: id)
             }
         }
+    }
+}
+
+// MARK: - Rename Sheet
+private struct RenameConversationSheet: View {
+    @State private var text: String
+    @FocusState private var isFocused: Bool
+
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    init(title: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        _text = State(initialValue: title)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                Text("Rename Conversation")
+                    .font(.headline)
+                    .foregroundColor(Theme.primaryText)
+                    .padding(.top)
+
+                TextField("Title", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .padding(.horizontal)
+                    .submitLabel(.done)
+                    .onSubmit {
+                        saveIfValid()
+                    }
+
+                HStack(spacing: 16) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Theme.secondaryText)
+
+                    Button("Save") {
+                        saveIfValid()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.bottom)
+            }
+        }
+        .onAppear {
+            isFocused = true
+        }
+    }
+
+    private func saveIfValid() {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        onSave(trimmed)
     }
 }
 

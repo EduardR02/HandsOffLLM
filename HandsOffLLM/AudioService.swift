@@ -4,6 +4,7 @@ import Foundation
 import OSLog
 import Combine
 import FluidAudio
+import Accelerate
 
 private final class WeakBox<T: AnyObject>: @unchecked Sendable {
     weak var value: T?
@@ -409,8 +410,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func calculatePowerLevel(samples: [Float]) -> Float {
         guard !samples.isEmpty else { return -50.0 }
         var rms: Float = 0.0
-        for sample in samples { rms += sample * sample }
-        rms = sqrt(rms / Float(samples.count))
+        vDSP_rmsqv(samples, 1, &rms, vDSP_Length(samples.count))
         let dbValue = (rms > 0) ? (20 * log10(rms)) : -160.0
         let minDb: Float = -50.0
         let maxDb: Float = 0.0

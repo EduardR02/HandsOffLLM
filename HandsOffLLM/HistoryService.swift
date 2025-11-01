@@ -126,16 +126,21 @@ class HistoryService: ObservableObject {
     // MARK: - Conversation Management
     
     func addOrUpdateConversation(_ conversation: Conversation) async {
-        await saveConversationFile(conversation)
-        let entry = ConversationIndexEntry(id: conversation.id,
-                                           title: conversation.title,
-                                           createdAt: conversation.createdAt)
+        // Update timestamp to current time so conversations sort by last activity
+        var updatedConversation = conversation
+        updatedConversation.createdAt = Date()
+
+        await saveConversationFile(updatedConversation)
+        let entry = ConversationIndexEntry(id: updatedConversation.id,
+                                           title: updatedConversation.title,
+                                           createdAt: updatedConversation.createdAt)
         if let idx = indexEntries.firstIndex(where: { $0.id == entry.id }) {
             indexEntries[idx] = entry
         } else {
             indexEntries.insert(entry, at: 0)
-            indexEntries.sort { $0.createdAt > $1.createdAt } // Maintain sort order
         }
+        // Always re-sort after updating timestamp to maintain last-activity order
+        indexEntries.sort { $0.createdAt > $1.createdAt }
         await saveIndex()
     }
 

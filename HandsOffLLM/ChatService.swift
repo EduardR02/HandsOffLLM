@@ -320,31 +320,33 @@ class ChatService: ObservableObject {
         messagesToLoad: [ChatMessage]? = nil,
         existingConversationId: UUID? = nil,
         parentId: UUID? = nil,
-        initialAudioPaths: [UUID: [String]]? = nil // ← New parameter
+        initialAudioPaths: [UUID: [String]]? = nil,
+        initialTitle: String? = nil
     ) {
-        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0)")
-        
+        logger.info("Resetting conversation context. Loading messages: \(messagesToLoad?.count ?? 0). Existing ID: \(existingConversationId?.uuidString ?? "New"). Parent ID: \(parentId?.uuidString ?? "None"). Initial Paths: \(initialAudioPaths?.count ?? 0). Title: \(initialTitle ?? "None")")
+
         // Cancel any in-flight LLM processing
         cancelProcessing()
         isLLMStreamComplete = false
-        
+
         // Seed a usable conversation immediately so callers can append safely.
-        let seededConversation = Conversation(
+        var seededConversation = Conversation(
             id: existingConversationId ?? UUID(),
             messages: messagesToLoad ?? [],
             createdAt: Date(),
             parentConversationId: parentId,
             ttsAudioPaths: initialAudioPaths
         )
+        seededConversation.title = initialTitle
         currentConversation = seededConversation
-        
+
         guard let existingId = existingConversationId else { return }
-        
+
         // If we were asked to revive an existing conversation, load it in the background
         Task { @MainActor [weak self] in
             guard let self = self,
                   let loadedConv = await self.historyService?.loadConversationDetail(id: existingId) else { return }
-            
+
             var conversationToSet = loadedConv
             if let messages = messagesToLoad {
                 conversationToSet.messages = messages
@@ -352,27 +354,20 @@ class ChatService: ObservableObject {
             if let audioPaths = initialAudioPaths {
                 conversationToSet.ttsAudioPaths = audioPaths
             }
+            if let title = initialTitle {
+                conversationToSet.title = title
+            }
             self.currentConversation = conversationToSet
         }
     }
     
     // --- Update message handling ---
     private func appendMessageAndUpdateHistory(_ message: ChatMessage) {
-        // Check if conversation is nil and attempt recovery first
-        if currentConversation == nil {
-            logger.error("Critical error: Tried to append message but currentConversation is nil. Attempting recovery.")
-            resetConversationContext()
-            // Check *again* after attempting recovery
-            guard currentConversation != nil else {
-                logger.error("Recovery failed: Could not create a conversation context after reset.")
-                return // Exit if recovery failed
-            }
-            logger.warning("appendMessageAndUpdateHistory: Recovered by creating new context.")
-            // If recovery succeeded, execution continues below
+        guard currentConversation != nil else {
+            logger.error("Cannot append message: currentConversation is nil. This should never happen.")
+            return
         }
-        
-        // Now we are sure currentConversation is non-nil
-        // Append directly to the @Published property's messages
+
         currentConversation?.messages.append(message)
         
         // Generate LLM-based title after first user message (async, non-blocking)
@@ -399,33 +394,28 @@ class ChatService: ObservableObject {
     
     // --- NEW: Method to update audio paths in local state ---
     func updateAudioPathInCurrentConversation(messageID: UUID, path: String) {
-        guard currentConversation != nil else {
-            logger.error("Cannot add audio path: currentConversation is nil.")
+        guard var conversation = currentConversation else {
+            logger.error("Cannot add audio path: currentConversation is nil. This should never happen.")
             return
         }
-        // Check if the message ID exists in the current conversation's messages
-        // This ensures we don't try to add paths to messages not part of the active context.
-        guard currentConversation!.messages.contains(where: { $0.id == messageID }) else {
-            logger.warning("Attempted to add audio path for message \(messageID) not found in current conversation \(self.currentConversation!.id).")
+
+        guard conversation.messages.contains(where: { $0.id == messageID }) else {
+            logger.warning("Attempted to add audio path for message \(messageID) not found in current conversation \(conversation.id).")
             return
         }
-        
-        // Add the path
-        var map = currentConversation!.ttsAudioPaths ?? [:]
+
+        var map = conversation.ttsAudioPaths ?? [:]
         var paths = map[messageID] ?? []
         if !paths.contains(path) { paths.append(path) }
         map[messageID] = paths
-        currentConversation!.ttsAudioPaths = map
+        conversation.ttsAudioPaths = map
+        currentConversation = conversation
         logger.info("Added audio path '\(path)' for message \(messageID).")
-        
-        // --- NEW: Trigger final save ---
-        // Check if LLM is done AND this path is for the *last* message
-        if isLLMStreamComplete, let lastMessage = currentConversation!.messages.last, lastMessage.id == messageID {
-            // logger.info("✅ Final audio path received for completed LLM stream. Triggering final save.")
-            if let conversationToSave = currentConversation {
-                Task {
-                    await historyService?.addOrUpdateConversation(conversationToSave)
-                }
+
+        // Trigger final save if LLM is done AND this path is for the last message
+        if isLLMStreamComplete, let lastMessage = conversation.messages.last, lastMessage.id == messageID {
+            Task {
+                await historyService?.addOrUpdateConversation(conversation)
             }
         }
     }
