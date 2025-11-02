@@ -18,6 +18,7 @@ struct HistoryView: View {
     @Binding var rootIsActive: Bool
     @EnvironmentObject var historyService: HistoryService
     @EnvironmentObject var viewModel: ChatViewModel
+    @EnvironmentObject var chatService: ChatService
 
     @State private var conversationToRename: ConversationIndexEntry?
 
@@ -81,9 +82,12 @@ struct HistoryView: View {
                     },
                     onCancel: {
                         conversationToRename = nil
+                    },
+                    onAuto: {
+                        await chatService.generateTitleForConversation(conversationId: entry.id)
                     }
                 )
-                .presentationDetents([.height(200)])
+                .presentationDetents([.height(220)])
                 .presentationDragIndicator(.visible)
             }
         }
@@ -106,15 +110,19 @@ struct HistoryView: View {
 // MARK: - Rename Sheet
 private struct RenameConversationSheet: View {
     @State private var text: String
+    @State private var isGenerating = false
+    @State private var showError = false
     @FocusState private var isFocused: Bool
 
     let onSave: (String) -> Void
     let onCancel: () -> Void
+    let onAuto: () async -> String?
 
-    init(title: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(title: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void, onAuto: @escaping () async -> String?) {
         _text = State(initialValue: title)
         self.onSave = onSave
         self.onCancel = onCancel
+        self.onAuto = onAuto
     }
 
     var body: some View {
@@ -135,26 +143,63 @@ private struct RenameConversationSheet: View {
                     .onSubmit {
                         saveIfValid()
                     }
+                    .disabled(isGenerating)
 
-                HStack(spacing: 16) {
+                HStack(spacing: 12) {
                     Button("Cancel") {
                         onCancel()
                     }
                     .buttonStyle(.bordered)
                     .tint(Theme.secondaryText)
+                    .disabled(isGenerating)
+                    .frame(minWidth: 80)
+
+                    Button {
+                        Task {
+                            isGenerating = true
+                            if let generatedTitle = await onAuto() {
+                                text = generatedTitle
+                                isFocused = true
+                            } else {
+                                showError = true
+                            }
+                            isGenerating = false
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isGenerating {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: Theme.primaryText))
+                                    .scaleEffect(0.8)
+                            }
+                            Text("Auto")
+                        }
+                        .frame(minWidth: 40)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Theme.accent)
+                    .disabled(isGenerating)
+                    .frame(minWidth: 80)
+                    .accessibilityLabel(isGenerating ? "Generating title" : "Auto-generate title")
 
                     Button("Save") {
                         saveIfValid()
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating)
+                    .frame(minWidth: 80)
                 }
                 .padding(.bottom)
             }
         }
         .onAppear {
             isFocused = true
+        }
+        .alert("Generation Failed", isPresented: $showError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Could not generate title. Please try again or enter one manually.")
         }
     }
 

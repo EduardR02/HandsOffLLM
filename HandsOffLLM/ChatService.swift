@@ -298,6 +298,22 @@ class ChatService: ObservableObject {
             return generateFallbackTitle(for: userMessage)
         }
     }
+
+    /// Public method to generate a title for an existing conversation
+    public func generateTitleForConversation(conversationId: UUID) async -> String? {
+        guard let conversation = await historyService?.loadConversationDetail(id: conversationId) else {
+            logger.warning("Failed to load conversation \(conversationId) for title generation")
+            return nil
+        }
+
+        // Get the first user message
+        guard let firstUserMessage = conversation.messages.first(where: { $0.role == "user" }) else {
+            logger.warning("No user message found in conversation \(conversationId)")
+            return nil
+        }
+
+        return await generateChatTitle(for: firstUserMessage.content)
+    }
     
     private func generateFallbackTitle(for userMessage: String) -> String {
         let words = userMessage.split(separator: " ").prefix(5)
