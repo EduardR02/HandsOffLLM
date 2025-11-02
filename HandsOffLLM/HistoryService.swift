@@ -16,7 +16,21 @@ class HistoryService: ObservableObject {
     @Published var audioRetentionDays: Int
     // In-memory store for SwiftUI previews
     private var previewStore: [UUID: Conversation] = [:]
-    
+
+    // MARK: - JSON Coding
+    nonisolated private static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = .prettyPrinted
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }()
+
+    nonisolated private static let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
+
     // MARK: - Storage Locations
     private let indexFileName = "conversations_index.json"
     private var documentsURL: URL? {
@@ -70,9 +84,7 @@ class HistoryService: ObservableObject {
         
         do {
             let data = try await Task.detached { try Data(contentsOf: url) }.value
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            indexEntries = try decoder.decode([ConversationIndexEntry].self, from: data)
+            indexEntries = try Self.decoder.decode([ConversationIndexEntry].self, from: data)
         } catch {
             logger.error("Failed to load index: \(error.localizedDescription), rebuilding.")
             await rebuildIndexFromFiles()
@@ -88,10 +100,7 @@ class HistoryService: ObservableObject {
         let capturedLogger = self.logger
         await Task.detached {
             do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = .prettyPrinted
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(entriesToSave)
+                let data = try Self.encoder.encode(entriesToSave)
                 try data.write(to: url, options: [.atomicWrite])
             } catch {
                 capturedLogger.error("Failed to save index in background: \(error.localizedDescription)")
@@ -112,10 +121,7 @@ class HistoryService: ObservableObject {
         let capturedLogger = self.logger
         await Task.detached {
             do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = .prettyPrinted
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(conversation)
+                let data = try Self.encoder.encode(conversation)
                 try data.write(to: url, options: [.atomicWrite])
             } catch {
                 capturedLogger.error("Failed to save conversation \(conversation.id) in background: \(error.localizedDescription)")
@@ -124,23 +130,39 @@ class HistoryService: ObservableObject {
     }
     
     // MARK: - Conversation Management
-    
-    func addOrUpdateConversation(_ conversation: Conversation) async {
-        // Update timestamp to current time so conversations sort by last activity
+
+    func addOrUpdateConversation(_ conversation: Conversation, updateTimestamp: Bool = true) async {
         var updatedConversation = conversation
-        updatedConversation.createdAt = Date()
+
+        // Update timestamp: preserve createdAt, update updatedAt if needed
+        if updateTimestamp {
+            updatedConversation.updatedAt = Date()
+        }
 
         await saveConversationFile(updatedConversation)
-        let entry = ConversationIndexEntry(id: updatedConversation.id,
-                                           title: updatedConversation.title,
-                                           createdAt: updatedConversation.createdAt)
-        if let idx = indexEntries.firstIndex(where: { $0.id == entry.id }) {
-            indexEntries[idx] = entry
-        } else {
+
+        let entry = ConversationIndexEntry(
+            id: updatedConversation.id,
+            title: updatedConversation.title,
+            createdAt: updatedConversation.createdAt,
+            updatedAt: updatedConversation.updatedAt
+        )
+
+        if updateTimestamp {
+            // Remove old entry and insert at position 0 (most recent)
+            indexEntries.removeAll { $0.id == entry.id }
             indexEntries.insert(entry, at: 0)
+        } else {
+            // Update in-place to preserve position
+            if let idx = indexEntries.firstIndex(where: { $0.id == entry.id }) {
+                indexEntries[idx] = entry
+            } else {
+                // New conversation without timestamp update - insert in sorted position
+                let insertIndex = indexEntries.firstIndex { $0.lastActivityDate < entry.lastActivityDate } ?? indexEntries.count
+                indexEntries.insert(entry, at: insertIndex)
+            }
         }
-        // Always re-sort after updating timestamp to maintain last-activity order
-        indexEntries.sort { $0.createdAt > $1.createdAt }
+
         await saveIndex()
     }
 
@@ -148,40 +170,16 @@ class HistoryService: ObservableObject {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        var didMutateIndex = false
-        if let idx = indexEntries.firstIndex(where: { $0.id == conversationId }) {
-            let existing = indexEntries[idx]
-            if existing.title != trimmed {
-                let updated = ConversationIndexEntry(id: existing.id,
-                                                     title: trimmed,
-                                                     createdAt: existing.createdAt)
-                indexEntries[idx] = updated
-                didMutateIndex = true
-            }
+        // Load conversation from file
+        guard let conversation = await loadConversationDetail(id: conversationId) else {
+            logger.warning("Cannot update title: conversation \(conversationId) not found")
+            return
         }
-        if didMutateIndex { await saveIndex() }
 
-        guard let url = conversationFileURL(for: conversationId) else { return }
-        let capturedLogger = self.logger
-        await Task.detached {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
-            encoder.dateEncodingStrategy = .iso8601
-
-            do {
-                guard FileManager.default.fileExists(atPath: url.path) else { return }
-                let data = try Data(contentsOf: url)
-                var conversation = try decoder.decode(Conversation.self, from: data)
-                if conversation.title == trimmed { return }
-                conversation.title = trimmed
-                let updatedData = try encoder.encode(conversation)
-                try updatedData.write(to: url, options: [.atomicWrite])
-            } catch {
-                capturedLogger.error("Failed to update title for conversation \(conversationId): \(error.localizedDescription)")
-            }
-        }.value
+        // Update title and save (without updating timestamp)
+        var updated = conversation
+        updated.title = trimmed
+        await addOrUpdateConversation(updated, updateTimestamp: false)
     }
     
     private func removeConversationAssets(id: UUID) async {
@@ -219,9 +217,7 @@ class HistoryService: ObservableObject {
             guard FileManager.default.fileExists(atPath: url.path) else { return nil }
             do {
                 let data = try Data(contentsOf: url)
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                return try decoder.decode(Conversation.self, from: data)
+                return try Self.decoder.decode(Conversation.self, from: data)
             } catch {
                 capturedLogger.error("Background error loading conversation detail \(id): \(error.localizedDescription)")
                 return nil
@@ -271,9 +267,9 @@ class HistoryService: ObservableObject {
         let monthYearFormatter = DateFormatter()
         monthYearFormatter.dateFormat = "MMMM yyyy"
 
-        // indexEntries are assumed to be sorted by createdAt, newest first.
+        // indexEntries are assumed to be sorted by lastActivityDate, newest first.
         for entry in indexEntries {
-            let key = getSectionKey(for: entry.createdAt, calendar: calendar, now: now, formatter: monthYearFormatter)
+            let key = getSectionKey(for: entry.lastActivityDate, calendar: calendar, now: now, formatter: monthYearFormatter)
 
             if key == currentSectionTitle {
                 currentSectionEntries.append(entry)
@@ -319,10 +315,13 @@ class HistoryService: ObservableObject {
     /// SwiftUI preview factory: sets indexEntries and in-memory conversations
     static func preview(with conversations: [Conversation]) -> HistoryService {
         let service = HistoryService()
-        let entries = conversations.map { ConversationIndexEntry(id: $0.id,
-                                                                 title: $0.title,
-                                                                 createdAt: $0.createdAt) }
-        service.indexEntries = entries.sorted { $0.createdAt > $1.createdAt }
+        let entries = conversations.map { ConversationIndexEntry(
+            id: $0.id,
+            title: $0.title,
+            createdAt: $0.createdAt,
+            updatedAt: $0.updatedAt
+        )}
+        service.indexEntries = entries.sorted { $0.lastActivityDate > $1.lastActivityDate }
         service.previewStore = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
         return service
     }
@@ -334,16 +333,14 @@ class HistoryService: ObservableObject {
         let entries: [ConversationIndexEntry] = await Task.detached {
             let fileURLs = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: .skipsHiddenFiles))?
                               .filter { $0.pathExtension == "json" } ?? []
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
             return fileURLs.compactMap { url in
                 (try? Data(contentsOf: url)).flatMap { data in
-                    try? decoder.decode(ConversationIndexEntry.self, from: data)
+                    try? Self.decoder.decode(ConversationIndexEntry.self, from: data)
                 }
             }
         }.value
 
-        indexEntries = entries.sorted { $0.createdAt > $1.createdAt }
+        indexEntries = entries.sorted { $0.lastActivityDate > $1.lastActivityDate }
         logger.info("Rebuilt index from \(self.indexEntries.count) conversation files.")
         await saveIndex()
     }

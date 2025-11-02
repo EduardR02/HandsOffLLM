@@ -117,9 +117,9 @@ class ChatService: ObservableObject {
             let request = try client.makeRequest(with: context)
             let stream = try await makeStream(request: request, decoder: client.decodeChunk)
 
-            // 1) insert one placeholder
+            // 1) insert one placeholder (no save - will be saved when completed)
             let placeholder = ChatMessage(id: UUID(), role: "assistant_partial", content: "")
-            appendMessageAndUpdateHistory(placeholder)
+            currentConversation?.messages.append(placeholder)
 
             // 2) pull off the stream until end or cancellation
             for try await chunk in stream {
@@ -308,11 +308,15 @@ class ChatService: ObservableObject {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if currentConversation?.id == conversationId {
-            currentConversation?.title = trimmed
+        guard var conversation = currentConversation, conversation.id == conversationId else {
+            return
         }
 
-        await historyService?.updateConversationTitle(conversationId: conversationId, newTitle: trimmed)
+        conversation.title = trimmed
+        currentConversation = conversation
+
+        // Save with in-memory conversation (no disk load needed)
+        await historyService?.addOrUpdateConversation(conversation, updateTimestamp: false)
     }
 
     // MARK: - Conversation Management

@@ -14,9 +14,15 @@ struct Conversation: Identifiable, Codable {
     var title: String? // Optional: can be generated later
     var messages: [ChatMessage] = []
     var createdAt: Date = Date()
+    var updatedAt: Date? = nil // Optional for backward compatibility
     var parentConversationId: UUID? // To link continued conversations
     // Optional: Map message ID to saved audio file paths (multiple chunks per message)
     var ttsAudioPaths: [UUID: [String]]? // Optional: Map message ID to array of saved audio file paths
+
+    // Helper: Get the effective "last activity" date for sorting
+    var lastActivityDate: Date {
+        updatedAt ?? createdAt
+    }
 }
 // MARK: - Conversation Index Entry
 /// Minimal metadata for listing conversations without loading full messages
@@ -24,6 +30,12 @@ struct ConversationIndexEntry: Identifiable, Codable, Equatable {
     let id: UUID
     let title: String?
     let createdAt: Date
+    let updatedAt: Date? // Optional for backward compatibility
+
+    // Helper: Get the effective "last activity" date for sorting
+    var lastActivityDate: Date {
+        updatedAt ?? createdAt
+    }
 }
 
 // MARK: - Settings Structures
@@ -67,6 +79,7 @@ struct SettingsData: Codable {
     var selectedDefaultPlaybackSpeed: Float?
     var webSearchEnabled: Bool? = false
     var energySaverEnabled: Bool? = false
+    var darkerMode: Bool? = true
 
     // Personalization Settings
     var userDisplayName: String?

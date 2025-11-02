@@ -18,8 +18,9 @@ struct SettingsView: View {
     @State private var tempVADSilenceThreshold: Double = 1.0
     @State private var audioAutoDeleteEnabled = true
     @State private var showingAudioPurgeConfirmation = false
+    @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
-    
+
     var body: some View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
@@ -61,6 +62,7 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Theme.secondaryAccent)
+                    .id("llmProviderPicker-\(darkerModeObserver)")
 
                     HStack {
                         Text("Speed")
@@ -133,6 +135,7 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Theme.secondaryAccent)
+                    .id("reasoningEffortPicker-\(darkerModeObserver)")
                     
                     Toggle(isOn: Binding(
                         get: { settingsService.claudeReasoningEnabled },
@@ -210,6 +213,7 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Theme.secondaryAccent)
+                    .id("voicePicker-\(darkerModeObserver)")
                 }
                 .listRowBackground(Theme.menuAccent)
 
@@ -276,7 +280,25 @@ struct SettingsView: View {
                         VStack(alignment: .leading) {
                             Text("Energy Saver Mode")
                                  .foregroundColor(Theme.primaryText)
-                            Text("Circle won't move - reduces energy usage by ~95%")
+                            Text("Circle won't move - reduces energy usage by ~30%")
+                                .font(.caption)
+                                .foregroundColor(Theme.secondaryText)
+                        }
+                    }
+                    .tint(Theme.secondaryAccent)
+                }
+                .listRowBackground(Theme.menuAccent)
+
+                // MARK: - Appearance
+                Section("Appearance") {
+                    Toggle(isOn: Binding(
+                        get: { settingsService.darkerMode },
+                        set: { settingsService.updateDarkerMode($0) }
+                    )) {
+                        VStack(alignment: .leading) {
+                            Text("Darker Mode")
+                                .foregroundColor(Theme.primaryText)
+                            Text("Rose Pine theme with deeper background")
                                 .font(.caption)
                                 .foregroundColor(Theme.secondaryText)
                         }
@@ -592,6 +614,7 @@ struct SystemPromptSelectionView: View {
 
 struct AdvancedSettingsView: View {
     @EnvironmentObject private var settingsService: SettingsService
+    @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     @State private var tempAdvancedTemperature: Float = SettingsService.defaultAdvancedTemperature
     @State private var tempAdvancedSystemPrompt: String = ""
     @State private var tempAdvancedTTSInstruction: String = ""

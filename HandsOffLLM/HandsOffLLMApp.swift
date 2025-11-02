@@ -40,9 +40,10 @@ struct HandsOffLLMApp: App {
         _audioService = StateObject(wrappedValue: localAudioService)
         _chatService = StateObject(wrappedValue: localChatService)
         _viewModel = StateObject(wrappedValue: localViewModel)
-        
+
+        // Set global UI appearance
         UIBarButtonItem.appearance().tintColor = UIColor(Theme.accent)
-        
+
         logger.info("App Services Initialized.")
     }
     

@@ -135,7 +135,7 @@ struct VoiceIndicatorView: View {
     @State private var isVisible: Bool = false
     
     // Circle size
-    private let size: CGFloat = 300
+    private let size: CGFloat = 320
     
     // Cached color palettes (updated on state change)
     @State private var mainColors: [Color]   = []
@@ -201,7 +201,7 @@ struct VoiceIndicatorView: View {
                     .animation(.easeInOut(duration: 0.15), value: mainColors)
 
                 WaveCircle(phase: phase, amplitude: ampToUse * 0.8, noiseOffset: 2)
-                    .stroke(AngularGradient(gradient: Gradient(colors: strokeColors), center: .center), lineWidth: size * 0.04)
+                    .stroke(AngularGradient(gradient: Gradient(colors: strokeColors), center: .center), lineWidth: size * 0.035)
                     .blendMode(.plusLighter)
                     .animation(.easeInOut(duration: 0.15), value: strokeColors)
             }

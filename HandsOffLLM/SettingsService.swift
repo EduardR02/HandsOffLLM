@@ -224,7 +224,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
     var energySaverEnabled: Bool {
         settings.energySaverEnabled ?? false
     }
-    
+
+    // Darker Mode
+    var darkerMode: Bool {
+        settings.darkerMode ?? true
+    }
+
     var vadSilenceThreshold: Double {
         settings.vadSilenceThreshold ?? 1.5
     }
@@ -283,10 +288,13 @@ class SettingsService: ObservableObject { // Make ObservableObject
         do {
             let data = try Data(contentsOf: url)
             settings = try JSONDecoder().decode(SettingsData.self, from: data)
+            // Sync darkerMode to UserDefaults for Theme.swift
+            UserDefaults.standard.set(darkerMode, forKey: "darkerMode")
             logger.info("Settings loaded successfully.")
         } catch {
             logger.error("Failed to load or decode settings: \(error.localizedDescription). Using defaults.")
             settings = SettingsData() // Use defaults on error
+            UserDefaults.standard.set(darkerMode, forKey: "darkerMode")
         }
     }
     
@@ -389,7 +397,13 @@ class SettingsService: ObservableObject { // Make ObservableObject
     func updateEnergySaverEnabled(_ enabled: Bool) {
         updateAdvancedSetting(keyPath: \.energySaverEnabled, value: enabled)
     }
-    
+
+    func updateDarkerMode(_ enabled: Bool) {
+        updateAdvancedSetting(keyPath: \.darkerMode, value: enabled)
+        // Sync to UserDefaults so Theme.swift can read it
+        UserDefaults.standard.set(enabled, forKey: "darkerMode")
+    }
+
     func updateVADSilenceThreshold(_ threshold: Double) {
         updateAdvancedSetting(keyPath: \.vadSilenceThreshold, value: threshold)
     }

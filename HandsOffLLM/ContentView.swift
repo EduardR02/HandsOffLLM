@@ -89,6 +89,7 @@ private struct QuickPromptBar: View {
 struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Environment(\.sizeCategory) private var sizeCategory
+    @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     // Compute row height based on Dynamic Type
     private var pickerRowHeight: CGFloat {
         let font = UIFont.preferredFont(forTextStyle: .body)
@@ -230,7 +231,12 @@ struct ContentView: View {
                                 }
                             }
                             .pickerStyle(SegmentedPickerStyle())
-                            .cornerRadius(8)
+                            .onChange(of: darkerModeObserver) {
+                                updateSegmentedControlColors()
+                            }
+                            .onAppear {
+                                updateSegmentedControlColors()
+                            }
                             .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
                             
                             Spacer()
@@ -294,6 +300,13 @@ struct ContentView: View {
             logger.info("ContentView disappeared, cleanup.")
             viewModel.cancelProcessingAndSpeaking()
         }
+    }
+
+    private func updateSegmentedControlColors() {
+        let appearance = UISegmentedControl.appearance()
+        appearance.backgroundColor = UIColor(Theme.menuAccent)
+        appearance.selectedSegmentTintColor = UIColor(Theme.accent)
+        appearance.setDividerImage(UIImage(), forLeftSegmentState: .normal, rightSegmentState: .normal, barMetrics: .default)
     }
 }
 
