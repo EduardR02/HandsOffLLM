@@ -32,7 +32,8 @@ class ChatViewModel: ObservableObject {
     private let chatService: ChatService
     private let settingsService: SettingsService
     private let historyService: HistoryService
-    
+
+    private var currentListeningSessionId: UUID?
     private var cancellables = Set<AnyCancellable>()
     
     init(audioService: AudioService,
@@ -46,10 +47,22 @@ class ChatViewModel: ObservableObject {
         logger.info("ChatViewModel initialized.")
         
         audioService.transcriptionSubject
-            .sink { [weak self] transcription in
+            .sink { [weak self] result in
                 guard let self else { return }
-                self.logger.info("Received transcription: '\(transcription)'")
-                self.chatService.processTranscription(transcription, provider: self.selectedProvider)
+                let (text, sessionId) = result
+                self.logger.info("Received transcription: '\(text)' (session: \(sessionId))")
+
+                // Check if this transcription is from the current listening session
+                if let currentSessionId = self.currentListeningSessionId, sessionId != currentSessionId {
+                    self.logger.notice("⚠️ Ignoring transcription from old session \(sessionId) (current: \(currentSessionId))")
+                    // Still append to chat for history visibility, but don't trigger LLM
+                    let userMessage = ChatMessage(id: UUID(), role: "user", content: text)
+                    self.chatService.appendMessageWithoutProcessing(userMessage)
+                    return
+                }
+
+                // Valid session - process normally (appends user message + triggers LLM)
+                self.chatService.processTranscription(text, provider: self.selectedProvider)
             }
             .store(in: &cancellables)
         
@@ -101,7 +114,32 @@ class ChatViewModel: ObservableObject {
         audioService.ttsPlaybackCompleteSubject
             .sink { [weak self] in self?.startListening(useCooldown: true) }
             .store(in: &cancellables)
-        
+
+        audioService.voiceInterruptSubject
+            .sink { [weak self] in
+                guard let self else { return }
+                self.logger.notice("🔴 Voice interrupt received, cancelling LLM processing")
+                // Just cancel LLM and TTS - AudioService already switched to listening mode
+                self.chatService.cancelProcessing()
+                self.audioService.stopSpeaking()  // Stop any in-flight TTS
+                // Note: Don't call startListening() - AudioService is already listening with preserved buffers
+            }
+            .store(in: &cancellables)
+
+        // Sync LLM processing state to AudioService for interrupt detection
+        chatService.$isProcessingLLM
+            .sink { [weak self] isProcessing in
+                self?.audioService.isProcessingLLM = isProcessing
+            }
+            .store(in: &cancellables)
+
+        // Track current listening session ID
+        audioService.$currentListeningSessionId
+            .sink { [weak self] sessionId in
+                self?.currentListeningSessionId = sessionId
+            }
+            .store(in: &cancellables)
+
         bindLoopState()
         
         Task { @MainActor in

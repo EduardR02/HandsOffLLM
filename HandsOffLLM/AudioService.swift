@@ -64,6 +64,8 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var isListening: Bool = false
     @Published var isSpeaking: Bool = false
     @Published var isTranscribing: Bool = false
+    @Published var isProcessingLLM: Bool = false  // Set by ChatViewModel for voice interrupt
+    @Published private(set) var currentListeningSessionId: UUID?
     private var lastMeasuredAudioLevel: Float = -50
     @MainActor
     var rawAudioLevel: Float {
@@ -85,11 +87,14 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    let transcriptionSubject = PassthroughSubject<String, Never>()
+    let transcriptionSubject = PassthroughSubject<(text: String, sessionId: UUID), Never>()
     let errorSubject = PassthroughSubject<Error, Never>()
     let ttsChunkSavedSubject = PassthroughSubject<(messageID: UUID, path: String), Never>()
     let ttsPlaybackCompleteSubject = PassthroughSubject<Void, Never>()
-    
+    let voiceInterruptSubject = PassthroughSubject<Void, Never>()
+
+    private var listeningSessionId: UUID = UUID()
+
     private var ttsState = TTSState()
     private var ttsFetchTask: Task<Void, Never>? = nil
     @Published private(set) var isFetchingTTS: Bool = false
@@ -127,6 +132,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         config.maxSpeechDuration = .infinity  // Override: Unlimited talks
         return config
     }()
+
     
     func replayAudioFiles(_ paths: [String]) {
         logger.info("Replaying saved audio files: \(paths)")
@@ -146,6 +152,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         replayQueue.removeAll()
         stopSpeaking()
     }
+
 
     private lazy var urlSession: URLSession = {
         URLSession(configuration: .default)
@@ -248,6 +255,8 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if useCooldown {
             logger.info("🎤 Listening started with cooldown.")
         }
+        listeningSessionId = UUID()
+        currentListeningSessionId = listeningSessionId
         isListening = true
         isSpeaking = false
         isTranscribing = false
@@ -257,12 +266,12 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if listeningCooldownEndTime == nil {
             captureBuffers.captureStartTime = Date()
         }
-        
+
         Task {
             vadStreamState = await vadManager?.makeStreamState()
         }
-        
-        logger.notice("🎤 Listening started with VAD events…")
+
+        logger.notice("🎤 Listening started with VAD events… (session: \(self.listeningSessionId))")
     }
     
     func stopListeningCleanup(resetTranscribing: Bool = true) {
@@ -275,7 +284,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
         isProcessingTranscription = false
         listeningCooldownEndTime = nil
-        
+
         if wasListening {
             logger.notice("🎙️ Listening stopped (Cleanup).")
         }
@@ -285,8 +294,9 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard !isProcessingTranscription && isListening && !captureBuffers.capturedSamples.isEmpty else { return }
         isProcessingTranscription = true
         isTranscribing = true
+        let sessionId = listeningSessionId  // Capture session ID
         defer { isProcessingTranscription = false }
-        
+
         do {
             // Trim to speech bounds using VAD events (if available)
             var trimmedSamples = captureBuffers.capturedSamples
@@ -327,8 +337,8 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             
             let trimmedText = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedText.isEmpty {
-                logger.info("🎤 Sending transcription to ViewModel: '\(trimmedText)'")
-                transcriptionSubject.send(trimmedText)
+                logger.info("🎤 Sending transcription to ViewModel: '\(trimmedText)' (session: \(sessionId))")
+                transcriptionSubject.send((text: trimmedText, sessionId: sessionId))
             } else {
                 logger.info("🎤 Transcription empty - continuing to listen.")
                 captureBuffers.reset()
@@ -538,8 +548,15 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let weakSelf = WeakBox(self)
         let onSamples: @Sendable ([Float]) -> Void = { [weakSelf] samples in
             Task { @MainActor [samples] in
-                guard let service = weakSelf.value, service.isListening else { return }
-                service.lastMeasuredAudioLevel = service.calculatePowerLevel(samples: samples)
+                guard let service = weakSelf.value else { return }
+                // Process audio when listening OR when detecting interrupt during LLM processing
+                let shouldProcess = service.isListening ||
+                                   (service.isProcessingLLM && !service.isSpeaking && !service.isTranscribing)
+                guard shouldProcess else { return }
+
+                if service.isListening {
+                    service.lastMeasuredAudioLevel = service.calculatePowerLevel(samples: samples)
+                }
                 await service.processAudioSamples(samples)
             }
         }
@@ -616,6 +633,17 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func processAudioSamples(_ samples: [Float]) async {
         guard !samples.isEmpty else { return }
 
+        // Process audio when actively listening OR during LLM processing (for interrupt detection)
+        let shouldProcess = isListening || (isProcessingLLM && !isSpeaking)
+        guard shouldProcess else { return }
+
+        // If we're not in active listening mode, we need to initialize for interrupt detection
+        if !isListening && isProcessingLLM {
+            if vadStreamState == nil {
+                vadStreamState = await vadManager?.makeStreamState()
+            }
+        }
+
         if let cooldownEnd = listeningCooldownEndTime {
             if Date() < cooldownEnd {
                 return
@@ -624,12 +652,12 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 captureBuffers.reset(includeSpeechMarks: false)
             }
         }
-        
+
         captureBuffers.capturedSamples.append(contentsOf: samples)
         captureBuffers.vadSamples.append(contentsOf: samples)
-        
+
         if captureBuffers.captureStartTime == nil { captureBuffers.captureStartTime = Date() }
-        
+
         if captureBuffers.speechStartIndex == nil,
            let start = captureBuffers.captureStartTime,
            Date().timeIntervalSince(start) >= maxCaptureDurationSeconds,
@@ -640,37 +668,47 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
 
         guard let vadManager = vadManager, let state = vadStreamState else { return }
-        
+
         while captureBuffers.vadSamples.count >= Self.vadChunkSize {
             let vadChunk = Array(captureBuffers.vadSamples.prefix(Self.vadChunkSize))
             captureBuffers.vadSamples.removeFirst(Self.vadChunkSize)
-            
+
             do {
                 let result = try await vadManager.processStreamingChunk(
                     vadChunk,
                     state: state,
-                    config: vadSegmentationConfig,  // Reuse our custom config
-                    returnSeconds: false,  // Use samples for precision
+                    config: vadSegmentationConfig,
+                    returnSeconds: false,
                     timeResolution: 2
                 )
-                
+
                 vadStreamState = result.state
-                
+
                 switch result.event?.kind {
                 case .speechStart:
                     logger.info("🎤 Speech start detected at sample \(result.event?.sampleIndex ?? 0).")
                     captureBuffers.speechStartIndex = result.event?.sampleIndex
-                    // Continue listening
-                    
+
+                    if !isListening && isProcessingLLM {
+                        // Voice interrupt: user spoke during LLM processing
+                        // Switch to listening mode (UI update) but DON'T reset buffers
+                        logger.info("🔴 Voice interrupt - switching to listening mode")
+                        isListening = true
+                        voiceInterruptSubject.send()  // Cancel LLM only
+                    }
+
                 case .speechEnd:
-                    logger.info("🛑 Speech end detected at sample \(result.event?.sampleIndex ?? 0).")
-                    captureBuffers.speechEndIndex = result.event?.sampleIndex
-                    await stopListeningAndSendTranscription()
-                    
+                    if isListening {
+                        logger.info("🛑 Speech end detected at sample \(result.event?.sampleIndex ?? 0).")
+                        captureBuffers.speechEndIndex = result.event?.sampleIndex
+                        await stopListeningAndSendTranscription()
+                    }
+                    // Ignore speech end during interrupt mode (we're not in listening state)
+
                 case .none:
-                    // Continue listening (speech ongoing)
+                    // Continue processing (speech ongoing or no speech)
                     break
-                    
+
                 @unknown default:
                     break
                 }

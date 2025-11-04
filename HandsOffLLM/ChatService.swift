@@ -69,6 +69,21 @@ class ChatService: ObservableObject {
         }
     }
     
+    func appendMessageWithoutProcessing(_ message: ChatMessage) {
+        // Append message to chat but don't trigger LLM processing
+        // Used for old-session transcriptions that arrive after interrupt
+        if activeConversationId == nil {
+            logger.info("No active conversation context found. Creating a new one.")
+            resetConversationContext()
+            guard currentConversation != nil else {
+                logger.error("Failed to create a conversation context.")
+                return
+            }
+        }
+        appendMessageAndUpdateHistory(message)
+        logger.info("Appended message without triggering LLM: '\(message.content)'")
+    }
+
     func cancelProcessing() {
         logger.notice("⏹️ LLM Processing cancellation requested.")
         llmTask?.cancel()
