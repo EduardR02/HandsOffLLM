@@ -125,29 +125,8 @@ serve(async (req) => {
       })
     }
 
-    // Rate limiting: 10 requests per minute per user
+    // Check quota using optimized combined query
     if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-      const { data: rateLimitOk } = await supabaseAdmin.rpc('check_rate_limit', {
-        p_user_id: user.id,
-        p_max_requests: 30
-      })
-
-      if (!rateLimitOk) {
-        return new Response(JSON.stringify({
-          error: 'Rate limit exceeded',
-          limit: '30 requests per minute'
-        }), {
-          status: 429,
-          headers: {
-            'Content-Type': 'application/json',
-            'Retry-After': '60'
-          }
-        })
-      }
-    }
-
-    if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-      // Check quota using optimized combined query (1 DB call instead of 3)
       const { data: quotaData, error: quotaError } = await supabaseAdmin.rpc('check_user_quota', {
         p_user_id: user.id
       })

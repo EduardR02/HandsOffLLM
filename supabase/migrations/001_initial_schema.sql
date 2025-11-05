@@ -33,12 +33,6 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
--- Rate limiting: Track recent requests per user
-CREATE TABLE IF NOT EXISTS rate_limit_log (
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  request_timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL
-);
-
 -- ============================================================================
 -- INDEXES
 -- ============================================================================
@@ -49,17 +43,12 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_user_timestamp
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_provider
   ON usage_logs(user_id, provider, timestamp DESC);
 
--- Rate limit index supports recent lookups
-CREATE INDEX IF NOT EXISTS idx_rate_limit_recent
-  ON rate_limit_log(user_id, request_timestamp DESC);
-
 -- ============================================================================
 -- ROW LEVEL SECURITY
 -- ============================================================================
 
 ALTER TABLE user_limits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_logs ENABLE ROW LEVEL SECURITY;
--- Note: rate_limit_log has no RLS - only accessed by service role
 
 -- RLS Policies (drop first for idempotency)
 DROP POLICY IF EXISTS "Users can read own limits" ON user_limits;
@@ -125,26 +114,6 @@ RETURNS TABLE(current_usage DECIMAL, monthly_limit DECIMAL, quota_exceeded BOOLE
     AND ul.timestamp < date_trunc('month', NOW()) + INTERVAL '1 month'
   GROUP BY lim.monthly_limit_usd;
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
-
--- Function to check rate limit (default: 30 requests per minute)
-CREATE OR REPLACE FUNCTION public.check_rate_limit(p_user_id UUID, p_max_requests INT DEFAULT 30)
-RETURNS BOOLEAN AS $$
-DECLARE
-  recent_count INT;
-BEGIN
-  -- Count requests in last minute
-  SELECT COUNT(*) INTO recent_count
-  FROM rate_limit_log
-  WHERE user_id = p_user_id
-    AND request_timestamp >= NOW() - INTERVAL '1 minute';
-
-  -- Insert current request
-  INSERT INTO rate_limit_log (user_id) VALUES (p_user_id);
-
-  -- Return true if under limit
-  RETURN recent_count < p_max_requests;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ============================================================================
 -- TRIGGERS
