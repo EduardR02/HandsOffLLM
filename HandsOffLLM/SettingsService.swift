@@ -2,13 +2,22 @@
 import Foundation
 import OSLog
 import Combine // Import Combine for ObservableObject
+import FluidAudio
 
 @MainActor // Ensure updates happen on the main thread
 class SettingsService: ObservableObject { // Make ObservableObject
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsService")
+    private let keychain = KeychainService.shared
     
     // --- Published Settings Data ---
     @Published var settings: SettingsData = SettingsData()
+
+    // --- Sensitive API Keys (persisted via Keychain) ---
+    @Published private(set) var openaiAPIKey: String?
+    @Published private(set) var anthropicAPIKey: String?
+    @Published private(set) var geminiAPIKey: String?
+    @Published private(set) var xaiAPIKey: String?
+    @Published private(set) var mistralAPIKey: String?
     
     // Ephemeral session-only overrides (not persisted)
     @Published var sessionSystemPromptOverride: String? = nil
@@ -95,17 +104,34 @@ class SettingsService: ObservableObject { // Make ObservableObject
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(persistenceFileName)
     }
     
-    // --- API Keys (Read-only access for now) ---
-    var anthropicAPIKey: String? { APIKeys.anthropic }
-    var geminiAPIKey: String? { APIKeys.gemini }
-    var openaiAPIKey: String? { APIKeys.openai }
-    var xaiAPIKey: String? { APIKeys.xai }
-    var mistralAPIKey: String? { APIKeys.mistral }
+    // --- User API Keys Toggle ---
+    var useOwnOpenAIKey: Bool {
+        get { settings.useOwnOpenAIKey }
+        set { settings.useOwnOpenAIKey = newValue; saveSettings() }
+    }
+    var useOwnAnthropicKey: Bool {
+        get { settings.useOwnAnthropicKey }
+        set { settings.useOwnAnthropicKey = newValue; saveSettings() }
+    }
+    var useOwnGeminiKey: Bool {
+        get { settings.useOwnGeminiKey }
+        set { settings.useOwnGeminiKey = newValue; saveSettings() }
+    }
+    var useOwnXAIKey: Bool {
+        get { settings.useOwnXAIKey }
+        set { settings.useOwnXAIKey = newValue; saveSettings() }
+    }
+    var useOwnMistralKey: Bool {
+        get { settings.useOwnMistralKey }
+        set { settings.useOwnMistralKey = newValue; saveSettings() }
+    }
     
     // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
     let openAITTSModel = "gpt-4o-mini-tts"
-    
+
     let defaultTTSVoice = "nova"    // Default OpenAI TTS voice
+    let defaultKokoroVoice = TtsConstants.recommendedVoice
+    let availableKokoroVoices = Set(TtsConstants.availableVoices)
     let availableTTSVoices = [
         "alloy", "ash", "ballad", "coral", "echo",
         "fable", "nova", "onyx", "sage", "shimmer", "verse"
@@ -115,8 +141,24 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.selectedTTSVoice ?? defaultTTSVoice
     }
 
+    var kokoroTTSVoice: String {
+        if let stored = settings.selectedKokoroVoice,
+           availableKokoroVoices.contains(stored) {
+            return stored
+        }
+        return defaultKokoroVoice
+    }
+
     let openAITTSFormat = "aac"     // Other options: opus, flac, pcm, mp3
     let maxTTSChunkLength = 2000    // 2000 chars ≈ 2 minutes of audio
+
+    private enum KeychainKey {
+        static let openai = "user.openai.api_key"
+        static let anthropic = "user.anthropic.api_key"
+        static let gemini = "user.gemini.api_key"
+        static let xai = "user.xai.api_key"
+        static let mistral = "user.mistral.api_key"
+    }
     
     // --- Advanced Defaults ---
     static let defaultAdvancedTemperature: Float = 1.0
@@ -233,6 +275,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
     var vadSilenceThreshold: Double {
         settings.vadSilenceThreshold ?? 1.5
     }
+
+    var selectedTTSProvider: TTSProvider {
+        settings.selectedTTSProvider ?? .openai
+    }
     
     // Max/min caps from API definitions
     static let maxTempOpenAI: Float = 2.0
@@ -317,20 +363,20 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     
     private func validateKeysAndPrompts() {
-        if anthropicAPIKey == nil || anthropicAPIKey!.isEmpty || anthropicAPIKey == "YOUR_ANTHROPIC_API_KEY" {
-            logger.warning("Anthropic API Key is not set in APIKeys.swift.")
+        if useOwnAnthropicKey && (anthropicAPIKey?.isEmpty ?? true) {
+            logger.warning("Anthropic API key missing while user override is enabled.")
         }
-        if geminiAPIKey == nil || geminiAPIKey!.isEmpty || geminiAPIKey == "YOUR_GEMINI_API_KEY" {
-            logger.warning("Gemini API Key is not set in APIKeys.swift.")
+        if useOwnGeminiKey && (geminiAPIKey?.isEmpty ?? true) {
+            logger.warning("Gemini API key missing while user override is enabled.")
         }
-        if openaiAPIKey == nil || openaiAPIKey!.isEmpty || openaiAPIKey == "YOUR_OPENAI_API_KEY" {
-            logger.warning("OpenAI API Key (for TTS) is not set in APIKeys.swift.")
+        if useOwnOpenAIKey && (openaiAPIKey?.isEmpty ?? true) {
+            logger.warning("OpenAI API key missing while user override is enabled.")
         }
-        if xaiAPIKey == nil || xaiAPIKey!.isEmpty || xaiAPIKey == "YOUR_XAI_API_KEY" {
-            logger.warning("xAI API Key is not set in APIKeys.swift.")
+        if useOwnXAIKey && (xaiAPIKey?.isEmpty ?? true) {
+            logger.warning("xAI API key missing while user override is enabled.")
         }
-        if mistralAPIKey == nil || mistralAPIKey!.isEmpty || mistralAPIKey == "YOUR_MISTRAL_API_KEY" {
-            logger.warning("Mistral API Key is not set in APIKeys.swift.")
+        if useOwnMistralKey && (mistralAPIKey?.isEmpty ?? true) {
+            logger.warning("Mistral API key missing while user override is enabled.")
         }
         
         if activeSystemPrompt == nil || activeSystemPrompt!.isEmpty {
@@ -373,6 +419,16 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.selectedTTSVoice = voice
         saveSettings()
     }
+
+    func updateSelectedKokoroVoice(voice: String) {
+        let trimmed = voice.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard availableKokoroVoices.contains(trimmed) else {
+            logger.warning("Attempted to set unsupported Kokoro voice: \(voice)")
+            return
+        }
+        settings.selectedKokoroVoice = trimmed
+        saveSettings()
+    }
     
     func updateAdvancedSetting<T>(keyPath: WritableKeyPath<SettingsData, T?>, value: T?) {
         settings[keyPath: keyPath] = value
@@ -404,8 +460,37 @@ class SettingsService: ObservableObject { // Make ObservableObject
         UserDefaults.standard.set(enabled, forKey: "darkerMode")
     }
 
+    func setOpenAIAPIKey(_ value: String?) {
+        openaiAPIKey = storeKey(value, keychainKey: KeychainKey.openai)
+    }
+
+    func setAnthropicAPIKey(_ value: String?) {
+        anthropicAPIKey = storeKey(value, keychainKey: KeychainKey.anthropic)
+    }
+
+    func setGeminiAPIKey(_ value: String?) {
+        geminiAPIKey = storeKey(value, keychainKey: KeychainKey.gemini)
+    }
+
+    func setXAIAPIKey(_ value: String?) {
+        xaiAPIKey = storeKey(value, keychainKey: KeychainKey.xai)
+    }
+
+    func setMistralAPIKey(_ value: String?) {
+        mistralAPIKey = storeKey(value, keychainKey: KeychainKey.mistral)
+    }
+
     func updateVADSilenceThreshold(_ threshold: Double) {
         updateAdvancedSetting(keyPath: \.vadSilenceThreshold, value: threshold)
+    }
+
+    func updateSelectedTTSProvider(_ provider: TTSProvider) {
+        settings.selectedTTSProvider = provider
+        if provider == .kokoro,
+           !(settings.selectedKokoroVoice.map(availableKokoroVoices.contains) ?? false) {
+            settings.selectedKokoroVoice = defaultKokoroVoice
+        }
+        saveSettings()
     }
 
     /// Apply a temporary session-only override of system prompt and TTS instruction
@@ -439,6 +524,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     init() {
         loadSettings()
+        loadAPIKeys()
         // Force initial setup screen to show for debugging
         // settings.hasCompletedInitialSetup = false
         validateKeysAndPrompts()
@@ -513,5 +599,43 @@ class SettingsService: ObservableObject { // Make ObservableObject
             changed = true
         }
         return changed
+    }
+
+    private func loadAPIKeys() {
+        do { openaiAPIKey = try keychain.string(for: KeychainKey.openai) } catch {
+            logger.error("Failed to load OpenAI API key from keychain: \(error.localizedDescription)")
+            openaiAPIKey = nil
+        }
+        do { anthropicAPIKey = try keychain.string(for: KeychainKey.anthropic) } catch {
+            logger.error("Failed to load Anthropic API key from keychain: \(error.localizedDescription)")
+            anthropicAPIKey = nil
+        }
+        do { geminiAPIKey = try keychain.string(for: KeychainKey.gemini) } catch {
+            logger.error("Failed to load Gemini API key from keychain: \(error.localizedDescription)")
+            geminiAPIKey = nil
+        }
+        do { xaiAPIKey = try keychain.string(for: KeychainKey.xai) } catch {
+            logger.error("Failed to load xAI API key from keychain: \(error.localizedDescription)")
+            xaiAPIKey = nil
+        }
+        do { mistralAPIKey = try keychain.string(for: KeychainKey.mistral) } catch {
+            logger.error("Failed to load Mistral API key from keychain: \(error.localizedDescription)")
+            mistralAPIKey = nil
+        }
+    }
+
+    @discardableResult
+    private func storeKey(_ rawValue: String?, keychainKey: String) -> String? {
+        let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try keychain.set(trimmed, for: keychainKey)
+        } catch {
+            logger.error("Failed to store keychain item (\(keychainKey)): \(error.localizedDescription)")
+        }
+        if let trimmed, !trimmed.isEmpty {
+            return trimmed
+        } else {
+            return nil
+        }
     }
 }

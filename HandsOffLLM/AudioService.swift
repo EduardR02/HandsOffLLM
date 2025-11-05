@@ -105,16 +105,23 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private let settingsService: SettingsService
     private let historyService: HistoryService
     private var mistralTranscriptionService: MistralTranscriptionService?
+    private var kokoroTTSService: KokoroTTSService?
 
     private var currentTTSConversationID: UUID?
     private var currentTTSMessageID: UUID?
 
     private let baseMinChunkLength: Int = 60
     private let ttsChunkGrowthFactor: Double = 2.25
+    private let kokoroBaseMinChunkLength: Int = 80
+    private let kokoroMaxChunkLengthCap: Int = 320
+    private let kokoroSentenceTerminators: Set<Character> = [".", "!", "?"]
+    private static let mistralModel = "voxtral-mini-latest"
 
     private var ttsSessionId: UUID = UUID()
 
     private var replayQueue: [String] = []
+    private var lastChunkProvider: TTSProvider?
+    private var hasPrimedKokoro: Bool = false
 
     private var vadManager: VadManager?
     private var vadStreamState: VadStreamState?
@@ -155,7 +162,10 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
 
     private lazy var urlSession: URLSession = {
-        URLSession(configuration: .default)
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120  // 2 minutes
+        config.timeoutIntervalForResource = 300 // 5 minutes
+        return URLSession(configuration: config)
     }()
     
     private var routeChangeObserver: Any?
@@ -171,19 +181,30 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         .airPlay
     ]
     
-    init(settingsService: SettingsService, historyService: HistoryService) {
+    private let proxyService: ProxyService
+
+    init(settingsService: SettingsService, historyService: HistoryService, authService: AuthService) {
         self.settingsService = settingsService
         self.historyService = historyService
+        self.proxyService = ProxyService(authService: authService, settingsService: settingsService)
+        self.kokoroTTSService = KokoroTTSService()
         super.init()
-        
-        if let mistralKey = settingsService.mistralAPIKey, !mistralKey.isEmpty, mistralKey != "YOUR_MISTRAL_API_KEY" {
-            self.mistralTranscriptionService = MistralTranscriptionService(apiKey: mistralKey)
-        }
-        
         Task {
             await initializeVAD()
         }
-        
+
+        if settingsService.selectedTTSProvider == .kokoro {
+            Task { [weak self] in
+                guard let self = self else { return }
+                do {
+                    try await self.kokoroTTSService?.prepare(voice: self.settingsService.kokoroTTSVoice)
+                    self.hasPrimedKokoro = true
+                } catch {
+                    self.logger.error("🔥 Kokoro warm-up failed during init: \(error.localizedDescription)")
+                }
+            }
+        }
+
         applyAudioSessionSettings()
     }
 
@@ -247,6 +268,80 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
             case .transcriptionError(let desc): return "Transcription error: \(desc)"
             case .vadInitializationError(let desc): return "VAD initialization error: \(desc)"
             }
+        }
+    }
+
+    private func transcribeViaProxy(audioData: Data, filename: String, contentType: String, model: String) async throws -> String {
+        let request = try await proxyService.makeProxiedTranscriptionRequest(
+            audioData: audioData,
+            model: model,
+            filename: filename,
+            contentType: contentType
+        )
+        let (data, response) = try await urlSession.data(for: request)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw LlmError.networkError(URLError(.badServerResponse))
+        }
+
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "<binary>"
+            logger.error("Mistral proxy transcription failed: \(http.statusCode) \(body)")
+            throw LlmError.invalidResponse(statusCode: http.statusCode, body: body)
+        }
+
+        let responsePayload = try JSONDecoder().decode(MistralTranscriptionResponse.self, from: data)
+        return responsePayload.text
+    }
+    
+    private func mistralService(for key: String) -> MistralTranscriptionService {
+        if let existing = mistralTranscriptionService, existing.apiKey == key {
+            return existing
+        }
+        let service = MistralTranscriptionService(apiKey: key)
+        mistralTranscriptionService = service
+        return service
+    }
+    
+    private func convertSamplesToAACData(samples: [Float]) throws -> Data {
+        let sampleRate: Double = 16_000
+        let frameCount = AVAudioFrameCount(samples.count)
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            throw AudioError.transcriptionError("Failed to prepare audio buffer.")
+        }
+
+        buffer.frameLength = frameCount
+        if let channel = buffer.floatChannelData?[0] {
+            samples.withUnsafeBufferPointer { ptr in
+                channel.update(from: ptr.baseAddress!, count: Int(frameCount))
+            }
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mistral-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue  // Let encoder choose optimal bit rate
+        ]
+
+        do {
+            let audioFile = try AVAudioFile(forWriting: tempURL, settings: settings)
+            try audioFile.write(from: buffer)
+        } catch {
+            throw AudioError.transcriptionError("Failed to encode AAC audio: \(error.localizedDescription)")
+        }
+
+        do {
+            return try Data(contentsOf: tempURL)
+        } catch {
+            throw AudioError.transcriptionError("Failed to read encoded AAC audio: \(error.localizedDescription)")
         }
     }
     
@@ -318,22 +413,39 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 return
             }
             
-            let audioData = try convertSamplesToAudioData(samples: trimmedSamples)
-            logger.info("🎤 Converted \(trimmedSamples.count) samples to \(audioData.count) bytes")
-            
-            guard let transcriptionService = mistralTranscriptionService else {
-                logger.error("Mistral transcription service not available - continuing to listen.")
-                let audioError = AudioError.transcriptionError("Mistral API key not available")
-                errorSubject.send(audioError)
-                captureBuffers.reset()
-                Task { @MainActor in
-                    vadStreamState = await vadManager?.makeStreamState()
+            let aacData = try convertSamplesToAACData(samples: trimmedSamples)
+            logger.info("🎤 Converted \(trimmedSamples.count) samples to \(aacData.count) bytes of AAC")
+
+            let transcription: String
+            if settingsService.useOwnMistralKey {
+                guard let key = settingsService.mistralAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !key.isEmpty else {
+                    logger.error("Mistral key override enabled but no key provided.")
+                    let audioError = AudioError.transcriptionError("Add your Mistral API key before enabling direct transcription.")
+                    errorSubject.send(audioError)
+                    captureBuffers.reset()
+                    Task { @MainActor in
+                        vadStreamState = await vadManager?.makeStreamState()
+                    }
+                    isTranscribing = false
+                    return
                 }
-                isTranscribing = false
-                return
+                let service = mistralService(for: key)
+                transcription = try await service.transcribeAudio(
+                    data: aacData,
+                    filename: "audio.m4a",
+                    contentType: "audio/aac",
+                    model: Self.mistralModel
+                )
+            } else {
+                mistralTranscriptionService = nil
+                transcription = try await transcribeViaProxy(
+                    audioData: aacData,
+                    filename: "audio.m4a",
+                    contentType: "audio/aac",
+                    model: Self.mistralModel
+                )
             }
-            
-            let transcription = try await transcriptionService.transcribeAudio(audioData: audioData)
             
             let trimmedText = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedText.isEmpty {
@@ -377,46 +489,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    private func convertSamplesToAudioData(samples: [Float]) throws -> Data {
-        let sampleRate: UInt32 = 16000
-        let channels: UInt16 = 1
-        let bitsPerSample: UInt16 = 16
-        
-        var int16Samples = [Int16]()
-        int16Samples.reserveCapacity(samples.count)
-        for sample in samples {
-            let clampedSample = max(-1.0, min(1.0, sample))
-            int16Samples.append(Int16(clampedSample * Float(Int16.max)))
-        }
-        
-        let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
-        let blockAlign = channels * (bitsPerSample / 8)
-        let dataSize = UInt32(int16Samples.count * 2)
-        let fileSize = 36 + dataSize
-        
-        var wavData = Data(capacity: Int(fileSize + 8))
-        
-        wavData.append(contentsOf: "RIFF".utf8)
-        withUnsafeBytes(of: fileSize.littleEndian) { wavData.append(contentsOf: $0) }
-        wavData.append(contentsOf: "WAVE".utf8)
-        
-        wavData.append(contentsOf: "fmt ".utf8)
-        withUnsafeBytes(of: UInt32(16).littleEndian) { wavData.append(contentsOf: $0) }
-        withUnsafeBytes(of: UInt16(1).littleEndian) { wavData.append(contentsOf: $0) }
-        withUnsafeBytes(of: channels.littleEndian) { wavData.append(contentsOf: $0) }
-        withUnsafeBytes(of: sampleRate.littleEndian) { wavData.append(contentsOf: $0) }
-        withUnsafeBytes(of: byteRate.littleEndian) { wavData.append(contentsOf: $0) }
-        withUnsafeBytes(of: blockAlign.littleEndian) { wavData.append(contentsOf: $0) }
-        withUnsafeBytes(of: bitsPerSample.littleEndian) { wavData.append(contentsOf: $0) }
-        
-        wavData.append(contentsOf: "data".utf8)
-        withUnsafeBytes(of: dataSize.littleEndian) { wavData.append(contentsOf: $0) }
-        
-        int16Samples.withUnsafeBytes { wavData.append(contentsOf: $0) }
-        
-        return wavData
-    }
-    
     private func calculatePowerLevel(samples: [Float]) -> Float {
         guard !samples.isEmpty else { return -50.0 }
         var rms: Float = 0.0
@@ -812,7 +884,22 @@ extension AudioService {
 
         guard !isFetchingTTS else { return }
 
-        let idx = findNextTTSChunk()
+        let provider = settingsService.selectedTTSProvider
+        if lastChunkProvider != provider {
+            ttsState.previousChunkSize = nil
+            if provider != .kokoro {
+                lastChunkProvider = provider
+            }
+        }
+
+        let idx: Int
+        if provider == .kokoro {
+            idx = findNextKokoroChunk()
+            lastChunkProvider = .kokoro
+        } else {
+            idx = findNextTTSChunk()
+            lastChunkProvider = provider
+        }
         if idx > 0 {
             logger.debug("Fetching next TTS chunk: \(idx) chars")
             let chunk = String(ttsState.textBuffer.prefix(idx))
@@ -877,12 +964,22 @@ extension AudioService {
 @MainActor
 extension AudioService {
     func fetchAudio(for text: String) {
-        guard let apiKey = settingsService.openaiAPIKey,
-              !apiKey.isEmpty,
-              apiKey != "YOUR_OPENAI_API_KEY"
-        else {
-            logger.error("OpenAI API key missing")
-            return
+        // Check which TTS provider is selected
+        let ttsProvider = settingsService.selectedTTSProvider
+
+        // For OpenAI, verify API key availability
+        if ttsProvider == .openai {
+            let useProxy = proxyService.shouldUseProxy(for: .openai)
+            let trimmedKey = settingsService.openaiAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if !useProxy {
+                guard let userKey = trimmedKey, !userKey.isEmpty else {
+                    logger.error("OpenAI API key missing while user override enabled.")
+                    let audioError = AudioError.transcriptionError("Add your OpenAI API key before enabling direct TTS.")
+                    errorSubject.send(audioError)
+                    return
+                }
+            }
         }
 
         let session = ttsSessionId
@@ -905,11 +1002,40 @@ extension AudioService {
             }
 
             do {
-                if let data = try await fetchOpenAITTSAudio(
-                    apiKey: apiKey,
-                    text: text,
-                    instruction: self.settingsService.activeTTSInstruction
-                ) {
+                let data: Data?
+
+                // Route to appropriate TTS provider
+                switch self.settingsService.selectedTTSProvider {
+                case .kokoro:
+                    // Use Kokoro on-device TTS
+                    let voice = self.settingsService.kokoroTTSVoice
+                    if self.hasPrimedKokoro == false {
+                        do {
+                            try await self.kokoroTTSService?.prepare(voice: voice)
+                            self.hasPrimedKokoro = true
+                        } catch {
+                            self.logger.error("🔥 Kokoro warm-up failed: \(error.localizedDescription)")
+                        }
+                    }
+                    data = try await self.kokoroTTSService?.synthesize(
+                        text: text,
+                        voice: voice,
+                        speed: 1.0
+                    )
+
+                case .openai:
+                    // Use OpenAI TTS (existing implementation)
+                    let useProxy = self.proxyService.shouldUseProxy(for: .openai)
+                    let trimmedKey = self.settingsService.openaiAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    data = try await self.fetchOpenAITTSAudio(
+                        text: text,
+                        instruction: self.settingsService.activeTTSInstruction,
+                        useProxy: useProxy,
+                        apiKey: trimmedKey
+                    )
+                }
+
+                if let data {
                     let isCurrentSession = (self.ttsSessionId == session)
 
                     if isCurrentSession {
@@ -926,6 +1052,7 @@ extension AudioService {
 
                     if let convID = capturedConversationID, let msgID = capturedMessageID {
                         let dataCopy = data
+                        let fileExtension = self.settingsService.selectedTTSProvider == .kokoro ? "wav" : self.settingsService.openAITTSFormat
                         Task { @MainActor [weak self] in
                             guard let self = self else { return }
                             do {
@@ -933,7 +1060,7 @@ extension AudioService {
                                     conversationID: convID,
                                     messageID: msgID,
                                     data: dataCopy,
-                                    ext: self.settingsService.openAITTSFormat,
+                                    ext: fileExtension,
                                     chunkIndex: chunkIndex
                                 )
                                 self.ttsChunkSavedSubject.send((messageID: msgID, path: relPath))
@@ -944,42 +1071,44 @@ extension AudioService {
                     }
                 }
             } catch {
+                let provider = self.settingsService.selectedTTSProvider.displayName
                 if error is CancellationError {
-                    self.logger.notice("OpenAI TTS fetch cancelled for session \(session).")
+                    self.logger.notice("\(provider) TTS fetch cancelled for session \(session).")
                 } else if let urlError = error as? URLError, urlError.code == .cancelled {
-                    self.logger.notice("OpenAI TTS fetch cancelled (URLError.cancelled) for session \(session).")
+                    self.logger.notice("\(provider) TTS fetch cancelled (URLError.cancelled) for session \(session).")
                 } else if (error as NSError).domain == NSURLErrorDomain,
                           (error as NSError).code == NSURLErrorCancelled {
-                    self.logger.notice("OpenAI TTS fetch cancelled (NSError cancelled) for session \(session).")
+                    self.logger.notice("\(provider) TTS fetch cancelled (NSError cancelled) for session \(session).")
                 } else if let llmError = error as? LlmError,
                           case let .networkError(inner) = llmError,
                           (inner is CancellationError) ||
                           (inner as NSError).domain == NSURLErrorDomain && (inner as NSError).code == NSURLErrorCancelled ||
                           (inner as? URLError)?.code == .cancelled {
-                    self.logger.notice("OpenAI TTS fetch cancelled (LlmError.networkError cancelled) for session \(session).")
+                    self.logger.notice("\(provider) TTS fetch cancelled (LlmError.networkError cancelled) for session \(session).")
                 } else {
-                    self.logger.error("🚨 OpenAI TTS Error: \(error.localizedDescription)")
+                    self.logger.error("🚨 \(provider) TTS Error: \(error.localizedDescription)")
                     self.errorSubject.send(AudioError.ttsFetchFailed(error))
                 }
             }
         }
     }
     
-    func findNextTTSChunk() -> Int {
-        let scaledMinChunkLength = Int(Float(baseMinChunkLength) * max(1.0, ttsRate))
-        if ttsState.textBuffer.isEmpty || (!ttsState.llmFinished && ttsState.textBuffer.count < scaledMinChunkLength) {
+    private func nextChunkLength(baseMin: Int, maxCap: Int, growth: Double) -> Int {
+        let scaledMin = Int(Float(baseMin) * max(1.0, ttsRate))
+        guard !ttsState.textBuffer.isEmpty else { return 0 }
+        if !ttsState.llmFinished && ttsState.textBuffer.count < scaledMin {
             return 0
         }
 
-        let maxSetting = settingsService.maxTTSChunkLength
-        let maxChunkLength = ttsState.previousChunkSize.map { min(Int(Double($0) * ttsChunkGrowthFactor), maxSetting) } ?? maxSetting
+        let effectiveCap = max(1, maxCap)
+        let dynamicCap = ttsState.previousChunkSize.map { min(Int(Double($0) * growth), effectiveCap) } ?? effectiveCap
 
-        if ttsState.textBuffer.count <= maxChunkLength && ttsState.llmFinished {
+        if ttsState.textBuffer.count <= dynamicCap && ttsState.llmFinished {
             ttsState.previousChunkSize = ttsState.textBuffer.count
             return ttsState.textBuffer.count
         }
 
-        let potentialChunk = ttsState.textBuffer.prefix(maxChunkLength)
+        let potentialChunk = ttsState.textBuffer.prefix(dynamicCap)
         var splitIdx = potentialChunk.count
 
         let lookaheadMargin = min(100, potentialChunk.count)
@@ -991,16 +1120,67 @@ extension AudioService {
         } else if let lastComma = potentialChunk.rangeOfCharacter(from: CharacterSet(charactersIn: ","), options: .backwards, range: searchRange)?.upperBound {
             splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastComma)
         } else if let lastSpace = potentialChunk.rangeOfCharacter(from: .whitespaces, options: .backwards, range: searchRange)?.upperBound {
-            if potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace) > 1 {
-                splitIdx = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
+            let distance = potentialChunk.distance(from: potentialChunk.startIndex, to: lastSpace)
+            if distance > 1 {
+                splitIdx = distance
             }
         }
 
-        if splitIdx < scaledMinChunkLength && !ttsState.llmFinished {
+        if splitIdx < scaledMin && !ttsState.llmFinished {
             return 0
         }
         ttsState.previousChunkSize = splitIdx
         return splitIdx
+    }
+
+    func findNextTTSChunk() -> Int {
+        let maxSetting = settingsService.maxTTSChunkLength
+        return nextChunkLength(baseMin: baseMinChunkLength, maxCap: maxSetting, growth: ttsChunkGrowthFactor)
+    }
+
+    func findNextKokoroChunk() -> Int {
+        let text = ttsState.textBuffer
+        guard !text.isEmpty else { return 0 }
+
+        let minChars = max(kokoroBaseMinChunkLength, Int(Float(baseMinChunkLength) * max(1.0, ttsRate)))
+        let cap = min(kokoroMaxChunkLengthCap, settingsService.maxTTSChunkLength)
+
+        var sentenceEnd: String.Index?
+        var index = text.startIndex
+        var charCount = 0
+
+        while index < text.endIndex && charCount < cap {
+            let char = text[index]
+            charCount += 1
+
+            if kokoroSentenceTerminators.contains(char) {
+                let nextIndex = text.index(after: index)
+                sentenceEnd = nextIndex
+                if charCount >= minChars {
+                    break
+                }
+            } else if char == "\n" {
+                sentenceEnd = text.index(after: index)
+                if charCount >= minChars {
+                    break
+                }
+            }
+
+            index = text.index(after: index)
+        }
+
+        let resolvedLength: Int
+        if let end = sentenceEnd, charCount >= minChars {
+            resolvedLength = text.distance(from: text.startIndex, to: end)
+        } else if charCount >= cap || (ttsState.llmFinished && charCount >= minChars) {
+            let end = text.index(text.startIndex, offsetBy: min(charCount, cap))
+            resolvedLength = text.distance(from: text.startIndex, to: end)
+        } else {
+            return 0
+        }
+
+        ttsState.previousChunkSize = resolvedLength
+        return resolvedLength
     }
     
     func configurePlayer(_ player: AVAudioPlayer) {
@@ -1052,20 +1232,17 @@ extension AudioService {
         }
     }
     
-    func fetchOpenAITTSAudio(apiKey: String, text: String, instruction: String?) async throws -> Data? {
+    func fetchOpenAITTSAudio(
+        text: String,
+        instruction: String?,
+        useProxy: Bool,
+        apiKey: String?
+    ) async throws -> Data? {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             logger.warning("Attempted to synthesize empty text.")
             return nil
         }
-        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
-            throw LlmError.invalidURL
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
+
         let payload = OpenAITTSRequest(
             model: settingsService.openAITTSModel,
             input: text,
@@ -1073,9 +1250,38 @@ extension AudioService {
             response_format: settingsService.openAITTSFormat,
             instructions: instruction
         )
-        
-        do { request.httpBody = try JSONEncoder().encode(payload) }
-        catch { throw LlmError.requestEncodingError(error) }
+
+        let payloadData = try JSONEncoder().encode(payload)
+        guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
+            throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
+        }
+
+        let request: URLRequest
+        if useProxy {
+            // Route through proxy
+            request = try await proxyService.makeProxiedRequest(
+                provider: .openai,
+                endpoint: "https://api.openai.com/v1/audio/speech",
+                method: "POST",
+                headers: ["Content-Type": "application/json"],
+                body: payloadDict
+            )
+        } else {
+            // Direct call
+            guard let apiKey, !apiKey.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "OpenAI")
+            }
+            guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
+                throw LlmError.invalidURL
+            }
+
+            var directRequest = URLRequest(url: url)
+            directRequest.httpMethod = "POST"
+            directRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            directRequest.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            directRequest.httpBody = payloadData
+            request = directRequest
+        }
         
         let (data, response): (Data, URLResponse)
         do { (data, response) = try await urlSession.data(for: request) }

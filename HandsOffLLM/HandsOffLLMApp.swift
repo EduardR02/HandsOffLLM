@@ -17,6 +17,7 @@ struct HandsOffLLMApp: App {
     @StateObject var audioService: AudioService
     @StateObject var chatService: ChatService
     @StateObject var viewModel: ChatViewModel
+    @StateObject var authService = AuthService.shared
     @Environment(\.scenePhase) private var scenePhase
     
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "App")
@@ -25,8 +26,20 @@ struct HandsOffLLMApp: App {
         // Create the actual service instances first
         let localSettingsService = SettingsService()
         let localHistoryService = HistoryService()
-        let localAudioService = AudioService(settingsService: localSettingsService, historyService: localHistoryService)
-        let localChatService = ChatService(settingsService: localSettingsService, historyService: localHistoryService)
+        let localAuthService = AuthService.shared
+
+        let localAudioService = AudioService(
+            settingsService: localSettingsService,
+            historyService: localHistoryService,
+            authService: localAuthService
+        )
+
+        let localChatService = ChatService(
+            settingsService: localSettingsService,
+            historyService: localHistoryService,
+            authService: localAuthService
+        )
+
         let localViewModel = ChatViewModel(
             audioService: localAudioService,
             chatService: localChatService,
@@ -50,7 +63,10 @@ struct HandsOffLLMApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                if settingsService.settings.hasCompletedInitialSetup {
+                if !authService.isAuthenticated {
+                    // Auth gate - must sign in first
+                    AuthView()
+                } else if settingsService.settings.hasCompletedInitialSetup {
                     ContentView(viewModel: viewModel)
                 } else {
                     ProfileFormView(isInitial: true)
@@ -65,6 +81,7 @@ struct HandsOffLLMApp: App {
             .environmentObject(audioService)
             .environmentObject(chatService)
             .environmentObject(viewModel)
+            .environmentObject(authService)
             .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in

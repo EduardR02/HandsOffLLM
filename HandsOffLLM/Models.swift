@@ -75,6 +75,8 @@ struct SettingsData: Codable {
     var advancedTTSInstructionEnabled: Bool = false
 
     var selectedTTSVoice: String?
+    var selectedKokoroVoice: String?
+    var selectedTTSProvider: TTSProvider? = nil
     var selectedDefaultProvider: LLMProvider?
     var selectedDefaultPlaybackSpeed: Float?
     var webSearchEnabled: Bool? = false
@@ -88,7 +90,14 @@ struct SettingsData: Codable {
     var hasCompletedInitialSetup: Bool = false
     
     var vadSilenceThreshold: Double? = 1.0
-    
+
+    // User API Keys Toggle (for bypassing proxy)
+    var useOwnOpenAIKey: Bool = false
+    var useOwnAnthropicKey: Bool = false
+    var useOwnGeminiKey: Bool = false
+    var useOwnXAIKey: Bool = false
+    var useOwnMistralKey: Bool = false
+
     init() {
     }
 }
@@ -212,4 +221,18 @@ enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case openai = "OpenAI"
     case xai = "xAI"
     var id: String { self.rawValue }
+}
+
+// MARK: - TTS Provider Enum
+enum TTSProvider: String, CaseIterable, Identifiable, Codable, Hashable {
+    case openai = "OpenAI"
+    case kokoro = "Kokoro (On-Device)"
+    var id: String { self.rawValue }
+
+    var displayName: String {
+        switch self {
+        case .openai: return "OpenAI"
+        case .kokoro: return "Kokoro (On-Device)"
+        }
+    }
 }

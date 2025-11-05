@@ -264,6 +264,7 @@ private struct RenameConversationSheet: View {
     .environmentObject(env.settings)
     .environmentObject(env.audio)
     .environmentObject(env.chat)
+    .environmentObject(env.auth)
     .preferredColorScheme(.dark)
 }
 #endif

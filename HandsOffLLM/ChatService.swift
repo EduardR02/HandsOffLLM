@@ -18,21 +18,27 @@ class ChatService: ObservableObject {
     
     // --- Internal State ---
     private var llmTask: Task<Void, Never>? = nil
+    private var activeSession: URLSession? // Track active session for cancellation
     private var currentFullResponse: String = ""
     private var isLLMStreamComplete: Bool = false // ← New flag
-    
+
     // --- Dependencies ---
     private let settingsService: SettingsService
     private var historyService: HistoryService? // Add HistoryService (optional for now)
+    private let proxyService: ProxyService
     private lazy var urlSession: URLSession = {
-        URLSession(configuration: .default)
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120  // 2 minutes
+        config.timeoutIntervalForResource = 300 // 5 minutes
+        return URLSession(configuration: config)
     }()
-    
+
     var activeConversationId: UUID? { currentConversation?.id }
-    
-    init(settingsService: SettingsService, historyService: HistoryService? = nil) {
+
+    init(settingsService: SettingsService, historyService: HistoryService? = nil, authService: AuthService) {
         self.settingsService = settingsService
         self.historyService = historyService
+        self.proxyService = ProxyService(authService: authService, settingsService: settingsService)
         // Start with a new conversation context
         resetConversationContext()
     }
@@ -86,6 +92,12 @@ class ChatService: ObservableObject {
 
     func cancelProcessing() {
         logger.notice("⏹️ LLM Processing cancellation requested.")
+
+        // Cancel active network session to immediately stop HTTP requests
+        activeSession?.invalidateAndCancel()
+        activeSession = nil
+
+        // Cancel the processing task
         llmTask?.cancel()
         llmTask = nil
         isProcessingLLM = false
@@ -112,6 +124,7 @@ class ChatService: ObservableObject {
             // --- End Get ACTIVE settings ---
 
             let limits = providerLimits(for: provider)
+            let useProxy = proxyService.shouldUseProxy(for: provider)
             let context = LLMClientContext(
                 messages: sanitizedHistory(),
                 systemPrompt: activeSystemPrompt,
@@ -126,10 +139,45 @@ class ChatService: ObservableObject {
                 geminiKey: settingsService.geminiAPIKey,
                 webSearchEnabled: settingsService.webSearchEnabled,
                 openAIReasoningEffort: settingsService.openAIReasoningEffortOpt,
-                claudeReasoningEnabled: settingsService.claudeReasoningEnabled
+                claudeReasoningEnabled: settingsService.claudeReasoningEnabled,
+                useProxy: useProxy
             )
             let client = LLMClientFactory.client(for: provider)
-            let request = try client.makeRequest(with: context)
+
+            // Determine if we should use proxy or direct call
+            let request: URLRequest
+            if useProxy {
+                // Route through Supabase proxy
+                logger.info("Routing \(provider.rawValue) request through proxy")
+                let directRequest = try client.makeRequest(with: context)
+
+                // Extract endpoint, headers, and body from the direct request
+                guard let url = directRequest.url else {
+                    throw LlmError.streamingError("Invalid request URL")
+                }
+
+                var headers: [String: String] = [:]
+                directRequest.allHTTPHeaderFields?.forEach { headers[$0.key] = $0.value }
+
+                var body: [String: Any] = [:]
+                if let httpBody = directRequest.httpBody,
+                   let jsonBody = try? JSONSerialization.jsonObject(with: httpBody) as? [String: Any] {
+                    body = jsonBody
+                }
+
+                request = try await proxyService.makeProxiedRequest(
+                    provider: provider,
+                    endpoint: url.absoluteString,
+                    method: directRequest.httpMethod ?? "POST",
+                    headers: headers,
+                    body: body
+                )
+            } else {
+                // Direct call with user's own API key
+                logger.info("Using direct \(provider.rawValue) API call with user's key")
+                request = try client.makeRequest(with: context)
+            }
+
             let stream = try await makeStream(request: request, decoder: client.decodeChunk)
 
             // 1) insert one placeholder (no save - will be saved when completed)
@@ -190,7 +238,14 @@ class ChatService: ObservableObject {
     
     // MARK: - Unified SSE & Decoding Helpers
     private func makeStream(request: URLRequest, decoder: @escaping (String) -> String?) async throws -> AsyncThrowingStream<String, Error> {
-        let (bytesSequence, response) = try await urlSession.bytes(for: request)
+        // Create a dedicated session for this request to enable explicit cancellation
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120  // 2 minutes
+        config.timeoutIntervalForResource = 300 // 5 minutes
+        let session = URLSession(configuration: config)
+        activeSession = session
+
+        let (bytesSequence, response) = try await session.bytes(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             var errorData = Data()
             for try await byte in bytesSequence {
@@ -253,24 +308,11 @@ class ChatService: ObservableObject {
     }
     
     private func makeNonStreamingXAIRequest(modelId: String, systemPrompt: String, userMessage: String, temperature: Float, maxTokens: Int) async throws -> String {
-        guard let key = settingsService.xaiAPIKey, !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "xAI")
-        }
-        
-        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
-            throw LlmError.invalidURL
-        }
-        
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        
         let messagesPayload: [[String: Any]] = [
             ["role": "system", "content": [["type": "text", "text": systemPrompt]]],
             ["role": "user", "content": [["type": "text", "text": userMessage]]]
         ]
-        
+
         let requestBody: [String: Any] = [
             "model": modelId,
             "messages": messagesPayload,
@@ -278,9 +320,36 @@ class ChatService: ObservableObject {
             "max_completion_tokens": maxTokens,
             "stream": false
         ]
-        
-        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        
+
+        let req: URLRequest
+        if proxyService.shouldUseProxy(for: .xai) {
+            // Route through proxy
+            req = try await proxyService.makeProxiedRequest(
+                provider: .xai,
+                endpoint: "https://api.x.ai/v1/chat/completions",
+                method: "POST",
+                headers: ["Content-Type": "application/json"],
+                body: requestBody
+            )
+        } else {
+            // Direct call with user's key
+            guard let key = settingsService.xaiAPIKey, !key.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "xAI")
+            }
+
+            guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
+                throw LlmError.invalidURL
+            }
+
+            var directReq = URLRequest(url: url)
+            directReq.httpMethod = "POST"
+            directReq.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            directReq.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            directReq.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+            req = directReq
+        }
+
+        // Use urlSession with 120s timeout (configured in lazy var)
         let (data, response) = try await urlSession.data(for: req)
         
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -493,6 +562,7 @@ struct LLMClientContext {
     let webSearchEnabled: Bool
     let openAIReasoningEffort: OpenAIReasoningEffort?
     let claudeReasoningEnabled: Bool
+    let useProxy: Bool
 }
 
 protocol LLMClient {
@@ -502,20 +572,22 @@ protocol LLMClient {
 
 struct OpenAIClient: LLMClient {
     func makeRequest(with context: LLMClientContext) throws -> URLRequest {
-        guard let rawKey = context.openAIKey else {
-            throw LlmError.apiKeyMissing(provider: "OpenAI")
-        }
-        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, key != "YOUR_OPENAI_API_KEY" else {
-            throw LlmError.apiKeyMissing(provider: "OpenAI")
+        let useProxy = context.useProxy
+        let trimmedKey = context.openAIKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !useProxy {
+            guard let key = trimmedKey, !key.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "OpenAI")
+            }
         }
         guard let url = URL(string: "https://api.openai.com/v1/responses") else {
             throw LlmError.invalidURL
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !useProxy, let key = trimmedKey {
+            req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
 
         let inputPayload = context.messages.map { msg -> [String: Any] in
             let type = (msg.role == "assistant") ? "output_text" : "input_text"
@@ -562,12 +634,12 @@ struct OpenAIClient: LLMClient {
 
 struct XAIClient: LLMClient {
     func makeRequest(with context: LLMClientContext) throws -> URLRequest {
-        guard let rawKey = context.xaiKey else {
-            throw LlmError.apiKeyMissing(provider: "xAI")
-        }
-        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "xAI")
+        let useProxy = context.useProxy
+        let trimmedKey = context.xaiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !useProxy {
+            guard let key = trimmedKey, !key.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "xAI")
+            }
         }
         guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
             throw LlmError.invalidURL
@@ -576,7 +648,9 @@ struct XAIClient: LLMClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if !useProxy, let key = trimmedKey {
+            req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
 
         var messagesPayload: [[String: Any]] = context.messages.map { message in
             [
@@ -621,12 +695,12 @@ struct XAIClient: LLMClient {
 
 struct ClaudeClient: LLMClient {
     func makeRequest(with context: LLMClientContext) throws -> URLRequest {
-        guard let rawKey = context.anthropicKey else {
-            throw LlmError.apiKeyMissing(provider: "Claude")
-        }
-        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "Claude")
+        let useProxy = context.useProxy
+        let trimmedKey = context.anthropicKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !useProxy {
+            guard let key = trimmedKey, !key.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "Claude")
+            }
         }
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
             throw LlmError.invalidURL
@@ -634,7 +708,9 @@ struct ClaudeClient: LLMClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue(key, forHTTPHeaderField: "x-api-key")
+        if !useProxy, let key = trimmedKey {
+            req.addValue(key, forHTTPHeaderField: "x-api-key")
+        }
         req.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         var messagesPayload: [[String: Any]] = context.messages.map { message in
@@ -690,17 +766,22 @@ struct ClaudeClient: LLMClient {
 
 struct GeminiClient: LLMClient {
     func makeRequest(with context: LLMClientContext) throws -> URLRequest {
-        guard let rawKey = context.geminiKey else {
-            throw LlmError.apiKeyMissing(provider: "Gemini")
-        }
-        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            throw LlmError.apiKeyMissing(provider: "Gemini")
+        let useProxy = context.useProxy
+        let trimmedKey = context.geminiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !useProxy {
+            guard let key = trimmedKey, !key.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "Gemini")
+            }
         }
         let apiVersion = "v1beta"
         let responseType = "streamGenerateContent"
-        let urlString = "https://generativelanguage.googleapis.com/\(apiVersion)/models/\(context.modelId):\(responseType)?alt=sse&key=\(key)"
-        guard let url = URL(string: urlString) else { throw LlmError.invalidURL }
+        var components = URLComponents(string: "https://generativelanguage.googleapis.com/\(apiVersion)/models/\(context.modelId):\(responseType)")
+        var queryItems = [URLQueryItem(name: "alt", value: "sse")]
+        if !useProxy, let key = trimmedKey {
+            queryItems.append(URLQueryItem(name: "key", value: key))
+        }
+        components?.queryItems = queryItems
+        guard let url = components?.url else { throw LlmError.invalidURL }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

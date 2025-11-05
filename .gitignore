@@ -1,3 +1,19 @@
 APIKeys.swift
 Prompts.swift
 .cursor/rules
+
+# macOS artifacts
+.DS_Store
+
+# Xcode build/user state
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Swift Package Manager artifacts
+Packages/
+.swiftpm/
+.build/
+
+# Supabase CLI cache
+supabase/.temp/

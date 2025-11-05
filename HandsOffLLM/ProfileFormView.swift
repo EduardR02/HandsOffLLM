@@ -267,10 +267,14 @@ extension View {
 struct ProfileFormView_Previews: PreviewProvider {
     static var previews: some View {
         let settings = SettingsService()
-        let audio = AudioService(settingsService: settings, historyService: HistoryService())
+        let history = HistoryService()
+        let auth = AuthService.shared
+        let audio = AudioService(settingsService: settings, historyService: history, authService: auth)
         return ProfileFormView(isInitial: true)
             .environmentObject(settings)
+            .environmentObject(history)
             .environmentObject(audio)
+            .environmentObject(auth)
             .preferredColorScheme(.dark)
     }
 }

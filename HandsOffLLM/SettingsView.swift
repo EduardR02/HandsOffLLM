@@ -203,17 +203,40 @@ struct SettingsView: View {
                             .foregroundColor(Theme.secondaryAccent)
                     }
 
-                    Picker("Voice", selection: Binding(
-                        get: { settingsService.openAITTSVoice },
-                        set: { settingsService.updateSelectedTTSVoice(voice: $0) }
+                    Picker(selection: Binding(
+                        get: { settingsService.selectedTTSProvider },
+                        set: { settingsService.updateSelectedTTSProvider($0) }
                     )) {
-                        ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
-                            Text(voice.capitalized).tag(voice)
+                        ForEach(TTSProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider)
                                 .foregroundColor(Theme.primaryText)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("TTS Provider")
+                                .foregroundColor(Theme.primaryText)
+                            Text("Kokoro runs on-device, no API needed")
+                                .font(.caption)
+                                .foregroundColor(Theme.secondaryText)
                         }
                     }
                     .tint(Theme.secondaryAccent)
-                    .id("voicePicker-\(darkerModeObserver)")
+                    .id("ttsProviderPicker-\(darkerModeObserver)")
+
+                    // Only show voice picker for OpenAI
+                    if settingsService.selectedTTSProvider == .openai {
+                        Picker("Voice", selection: Binding(
+                            get: { settingsService.openAITTSVoice },
+                            set: { settingsService.updateSelectedTTSVoice(voice: $0) }
+                        )) {
+                            ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
+                                Text(voice.capitalized).tag(voice)
+                                    .foregroundColor(Theme.primaryText)
+                            }
+                        }
+                        .tint(Theme.secondaryAccent)
+                        .id("voicePicker-\(darkerModeObserver)")
+                    }
                 }
                 .listRowBackground(Theme.menuAccent)
 
@@ -348,7 +371,31 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
-                
+
+                // MARK: - User API Keys
+                Section {
+                    NavigationLink {
+                        UserAPIKeysView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "key.fill")
+                            Text("Use Your Own API Keys")
+                            Spacer()
+                            if settingsService.useOwnOpenAIKey || settingsService.useOwnAnthropicKey ||
+                               settingsService.useOwnGeminiKey || settingsService.useOwnXAIKey {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                            }
+                        }
+                    }
+                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                } header: {
+                    Text("API Keys")
+                } footer: {
+                    Text("Bypass the proxy and use your own API keys. You'll need to provide keys for each provider you want to use.")
+                }
+                .listRowBackground(Theme.menuAccent)
+
                 // MARK: - Advanced Settings
                 Section("Advanced Settings") {
                     NavigationLink {
@@ -357,6 +404,31 @@ struct SettingsView: View {
                         Text("Advanced Settings")
                     }
                     .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                }
+                .listRowBackground(Theme.menuAccent)
+
+                // MARK: - Sign Out
+                Section {
+                    Button(role: .destructive) {
+                        Task {
+                            do {
+                                try await AuthService.shared.signOut()
+                            } catch {
+                                print("Sign out error: \(error.localizedDescription)")
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.right.square")
+                            Text("Sign Out")
+                            Spacer()
+                        }
+                    }
+                } footer: {
+                    if let user = AuthService.shared.currentUser {
+                        Text("Signed in as \(user.email ?? "Unknown")")
+                            .font(.caption)
+                    }
                 }
                 .listRowBackground(Theme.menuAccent)
             }
@@ -853,6 +925,7 @@ struct AdvancedSettingsView: View {
     .environmentObject(env.history)
     .environmentObject(env.audio)
     .environmentObject(env.chat)
+    .environmentObject(env.auth)
     .preferredColorScheme(.dark)
 }
 #endif

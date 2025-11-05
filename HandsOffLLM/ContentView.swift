@@ -98,6 +98,7 @@ struct ContentView: View {
         return scaledLine + 20
     }
     @State private var showHistory = false
+    @State private var showUsage = false
     @State private var isMenuOpen = false
     @State private var isEditingSlider: Bool = false
     @State private var showInitialSliderValueHelpText: Bool = false
@@ -197,6 +198,15 @@ struct ContentView: View {
                             .contentShape(Rectangle())
                             .padding(.horizontal, 12)
 
+                            Button {
+                                showUsage = true
+                            } label: {
+                                MenuRowContent(imageName: "chart.bar.fill", text: "Usage")
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .contentShape(Rectangle())
+                            .padding(.horizontal, 12)
+
                             NavigationLink {
                                 SettingsView()
                             } label: {
@@ -283,6 +293,9 @@ struct ContentView: View {
         .navigationDestination(isPresented: $showHistory) {
             HistoryView(rootIsActive: $showHistory)
         }
+        .navigationDestination(isPresented: $showUsage) {
+            UsageDashboardView()
+        }
         .onAppear {
             logger.info("ContentView appeared, start listening.")
             isMenuOpen = false
@@ -340,6 +353,7 @@ private struct MenuRowContent: View {
     .environmentObject(env.history)
     .environmentObject(env.audio)
     .environmentObject(env.chat)
+    .environmentObject(env.auth)
     .preferredColorScheme(.dark)
 }
 #endif

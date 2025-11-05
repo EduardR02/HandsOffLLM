@@ -7,10 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		BB3AE0BA2E91BDBC00137F0D /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = BB3AE0B92E91BDBC00137F0D /* FluidAudio */; };
-		BB53B9942DA6701600DECCF3 /* APIkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9932DA6701600DECCF3 /* APIkeys.swift */; };
+		BB3E4E722EBB287D00040C01 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = BB3E4E712EBB287D00040C01 /* FluidAudio */; };
 		BB53B9962DA6710300DECCF3 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = BB53B9952DA6710300DECCF3 /* .gitignore */; };
 		BB53B9982DA6759100DECCF3 /* Prompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53B9972DA6759100DECCF3 /* Prompts.swift */; };
+		BBD4AD032EBA6F5D00FEF910 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = BBD4AD022EBA6F5D00FEF910 /* GoogleSignIn */; };
+		BBD4AD062EBA755E00FEF910 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = BBD4AD052EBA755E00FEF910 /* Auth */; };
+		BBD4AD082EBA755E00FEF910 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = BBD4AD072EBA755E00FEF910 /* Supabase */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -75,7 +77,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BB3AE0BA2E91BDBC00137F0D /* FluidAudio in Frameworks */,
+				BB3E4E722EBB287D00040C01 /* FluidAudio in Frameworks */,
+				BBD4AD082EBA755E00FEF910 /* Supabase in Frameworks */,
+				BBD4AD032EBA6F5D00FEF910 /* GoogleSignIn in Frameworks */,
+				BBD4AD062EBA755E00FEF910 /* Auth in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -139,7 +144,10 @@
 			);
 			name = HandsOffLLM;
 			packageProductDependencies = (
-				BB3AE0B92E91BDBC00137F0D /* FluidAudio */,
+				BBD4AD022EBA6F5D00FEF910 /* GoogleSignIn */,
+				BBD4AD052EBA755E00FEF910 /* Auth */,
+				BBD4AD072EBA755E00FEF910 /* Supabase */,
+				BB3E4E712EBB287D00040C01 /* FluidAudio */,
 			);
 			productName = HandsOffLLM;
 			productReference = BB1744592DA5355D00738173 /* HandsOffLLM.app */;
@@ -224,7 +232,9 @@
 			mainGroup = BB1744502DA5355D00738173;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				BB3AE0B82E91BDBC00137F0D /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				BBD4AD012EBA6F5D00FEF910 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				BBD4AD042EBA755E00FEF910 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+				BB3E4E702EBB287D00040C01 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BB17445A2DA5355D00738173 /* Products */;
@@ -269,7 +279,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				BB53B9982DA6759100DECCF3 /* Prompts.swift in Sources */,
-				BB53B9942DA6701600DECCF3 /* APIkeys.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -602,7 +611,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		BB3AE0B82E91BDBC00137F0D /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+		BB3E4E702EBB287D00040C01 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
 			requirement = {
@@ -610,13 +619,44 @@
 				kind = branch;
 			};
 		};
+		BBD4AD012EBA6F5D00FEF910 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.0.0;
+			};
+		};
+		BBD4AD042EBA755E00FEF910 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase-community/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		BB3AE0B92E91BDBC00137F0D /* FluidAudio */ = {
+		BB3E4E712EBB287D00040C01 /* FluidAudio */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = BB3AE0B82E91BDBC00137F0D /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			package = BB3E4E702EBB287D00040C01 /* XCRemoteSwiftPackageReference "FluidAudio" */;
 			productName = FluidAudio;
+		};
+		BBD4AD022EBA6F5D00FEF910 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BBD4AD012EBA6F5D00FEF910 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		BBD4AD052EBA755E00FEF910 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BBD4AD042EBA755E00FEF910 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		BBD4AD072EBA755E00FEF910 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BBD4AD042EBA755E00FEF910 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

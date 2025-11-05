@@ -229,6 +229,7 @@ struct ChatDetailView: View {
     .environmentObject(env.settings)
     .environmentObject(env.history)
     .environmentObject(env.chat)
+    .environmentObject(env.auth)
     .preferredColorScheme(.dark)
 }
 #endif

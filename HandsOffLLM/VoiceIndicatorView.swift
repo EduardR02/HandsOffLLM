@@ -240,12 +240,15 @@ struct VoiceIndicatorView_Previews: PreviewProvider {
         // Set up environment objects needed by the view
         let settings = SettingsService()
         let history  = HistoryService()
-        let audio    = AudioService(settingsService: settings, historyService: history)
+        let auth     = AuthService.shared
+        let audio    = AudioService(settingsService: settings, historyService: history, authService: auth)
 
         return StatefulPreviewWrapper(ViewModelState.listening) { state in
             VoiceIndicatorView(state: state)
                 .environmentObject(settings)
+                .environmentObject(history)
                 .environmentObject(audio)
+                .environmentObject(auth)
         }
     }
 }
