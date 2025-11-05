@@ -77,7 +77,7 @@ const MODEL_ALIASES: Partial<Record<keyof typeof PRICING, Array<{ regex: RegExp;
 }
 
 const DISABLE_USAGE_TRACKING =
-  (Deno.env.get('DISABLE_USAGE_TRACKING') ?? 'true').toLowerCase() === 'true'
+  (Deno.env.get('DISABLE_USAGE_TRACKING') ?? 'false').toLowerCase() === 'true'
 
 interface UsageData {
   cached_input_tokens: number

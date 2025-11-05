@@ -24,7 +24,7 @@ interface UsageData {
 }
 
 const DISABLE_USAGE_TRACKING =
-  (Deno.env.get("DISABLE_USAGE_TRACKING") ?? "true").toLowerCase() === "true";
+  (Deno.env.get("DISABLE_USAGE_TRACKING") ?? "false").toLowerCase() === "true";
 
 function resolvePricing(model: string): PricingEntry {
   const pricing = PRICING.mistral;
@@ -101,26 +101,54 @@ serve(async (req) => {
       });
     }
 
+    // Check rate limit and quota using optimized functions
     if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-      const { data: usageData } = await supabaseAdmin.rpc(
-        "get_current_month_usage",
+      // Rate limiting: 30 requests per minute per user
+      const { data: rateLimitOk } = await supabaseAdmin.rpc("check_rate_limit", {
+        p_user_id: user.id,
+        p_max_requests: 30,
+      });
+
+      if (!rateLimitOk) {
+        return new Response(
+          JSON.stringify({
+            error: "Rate limit exceeded",
+            limit: "30 requests per minute",
+          }),
+          {
+            status: 429,
+            headers: {
+              "Content-Type": "application/json",
+              "Retry-After": "60",
+            },
+          },
+        );
+      }
+
+      // Check quota using optimized combined query
+      const { data: quotaData, error: quotaError } = await supabaseAdmin.rpc(
+        "check_user_quota",
         { p_user_id: user.id },
       );
 
-      const { data: limitsData } = await supabaseAdmin.from("user_limits")
-        .select("monthly_limit_usd")
-        .eq("user_id", user.id)
-        .single();
+      if (quotaError) {
+        console.error("Quota check failed:", quotaError);
+        return new Response(
+          JSON.stringify({ error: "Failed to check usage quota" }),
+          {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
 
-      const currentUsage = usageData || 0;
-      const monthlyLimit = limitsData?.monthly_limit_usd || 8.0;
-
-      if (currentUsage >= monthlyLimit) {
+      const quota = quotaData?.[0];
+      if (quota?.quota_exceeded) {
         return new Response(
           JSON.stringify({
             error: "Monthly usage limit exceeded",
-            current_usage: currentUsage,
-            limit: monthlyLimit,
+            current_usage: quota.current_usage,
+            limit: quota.monthly_limit,
           }),
           {
             status: 429,

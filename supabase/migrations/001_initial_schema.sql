@@ -1,5 +1,9 @@
 -- HandsOffLLM Initial Schema Migration
--- Creates tables for usage tracking and user limits
+-- Creates tables for usage tracking, user limits, and rate limiting
+
+-- ============================================================================
+-- TABLES
+-- ============================================================================
 
 -- User limits table
 CREATE TABLE IF NOT EXISTS user_limits (
@@ -29,13 +33,33 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
--- Indexes for fast queries
-CREATE INDEX IF NOT EXISTS idx_usage_logs_user_timestamp ON usage_logs(user_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_usage_logs_user_provider ON usage_logs(user_id, provider, timestamp DESC);
+-- Rate limiting: Track recent requests per user
+CREATE TABLE IF NOT EXISTS rate_limit_log (
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  request_timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
 
--- Enable Row Level Security
+-- ============================================================================
+-- INDEXES
+-- ============================================================================
+
+-- Usage logs indexes for fast queries
+CREATE INDEX IF NOT EXISTS idx_usage_logs_user_timestamp
+  ON usage_logs(user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_user_provider
+  ON usage_logs(user_id, provider, timestamp DESC);
+
+-- Rate limit index supports recent lookups
+CREATE INDEX IF NOT EXISTS idx_rate_limit_recent
+  ON rate_limit_log(user_id, request_timestamp DESC);
+
+-- ============================================================================
+-- ROW LEVEL SECURITY
+-- ============================================================================
+
 ALTER TABLE user_limits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_logs ENABLE ROW LEVEL SECURITY;
+-- Note: rate_limit_log has no RLS - only accessed by service role
 
 -- RLS Policies (drop first for idempotency)
 DROP POLICY IF EXISTS "Users can read own limits" ON user_limits;
@@ -62,23 +86,22 @@ CREATE POLICY "Users can read own usage logs"
   TO authenticated
   USING (auth.uid() = user_id);
 
+-- ============================================================================
+-- FUNCTIONS
+-- ============================================================================
+
 -- Function to create default user limits on signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
   INSERT INTO public.user_limits (user_id, monthly_limit_usd)
-  VALUES (NEW.id, 8.00);
+  VALUES (NEW.id, 8.00)
+  ON CONFLICT (user_id) DO NOTHING;  -- Avoid errors on retry
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Trigger to automatically create user limits
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
--- Function to get current month usage
+-- Function to get current month usage (simple version for backward compatibility)
 CREATE OR REPLACE FUNCTION public.get_current_month_usage(p_user_id UUID)
 RETURNS DECIMAL AS $$
   SELECT COALESCE(SUM(cost_usd), 0)
@@ -86,4 +109,49 @@ RETURNS DECIMAL AS $$
   WHERE user_id = p_user_id
     AND timestamp >= date_trunc('month', NOW())
     AND timestamp < date_trunc('month', NOW()) + INTERVAL '1 month';
-$$ LANGUAGE sql SECURITY DEFINER;
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Optimized function to check user quota (single query, handles missing limits gracefully)
+CREATE OR REPLACE FUNCTION public.check_user_quota(p_user_id UUID)
+RETURNS TABLE(current_usage DECIMAL, monthly_limit DECIMAL, quota_exceeded BOOLEAN) AS $$
+  SELECT
+    COALESCE(SUM(ul.cost_usd), 0) as current_usage,
+    COALESCE(lim.monthly_limit_usd, 8.00) as monthly_limit,
+    COALESCE(SUM(ul.cost_usd), 0) >= COALESCE(lim.monthly_limit_usd, 8.00) as quota_exceeded
+  FROM (SELECT p_user_id as uid) u
+  LEFT JOIN user_limits lim ON lim.user_id = u.uid
+  LEFT JOIN usage_logs ul ON ul.user_id = u.uid
+    AND ul.timestamp >= date_trunc('month', NOW())
+    AND ul.timestamp < date_trunc('month', NOW()) + INTERVAL '1 month'
+  GROUP BY lim.monthly_limit_usd;
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Function to check rate limit (default: 30 requests per minute)
+CREATE OR REPLACE FUNCTION public.check_rate_limit(p_user_id UUID, p_max_requests INT DEFAULT 30)
+RETURNS BOOLEAN AS $$
+DECLARE
+  recent_count INT;
+BEGIN
+  -- Count requests in last minute
+  SELECT COUNT(*) INTO recent_count
+  FROM rate_limit_log
+  WHERE user_id = p_user_id
+    AND request_timestamp >= NOW() - INTERVAL '1 minute';
+
+  -- Insert current request
+  INSERT INTO rate_limit_log (user_id) VALUES (p_user_id);
+
+  -- Return true if under limit
+  RETURN recent_count < p_max_requests;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================================
+-- TRIGGERS
+-- ============================================================================
+
+-- Trigger to automatically create user limits on signup
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
