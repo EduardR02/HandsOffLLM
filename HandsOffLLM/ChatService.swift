@@ -543,6 +543,8 @@ class ChatService: ObservableObject {
             return (SettingsService.maxTempGemini, SettingsService.maxTokensGemini)
         case .xai:
             return (SettingsService.maxTempXAI, SettingsService.maxTokensXAI)
+        case .replicate:
+            return (2.0, 4096) // Replicate is TTS-only, not used for LLM
         }
     }
 }
@@ -846,6 +848,8 @@ struct LLMClientFactory {
             return GeminiClient()
         case .xai:
             return XAIClient()
+        case .replicate:
+            return OpenAIClient() // Replicate is TTS-only, fallback to OpenAI client
         }
     }
 }
