@@ -248,6 +248,10 @@ struct SettingsView: View {
                         }
                         .tint(Theme.secondaryAccent)
                         .id("kokoroVoicePicker-\(darkerModeObserver)")
+
+                        Text("~10x cheaper. Similar quality if language stays the same.")
+                            .font(.caption)
+                            .foregroundColor(Theme.secondaryText)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
