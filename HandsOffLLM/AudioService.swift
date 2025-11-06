@@ -111,9 +111,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private let baseMinChunkLength: Int = 60
     private let ttsChunkGrowthFactor: Double = 2.25
-    private let kokoroBaseMinChunkLength: Int = 80
-    private let kokoroMaxChunkLengthCap: Int = 320
-    private let kokoroSentenceTerminators: Set<Character> = [".", "!", "?"]
     private static let mistralModel = "voxtral-mini-latest"
 
     private var ttsSessionId: UUID = UUID()
@@ -872,19 +869,10 @@ extension AudioService {
         let provider = settingsService.selectedTTSProvider
         if lastChunkProvider != provider {
             ttsState.previousChunkSize = nil
-            if provider != .kokoro {
-                lastChunkProvider = provider
-            }
-        }
-
-        let idx: Int
-        if provider == .kokoro {
-            idx = findNextKokoroChunk()
-            lastChunkProvider = .kokoro
-        } else {
-            idx = findNextTTSChunk()
             lastChunkProvider = provider
         }
+
+        let idx = findNextTTSChunk()
         if idx > 0 {
             logger.debug("Fetching next TTS chunk: \(idx) chars")
             let chunk = String(ttsState.textBuffer.prefix(idx))
@@ -1115,51 +1103,6 @@ extension AudioService {
         return nextChunkLength(baseMin: baseMinChunkLength, maxCap: maxSetting, growth: ttsChunkGrowthFactor)
     }
 
-    func findNextKokoroChunk() -> Int {
-        let text = ttsState.textBuffer
-        guard !text.isEmpty else { return 0 }
-
-        let minChars = max(kokoroBaseMinChunkLength, Int(Float(baseMinChunkLength) * max(1.0, ttsRate)))
-        let cap = min(kokoroMaxChunkLengthCap, settingsService.maxTTSChunkLength)
-
-        var sentenceEnd: String.Index?
-        var index = text.startIndex
-        var charCount = 0
-
-        while index < text.endIndex && charCount < cap {
-            let char = text[index]
-            charCount += 1
-
-            if kokoroSentenceTerminators.contains(char) {
-                let nextIndex = text.index(after: index)
-                sentenceEnd = nextIndex
-                if charCount >= minChars {
-                    break
-                }
-            } else if char == "\n" {
-                sentenceEnd = text.index(after: index)
-                if charCount >= minChars {
-                    break
-                }
-            }
-
-            index = text.index(after: index)
-        }
-
-        let resolvedLength: Int
-        if let end = sentenceEnd, charCount >= minChars {
-            resolvedLength = text.distance(from: text.startIndex, to: end)
-        } else if charCount >= cap || (ttsState.llmFinished && charCount >= minChars) {
-            let end = text.index(text.startIndex, offsetBy: min(charCount, cap))
-            resolvedLength = text.distance(from: text.startIndex, to: end)
-        } else {
-            return 0
-        }
-
-        ttsState.previousChunkSize = resolvedLength
-        return resolvedLength
-    }
-    
     func configurePlayer(_ player: AVAudioPlayer) {
         player.delegate = self
         player.enableRate = true

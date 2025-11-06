@@ -56,7 +56,7 @@ struct SettingsView: View {
                         get: { settingsService.settings.selectedDefaultProvider ?? .claude },
                         set: { settingsService.updateDefaultProvider(provider: $0) }
                     )) {
-                        ForEach(LLMProvider.allCases) { provider in
+                        ForEach(LLMProvider.userFacing) { provider in
                             Text(provider.rawValue).tag(provider)
                                 .foregroundColor(Theme.primaryText)
                         }
@@ -94,7 +94,7 @@ struct SettingsView: View {
 
                 // MARK: - Model Selection
                 Section("LLM Models") {
-                    ForEach(LLMProvider.allCases) { provider in
+                    ForEach(LLMProvider.userFacing) { provider in
                         NavigationLink {
                             ModelSelectionView(provider: provider)
                         } label: {

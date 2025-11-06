@@ -240,8 +240,14 @@ enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case claude = "Claude"
     case openai = "OpenAI"
     case xai = "xAI"
-    case replicate = "Replicate"
+    case replicate = "Replicate" // Internal only for TTS proxy routing
+
     var id: String { self.rawValue }
+
+    /// User-selectable providers (excludes internal-only providers like Replicate)
+    static var userFacing: [LLMProvider] {
+        [.gemini, .claude, .openai, .xai]
+    }
 }
 
 // MARK: - TTS Provider Enum

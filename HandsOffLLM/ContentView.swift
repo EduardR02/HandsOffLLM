@@ -235,7 +235,7 @@ struct ContentView: View {
                                 .padding(.horizontal, 12)
 
                             Picker("LLM", selection: $viewModel.selectedProvider) {
-                                ForEach(LLMProvider.allCases) { provider in
+                                ForEach(LLMProvider.userFacing) { provider in
                                     Text(provider.rawValue).tag(provider)
                                         .foregroundColor(Theme.primaryText)
                                 }
