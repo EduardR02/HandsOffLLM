@@ -130,17 +130,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
         set { settings.useOwnReplicateKey = newValue; saveSettings() }
     }
     
-    // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
+    // --- Hardcoded TTS details ---
     let openAITTSModel = "gpt-4o-mini-tts"
+    let kokoroTTSVoice = "af_bella"  // Hardcoded Replicate Kokoro voice
 
     let defaultTTSVoice = "nova"    // Default OpenAI TTS voice
-    let defaultKokoroVoice = "af_bella"  // Default Replicate Kokoro voice
-    let availableKokoroVoices: Set<String> = [
-        "af_bella", "af_nicole", "af_sarah", "af_sky",
-        "am_adam", "am_michael", "bf_emma", "bf_isabella",
-        "bm_george", "bm_lewis", "ff_siwis", "jf_gongitsune",
-        "zm_yunxi"
-    ]   // Subset of most common Replicate Kokoro voices
     let availableTTSVoices = [
         "alloy", "ash", "ballad", "coral", "echo",
         "fable", "nova", "onyx", "sage", "shimmer", "verse"
@@ -148,14 +142,6 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     var openAITTSVoice: String {    // Dynamic: picks saved setting or falls back to default
         settings.selectedTTSVoice ?? defaultTTSVoice
-    }
-
-    var kokoroTTSVoice: String {
-        if let stored = settings.selectedKokoroVoice,
-           availableKokoroVoices.contains(stored) {
-            return stored
-        }
-        return defaultKokoroVoice
     }
 
     let openAITTSFormat = "aac"     // Other options: opus, flac, pcm, mp3
@@ -430,16 +416,6 @@ class SettingsService: ObservableObject { // Make ObservableObject
         saveSettings()
     }
 
-    func updateSelectedKokoroVoice(voice: String) {
-        let trimmed = voice.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard availableKokoroVoices.contains(trimmed) else {
-            logger.warning("Attempted to set unsupported Kokoro voice: \(voice)")
-            return
-        }
-        settings.selectedKokoroVoice = trimmed
-        saveSettings()
-    }
-    
     func updateAdvancedSetting<T>(keyPath: WritableKeyPath<SettingsData, T?>, value: T?) {
         settings[keyPath: keyPath] = value
         saveSettings()
@@ -500,10 +476,6 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     func updateSelectedTTSProvider(_ provider: TTSProvider) {
         settings.selectedTTSProvider = provider
-        if provider == .kokoro,
-           !(settings.selectedKokoroVoice.map(availableKokoroVoices.contains) ?? false) {
-            settings.selectedKokoroVoice = defaultKokoroVoice
-        }
         saveSettings()
     }
 

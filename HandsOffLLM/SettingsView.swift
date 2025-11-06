@@ -215,7 +215,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("TTS Provider")
                                 .foregroundColor(Theme.primaryText)
-                            Text("Kokoro runs on-device, no API needed")
+                            Text("Kokoro uses Replicate API")
                                 .font(.caption)
                                 .foregroundColor(Theme.secondaryText)
                         }

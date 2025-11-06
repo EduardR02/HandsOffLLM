@@ -75,7 +75,6 @@ struct SettingsData: Codable {
     var advancedTTSInstructionEnabled: Bool = false
 
     var selectedTTSVoice: String?
-    var selectedKokoroVoice: String?
     var selectedTTSProvider: TTSProvider? = nil
     var selectedDefaultProvider: LLMProvider?
     var selectedDefaultPlaybackSpeed: Float?
