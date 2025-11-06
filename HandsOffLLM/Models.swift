@@ -97,6 +97,7 @@ struct SettingsData: Codable {
     var useOwnGeminiKey: Bool = false
     var useOwnXAIKey: Bool = false
     var useOwnMistralKey: Bool = false
+    var useOwnReplicateKey: Bool = false
 
     init() {
     }

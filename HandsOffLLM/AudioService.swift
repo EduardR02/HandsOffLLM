@@ -1304,18 +1304,39 @@ extension AudioService {
         )
 
         let payloadData = try JSONEncoder().encode(payload)
-        guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-            throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
-        }
 
-        // Always route through proxy for Replicate
-        let request = try await proxyService.makeProxiedRequest(
-            provider: .replicate,
-            endpoint: "https://api.replicate.com/v1/predictions",
-            method: "POST",
-            headers: ["Content-Type": "application/json"],
-            body: payloadDict
-        )
+        // Check if we should use proxy or direct API
+        let useProxy = proxyService.shouldUseProxy(for: .replicate)
+        let request: URLRequest
+
+        if useProxy {
+            // Route through proxy
+            guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
+                throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
+            }
+            request = try await proxyService.makeProxiedRequest(
+                provider: .replicate,
+                endpoint: "https://api.replicate.com/v1/predictions",
+                method: "POST",
+                headers: ["Content-Type": "application/json"],
+                body: payloadDict
+            )
+        } else {
+            // Direct API call with user's key
+            guard let apiKey = settingsService.replicateAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !apiKey.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "Replicate")
+            }
+            guard let url = URL(string: "https://api.replicate.com/v1/predictions") else {
+                throw LlmError.invalidURL
+            }
+            var directRequest = URLRequest(url: url)
+            directRequest.httpMethod = "POST"
+            directRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            directRequest.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            directRequest.httpBody = payloadData
+            request = directRequest
+        }
 
         let (data, response): (Data, URLResponse)
         do { (data, response) = try await urlSession.data(for: request) }
@@ -1336,7 +1357,7 @@ extension AudioService {
         let decoder = JSONDecoder()
         let prediction = try decoder.decode(ReplicateTTSResponse.self, from: data)
 
-        // Poll for completion
+        // Poll for completion directly (no proxy) - Replicate GET endpoints are publicly accessible
         guard let audioURL = try await pollReplicatePrediction(id: prediction.id) else {
             logger.warning("Replicate prediction completed but no output URL received.")
             return nil
@@ -1362,17 +1383,20 @@ extension AudioService {
     }
 
     private func pollReplicatePrediction(id: String, maxAttempts: Int = 30) async throws -> String? {
+        // Poll directly to Replicate (no proxy) - GET endpoints are publicly accessible
+        // This minimizes edge function invocations and improves efficiency
         for attempt in 1...maxAttempts {
             // Wait before polling
             try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
 
-            let request = try await proxyService.makeProxiedRequest(
-                provider: .replicate,
-                endpoint: "https://api.replicate.com/v1/predictions/\(id)",
-                method: "GET",
-                headers: [:],
-                body: nil
-            )
+            // Direct GET request to Replicate - no auth required for prediction status checks
+            guard let url = URL(string: "https://api.replicate.com/v1/predictions/\(id)") else {
+                throw LlmError.invalidURL
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
             let (data, response) = try await urlSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,

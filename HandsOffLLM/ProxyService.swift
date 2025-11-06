@@ -25,7 +25,7 @@ class ProxyService {
         case .xai:
             return settingsService.useOwnXAIKey == false || settingsService.xaiAPIKey?.isEmpty != false
         case .replicate:
-            return true // Always use proxy for Replicate
+            return settingsService.useOwnReplicateKey == false || settingsService.replicateAPIKey?.isEmpty != false
         }
     }
 
@@ -35,7 +35,7 @@ class ProxyService {
         endpoint: String,
         method: String = "POST",
         headers: [String: String],
-        body: [String: Any]
+        body: [String: Any]?
     ) async throws -> URLRequest {
         let jwt = try await authService.getCurrentJWT()
 
@@ -53,13 +53,16 @@ class ProxyService {
         request.addValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let proxyPayload: [String: Any] = [
+        var proxyPayload: [String: Any] = [
             "provider": provider.rawValue.lowercased(),
             "endpoint": endpoint,
             "method": method,
-            "headers": headers,
-            "bodyData": body
+            "headers": headers
         ]
+
+        if let body = body {
+            proxyPayload["bodyData"] = body
+        }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: proxyPayload)
 

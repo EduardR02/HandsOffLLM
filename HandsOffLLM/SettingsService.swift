@@ -17,6 +17,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     @Published private(set) var geminiAPIKey: String?
     @Published private(set) var xaiAPIKey: String?
     @Published private(set) var mistralAPIKey: String?
+    @Published private(set) var replicateAPIKey: String?
     
     // Ephemeral session-only overrides (not persisted)
     @Published var sessionSystemPromptOverride: String? = nil
@@ -124,6 +125,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         get { settings.useOwnMistralKey }
         set { settings.useOwnMistralKey = newValue; saveSettings() }
     }
+    var useOwnReplicateKey: Bool {
+        get { settings.useOwnReplicateKey }
+        set { settings.useOwnReplicateKey = newValue; saveSettings() }
+    }
     
     // --- Hardcoded OpenAI TTS details (Could be moved to SettingsData if needed) ---
     let openAITTSModel = "gpt-4o-mini-tts"
@@ -162,6 +167,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         static let gemini = "user.gemini.api_key"
         static let xai = "user.xai.api_key"
         static let mistral = "user.mistral.api_key"
+        static let replicate = "user.replicate.api_key"
     }
     
     // --- Advanced Defaults ---
@@ -484,6 +490,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         mistralAPIKey = storeKey(value, keychainKey: KeychainKey.mistral)
     }
 
+    func setReplicateAPIKey(_ value: String?) {
+        replicateAPIKey = storeKey(value, keychainKey: KeychainKey.replicate)
+    }
+
     func updateVADSilenceThreshold(_ threshold: Double) {
         updateAdvancedSetting(keyPath: \.vadSilenceThreshold, value: threshold)
     }
@@ -625,6 +635,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         do { mistralAPIKey = try keychain.string(for: KeychainKey.mistral) } catch {
             logger.error("Failed to load Mistral API key from keychain: \(error.localizedDescription)")
             mistralAPIKey = nil
+        }
+        do { replicateAPIKey = try keychain.string(for: KeychainKey.replicate) } catch {
+            logger.error("Failed to load Replicate API key from keychain: \(error.localizedDescription)")
+            replicateAPIKey = nil
         }
     }
 
