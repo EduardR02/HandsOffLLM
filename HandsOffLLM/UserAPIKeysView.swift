@@ -9,17 +9,19 @@ struct UserAPIKeysView: View {
     @State private var geminiKeyDraft: String = ""
     @State private var xaiKeyDraft: String = ""
     @State private var mistralKeyDraft: String = ""
+    @State private var replicateKeyDraft: String = ""
 
     @State private var revealOpenAI = false
     @State private var revealAnthropic = false
     @State private var revealGemini = false
     @State private var revealXAI = false
     @State private var revealMistral = false
+    @State private var revealReplicate = false
 
     var body: some View {
         List {
             Section {
-                Text("Provide provider keys below if you want to bypass the HandsOff proxy and bill requests to your own accounts. Keys are encrypted in the system keychain and stay on this device.")
+                Text("Use your own API keys to get billed directly by each provider. Keys are encrypted in the system keychain and stay on this device.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
@@ -79,6 +81,17 @@ struct UserAPIKeysView: View {
                 storedKey: settingsService.mistralAPIKey,
                 onSave: settingsService.setMistralAPIKey
             )
+
+            keySection(
+                title: "Replicate (Kokoro TTS)",
+                toggle: $settingsService.useOwnReplicateKey,
+                fieldPlaceholder: "r8_...",
+                text: $replicateKeyDraft,
+                reveal: $revealReplicate,
+                statusIcon: "speaker.wave.2.fill",
+                storedKey: settingsService.replicateAPIKey,
+                onSave: settingsService.setReplicateAPIKey
+            )
         }
         .navigationTitle("Your API Keys")
         .navigationBarTitleDisplayMode(.inline)
@@ -92,6 +105,7 @@ struct UserAPIKeysView: View {
         .onChange(of: settingsService.geminiAPIKey) { _, newValue in geminiKeyDraft = newValue ?? "" }
         .onChange(of: settingsService.xaiAPIKey) { _, newValue in xaiKeyDraft = newValue ?? "" }
         .onChange(of: settingsService.mistralAPIKey) { _, newValue in mistralKeyDraft = newValue ?? "" }
+        .onChange(of: settingsService.replicateAPIKey) { _, newValue in replicateKeyDraft = newValue ?? "" }
     }
 
     private func syncDrafts() {
@@ -100,6 +114,7 @@ struct UserAPIKeysView: View {
         geminiKeyDraft = settingsService.geminiAPIKey ?? ""
         xaiKeyDraft = settingsService.xaiAPIKey ?? ""
         mistralKeyDraft = settingsService.mistralAPIKey ?? ""
+        replicateKeyDraft = settingsService.replicateAPIKey ?? ""
     }
 
     @ViewBuilder

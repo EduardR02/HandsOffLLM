@@ -143,22 +143,22 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     let availableKokoroVoices: [VoiceInfo] = [
         // Grade A voices
-        VoiceInfo(id: "af_heart", displayName: "Heart (American English)"),
-        VoiceInfo(id: "af_bella", displayName: "Bella (American English)"),
+        VoiceInfo(id: "af_heart", displayName: "Heart · EN-US"),
+        VoiceInfo(id: "af_bella", displayName: "Bella · EN-US"),
         // Grade B voices
-        VoiceInfo(id: "af_nicole", displayName: "Nicole (American English)"),
-        VoiceInfo(id: "bf_emma", displayName: "Emma (British English)"),
-        VoiceInfo(id: "ff_siwis", displayName: "Siwis (French)"),
+        VoiceInfo(id: "af_nicole", displayName: "Nicole · EN-US"),
+        VoiceInfo(id: "bf_emma", displayName: "Emma · EN-GB"),
+        VoiceInfo(id: "ff_siwis", displayName: "Siwis · FR"),
         // Grade C+ voices
-        VoiceInfo(id: "af_aoede", displayName: "Aoede (American English)"),
-        VoiceInfo(id: "af_kore", displayName: "Kore (American English)"),
-        VoiceInfo(id: "af_sarah", displayName: "Sarah (American English)"),
-        VoiceInfo(id: "am_fenrir", displayName: "Fenrir (American English)"),
-        VoiceInfo(id: "am_michael", displayName: "Michael (American English)"),
-        VoiceInfo(id: "am_puck", displayName: "Puck (American English)"),
-        VoiceInfo(id: "bm_george", displayName: "George (British English)"),
-        VoiceInfo(id: "bm_fable", displayName: "Fable (British English)"),
-        VoiceInfo(id: "jf_alpha", displayName: "Alpha (Japanese)"),
+        VoiceInfo(id: "af_aoede", displayName: "Aoede · EN-US"),
+        VoiceInfo(id: "af_kore", displayName: "Kore · EN-US"),
+        VoiceInfo(id: "af_sarah", displayName: "Sarah · EN-US"),
+        VoiceInfo(id: "am_fenrir", displayName: "Fenrir · EN-US"),
+        VoiceInfo(id: "am_michael", displayName: "Michael · EN-US"),
+        VoiceInfo(id: "am_puck", displayName: "Puck · EN-US"),
+        VoiceInfo(id: "bm_george", displayName: "George · EN-GB"),
+        VoiceInfo(id: "bm_fable", displayName: "Fable · EN-GB"),
+        VoiceInfo(id: "jf_alpha", displayName: "Alpha · JA"),
     ]
 
     var openAITTSVoice: String {    // Dynamic: picks saved setting or falls back to default

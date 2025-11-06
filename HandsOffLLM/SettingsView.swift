@@ -179,28 +179,31 @@ struct SettingsView: View {
                             .foregroundColor(Theme.secondaryAccent)
                     }
 
-                    NavigationLink {
-                        TTSInstructionSelectionView()
-                    } label: {
-                        HStack {
-                            Text("Speech Instructions")
-                                .foregroundColor(Theme.primaryText)
-                            Spacer()
-                            Text(
-                                settingsService
-                                    .availableTTSInstructions
-                                    .first { $0.id == settingsService.settings.selectedTTSInstructionPresetId }?
-                                    .name
-                                ?? "Select…"
-                            )
-                            .foregroundColor(Theme.secondaryAccent)
+                    // TTS instructions only supported by OpenAI, not Kokoro
+                    if settingsService.selectedTTSProvider != .kokoro {
+                        NavigationLink {
+                            TTSInstructionSelectionView()
+                        } label: {
+                            HStack {
+                                Text("Speech Instructions")
+                                    .foregroundColor(Theme.primaryText)
+                                Spacer()
+                                Text(
+                                    settingsService
+                                        .availableTTSInstructions
+                                        .first { $0.id == settingsService.settings.selectedTTSInstructionPresetId }?
+                                        .name
+                                    ?? "Select…"
+                                )
+                                .foregroundColor(Theme.secondaryAccent)
+                            }
                         }
-                    }
-                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
-                    if settingsService.settings.advancedTTSInstructionEnabled {
-                        Text("using custom")
-                            .font(.caption2)
-                            .foregroundColor(Theme.secondaryAccent)
+                        .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                        if settingsService.settings.advancedTTSInstructionEnabled {
+                            Text("using custom")
+                                .font(.caption2)
+                                .foregroundColor(Theme.secondaryAccent)
+                        }
                     }
 
                     Picker(selection: Binding(
@@ -222,6 +225,13 @@ struct SettingsView: View {
                     }
                     .tint(Theme.secondaryAccent)
                     .id("ttsProviderPicker-\(darkerModeObserver)")
+
+                    // Show cost/quality tradeoff for Kokoro
+                    if settingsService.selectedTTSProvider == .kokoro {
+                        Text("~10x cheaper. Similar quality if language stays the same.")
+                            .font(.caption)
+                            .foregroundColor(Theme.secondaryText)
+                    }
 
                     // Show voice picker for both providers
                     if settingsService.selectedTTSProvider == .openai {
@@ -248,10 +258,6 @@ struct SettingsView: View {
                         }
                         .tint(Theme.secondaryAccent)
                         .id("kokoroVoicePicker-\(darkerModeObserver)")
-
-                        Text("~10x cheaper. Similar quality if language stays the same.")
-                            .font(.caption)
-                            .foregroundColor(Theme.secondaryText)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -398,7 +404,8 @@ struct SettingsView: View {
                             Text("Use Your Own API Keys")
                             Spacer()
                             if settingsService.useOwnOpenAIKey || settingsService.useOwnAnthropicKey ||
-                               settingsService.useOwnGeminiKey || settingsService.useOwnXAIKey {
+                               settingsService.useOwnGeminiKey || settingsService.useOwnXAIKey ||
+                               settingsService.useOwnReplicateKey {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundColor(.green)
                             }
@@ -408,7 +415,7 @@ struct SettingsView: View {
                 } header: {
                     Text("API Keys")
                 } footer: {
-                    Text("Bypass the proxy and use your own API keys. You'll need to provide keys for each provider you want to use.")
+                    Text("Use your own API keys and get billed directly by each provider. Keys are encrypted and stored only on your device.")
                 }
                 .listRowBackground(Theme.menuAccent)
 

@@ -361,7 +361,7 @@ serve(async (req) => {
           // Estimate Replicate TTS usage based on input text length
           // Approximate: ~150 words per minute, ~5 chars per word = 750 chars per minute
           const ttsInputText = bodyData?.input?.text || ''
-          const estimatedMinutes = Math.max(0.1, ttsInputText.length / 750) // Minimum 0.1 minutes
+          const estimatedMinutes = Math.max(0.005, ttsInputText.length / 750) // Minimum 0.3 seconds
           const estimatedSeconds = estimatedMinutes * 60
 
           streamingUsage = {
