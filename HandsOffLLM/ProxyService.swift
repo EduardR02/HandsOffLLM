@@ -24,6 +24,8 @@ class ProxyService {
             return settingsService.useOwnGeminiKey == false || settingsService.geminiAPIKey?.isEmpty != false
         case .xai:
             return settingsService.useOwnXAIKey == false || settingsService.xaiAPIKey?.isEmpty != false
+        case .replicate:
+            return true // Always use proxy for Replicate
         }
     }
 
