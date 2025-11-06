@@ -1299,7 +1299,7 @@ extension AudioService {
         )
 
         let payload = ReplicateTTSRequest(
-            version: "a7cb29fe2d12eed07e2c1ad6f6013da562e534d7c2c7246cf33fb4e6c55f8c7f",
+            version: "f559560eb822dc509045f3921a1921234918b91739db4bf3daab2169b71c7a13",
             input: input
         )
 
