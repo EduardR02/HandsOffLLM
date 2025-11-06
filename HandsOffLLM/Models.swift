@@ -54,6 +54,11 @@ struct PromptPreset: Identifiable, Codable, Hashable {
     let fullPrompt: String // The actual prompt text
 }
 
+struct VoiceInfo: Identifiable, Hashable {
+    let id: String // e.g., "af_bella"
+    let displayName: String // e.g., "Bella (American English)"
+}
+
 struct SettingsData: Codable {
     // Model Selections: Store the ID of the selected model for each provider
     var selectedModelIdPerProvider: [LLMProvider: String] = [:]
@@ -75,6 +80,7 @@ struct SettingsData: Codable {
     var advancedTTSInstructionEnabled: Bool = false
 
     var selectedTTSVoice: String?
+    var selectedKokoroVoice: String?
     var selectedTTSProvider: TTSProvider? = nil
     var selectedDefaultProvider: LLMProvider?
     var selectedDefaultPlaybackSpeed: Float?

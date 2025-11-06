@@ -132,16 +132,41 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // --- Hardcoded TTS details ---
     let openAITTSModel = "gpt-4o-mini-tts"
-    let kokoroTTSVoice = "af_bella"  // Hardcoded Replicate Kokoro voice
 
     let defaultTTSVoice = "nova"    // Default OpenAI TTS voice
+    let defaultKokoroVoice = "af_bella"  // Default Replicate Kokoro voice
+
     let availableTTSVoices = [
         "alloy", "ash", "ballad", "coral", "echo",
         "fable", "nova", "onyx", "sage", "shimmer", "verse"
-    ]   // All supported voices
+    ]   // All supported OpenAI voices
+
+    let availableKokoroVoices: [VoiceInfo] = [
+        // Grade A voices
+        VoiceInfo(id: "af_heart", displayName: "Heart (American English)"),
+        VoiceInfo(id: "af_bella", displayName: "Bella (American English)"),
+        // Grade B voices
+        VoiceInfo(id: "af_nicole", displayName: "Nicole (American English)"),
+        VoiceInfo(id: "bf_emma", displayName: "Emma (British English)"),
+        VoiceInfo(id: "ff_siwis", displayName: "Siwis (French)"),
+        // Grade C+ voices
+        VoiceInfo(id: "af_aoede", displayName: "Aoede (American English)"),
+        VoiceInfo(id: "af_kore", displayName: "Kore (American English)"),
+        VoiceInfo(id: "af_sarah", displayName: "Sarah (American English)"),
+        VoiceInfo(id: "am_fenrir", displayName: "Fenrir (American English)"),
+        VoiceInfo(id: "am_michael", displayName: "Michael (American English)"),
+        VoiceInfo(id: "am_puck", displayName: "Puck (American English)"),
+        VoiceInfo(id: "bm_george", displayName: "George (British English)"),
+        VoiceInfo(id: "bm_fable", displayName: "Fable (British English)"),
+        VoiceInfo(id: "jf_alpha", displayName: "Alpha (Japanese)"),
+    ]
 
     var openAITTSVoice: String {    // Dynamic: picks saved setting or falls back to default
         settings.selectedTTSVoice ?? defaultTTSVoice
+    }
+
+    var kokoroTTSVoice: String {
+        settings.selectedKokoroVoice ?? defaultKokoroVoice
     }
 
     let openAITTSFormat = "aac"     // Other options: opus, flac, pcm, mp3
@@ -413,6 +438,11 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     func updateSelectedTTSVoice(voice: String) {
         settings.selectedTTSVoice = voice
+        saveSettings()
+    }
+
+    func updateSelectedKokoroVoice(voice: String) {
+        settings.selectedKokoroVoice = voice
         saveSettings()
     }
 

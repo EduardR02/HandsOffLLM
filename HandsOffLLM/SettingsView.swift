@@ -223,7 +223,7 @@ struct SettingsView: View {
                     .tint(Theme.secondaryAccent)
                     .id("ttsProviderPicker-\(darkerModeObserver)")
 
-                    // Only show voice picker for OpenAI
+                    // Show voice picker for both providers
                     if settingsService.selectedTTSProvider == .openai {
                         Picker("Voice", selection: Binding(
                             get: { settingsService.openAITTSVoice },
@@ -236,6 +236,18 @@ struct SettingsView: View {
                         }
                         .tint(Theme.secondaryAccent)
                         .id("voicePicker-\(darkerModeObserver)")
+                    } else if settingsService.selectedTTSProvider == .kokoro {
+                        Picker("Voice", selection: Binding(
+                            get: { settingsService.kokoroTTSVoice },
+                            set: { settingsService.updateSelectedKokoroVoice(voice: $0) }
+                        )) {
+                            ForEach(settingsService.availableKokoroVoices) { voice in
+                                Text(voice.displayName).tag(voice.id)
+                                    .foregroundColor(Theme.primaryText)
+                            }
+                        }
+                        .tint(Theme.secondaryAccent)
+                        .id("kokoroVoicePicker-\(darkerModeObserver)")
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
