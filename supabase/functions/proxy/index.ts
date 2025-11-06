@@ -31,6 +31,9 @@ const PRICING = {
   },
   mistral: {
     'voxtral-mini': { input: 0.002, output: 0.04 }, // Input per minute, output per 1M tokens
+  },
+  replicate: {
+    'kokoro-82m': { per_second: 0.000225 }, // $0.000225 per second
   }
 }
 
@@ -41,6 +44,7 @@ const PROVIDER_CONFIG: Record<string, { pricingKey: keyof typeof PRICING; envKey
   gemini: { pricingKey: 'gemini', envKey: 'GEMINI' },
   xai: { pricingKey: 'xai', envKey: 'XAI' },
   mistral: { pricingKey: 'mistral', envKey: 'MISTRAL' },
+  replicate: { pricingKey: 'replicate', envKey: 'REPLICATE' },
 }
 
 const MODEL_ALIASES: Partial<Record<keyof typeof PRICING, Array<{ regex: RegExp; key: string }>>> = {
@@ -184,7 +188,7 @@ serve(async (req) => {
     // Inject API key into headers
     const providerHeaders = { ...headers }
 
-    if (pricingProvider === 'openai' || pricingProvider === 'xai' || pricingProvider === 'mistral') {
+    if (pricingProvider === 'openai' || pricingProvider === 'xai' || pricingProvider === 'mistral' || pricingProvider === 'replicate') {
       providerHeaders['Authorization'] = `Bearer ${apiKey}`
     } else if (pricingProvider === 'anthropic') {
       providerHeaders['x-api-key'] = apiKey
@@ -206,7 +210,8 @@ serve(async (req) => {
     }
 
     // Detect TTS and transcription endpoints early
-    const isTTS = endpoint.includes('/audio/speech')
+    const isTTS = endpoint.includes('/audio/speech') || endpoint.includes('/predictions')
+    const isReplicate = endpoint.includes('api.replicate.com')
     const isTranscription = endpoint.includes('/audio/transcriptions')
 
     // Handle transcription with base64 audio
@@ -258,6 +263,11 @@ serve(async (req) => {
       if (modelMatch) {
         model = modelMatch[1]
       }
+    }
+
+    // Replicate uses 'version' field to identify model, use kokoro-82m as model name
+    if (pricingProvider === 'replicate') {
+      model = 'kokoro-82m'
     }
 
     // Debug log for model extraction
@@ -347,6 +357,23 @@ serve(async (req) => {
           }
 
           console.log(`🎤 TTS usage estimated: ${inputTokens} input tokens → ${outputTokens} audio tokens`)
+        } else if (isReplicate && pricingProvider === 'replicate') {
+          // Estimate Replicate TTS usage based on input text length
+          // Approximate: ~150 words per minute, ~5 chars per word = 750 chars per minute
+          const ttsInputText = bodyData?.input?.text || ''
+          const estimatedMinutes = Math.max(0.1, ttsInputText.length / 750) // Minimum 0.1 minutes
+          const estimatedSeconds = estimatedMinutes * 60
+
+          streamingUsage = {
+            cached_input_tokens: 0,
+            input_tokens: 0,
+            reasoning_output_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0,
+            prompt_seconds: estimatedSeconds
+          }
+
+          console.log(`🎤 Replicate TTS usage estimated: ${ttsInputText.length} chars → ${estimatedSeconds.toFixed(2)}s audio`)
         }
 
         // Stream finished, write usage to database
@@ -657,6 +684,12 @@ function calculateCost(provider: keyof typeof PRICING, model: string, usage: Usa
     const minuteCost = minutes * perMinute
     const textCost = (usage.output_tokens / 1_000_000) * outputRate
     return minuteCost + textCost
+  }
+
+  if (provider === 'replicate') {
+    const seconds = usage.prompt_seconds || 0
+    const perSecond = modelPricing.per_second || 0
+    return seconds * perSecond
   }
 
   // Calculate cost (divide by 1M since pricing is per 1M tokens)

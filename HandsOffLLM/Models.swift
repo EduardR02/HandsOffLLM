@@ -111,6 +111,25 @@ struct OpenAITTSRequest: Codable {
     let instructions: String?
 }
 
+// MARK: - Replicate TTS API Structures
+struct ReplicateTTSRequest: Codable {
+    let version: String
+    let input: ReplicateTTSInput
+}
+
+struct ReplicateTTSInput: Codable {
+    let text: String
+    let voice: String
+    let speed: Double
+}
+
+struct ReplicateTTSResponse: Codable {
+    let id: String
+    let status: String
+    let output: String?
+    let error: String?
+}
+
 // MARK: - Mistral Transcription API Structures
 struct MistralTranscriptionResponse: Codable {
     let model: String
@@ -220,19 +239,20 @@ enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case claude = "Claude"
     case openai = "OpenAI"
     case xai = "xAI"
+    case replicate = "Replicate"
     var id: String { self.rawValue }
 }
 
 // MARK: - TTS Provider Enum
 enum TTSProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case openai = "OpenAI"
-    case kokoro = "Kokoro (On-Device)"
+    case kokoro = "Kokoro (Replicate)"
     var id: String { self.rawValue }
 
     var displayName: String {
         switch self {
         case .openai: return "OpenAI"
-        case .kokoro: return "Kokoro (On-Device)"
+        case .kokoro: return "Kokoro (Replicate)"
         }
     }
 }

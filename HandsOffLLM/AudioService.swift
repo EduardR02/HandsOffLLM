@@ -105,7 +105,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private let settingsService: SettingsService
     private let historyService: HistoryService
     private var mistralTranscriptionService: MistralTranscriptionService?
-    private var kokoroTTSService: KokoroTTSService?
 
     private var currentTTSConversationID: UUID?
     private var currentTTSMessageID: UUID?
@@ -121,7 +120,6 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private var replayQueue: [String] = []
     private var lastChunkProvider: TTSProvider?
-    private var hasPrimedKokoro: Bool = false
 
     private var vadManager: VadManager?
     private var vadStreamState: VadStreamState?
@@ -187,22 +185,9 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         self.settingsService = settingsService
         self.historyService = historyService
         self.proxyService = ProxyService(authService: authService, settingsService: settingsService)
-        self.kokoroTTSService = KokoroTTSService()
         super.init()
         Task {
             await initializeVAD()
-        }
-
-        if settingsService.selectedTTSProvider == .kokoro {
-            Task { [weak self] in
-                guard let self = self else { return }
-                do {
-                    try await self.kokoroTTSService?.prepare(voice: self.settingsService.kokoroTTSVoice)
-                    self.hasPrimedKokoro = true
-                } catch {
-                    self.logger.error("🔥 Kokoro warm-up failed during init: \(error.localizedDescription)")
-                }
-            }
         }
 
         applyAudioSessionSettings()
@@ -1007,17 +992,9 @@ extension AudioService {
                 // Route to appropriate TTS provider
                 switch self.settingsService.selectedTTSProvider {
                 case .kokoro:
-                    // Use Kokoro on-device TTS
+                    // Use Kokoro via Replicate API
                     let voice = self.settingsService.kokoroTTSVoice
-                    if self.hasPrimedKokoro == false {
-                        do {
-                            try await self.kokoroTTSService?.prepare(voice: voice)
-                            self.hasPrimedKokoro = true
-                        } catch {
-                            self.logger.error("🔥 Kokoro warm-up failed: \(error.localizedDescription)")
-                        }
-                    }
-                    data = try await self.kokoroTTSService?.synthesize(
+                    data = try await self.fetchReplicateTTSAudio(
                         text: text,
                         voice: voice,
                         speed: 1.0
@@ -1303,6 +1280,119 @@ extension AudioService {
             return nil
         }
         return data
+    }
+
+    func fetchReplicateTTSAudio(
+        text: String,
+        voice: String,
+        speed: Double
+    ) async throws -> Data? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.warning("Attempted to synthesize empty text.")
+            return nil
+        }
+
+        let input = ReplicateTTSInput(
+            text: text,
+            voice: voice,
+            speed: speed
+        )
+
+        let payload = ReplicateTTSRequest(
+            version: "a7cb29fe2d12eed07e2c1ad6f6013da562e534d7c2c7246cf33fb4e6c55f8c7f",
+            input: input
+        )
+
+        let payloadData = try JSONEncoder().encode(payload)
+        guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
+            throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
+        }
+
+        // Always route through proxy for Replicate
+        let request = try await proxyService.makeProxiedRequest(
+            provider: .replicate,
+            endpoint: "https://api.replicate.com/v1/predictions",
+            method: "POST",
+            headers: ["Content-Type": "application/json"],
+            body: payloadDict
+        )
+
+        let (data, response): (Data, URLResponse)
+        do { (data, response) = try await urlSession.data(for: request) }
+        catch { throw LlmError.networkError(error) }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LlmError.networkError(URLError(.badServerResponse))
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            var errorDetails = ""
+            if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
+            logger.error("🚨 Replicate TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
+        }
+
+        // Parse response to get prediction ID and poll for result
+        let decoder = JSONDecoder()
+        let prediction = try decoder.decode(ReplicateTTSResponse.self, from: data)
+
+        // Poll for completion
+        guard let audioURL = try await pollReplicatePrediction(id: prediction.id) else {
+            logger.warning("Replicate prediction completed but no output URL received.")
+            return nil
+        }
+
+        // Download the audio file
+        guard let url = URL(string: audioURL) else {
+            throw LlmError.invalidURL
+        }
+
+        let (audioData, audioResponse) = try await urlSession.data(from: url)
+        guard let httpAudioResponse = audioResponse as? HTTPURLResponse,
+              (200...299).contains(httpAudioResponse.statusCode) else {
+            throw LlmError.invalidResponse(statusCode: (audioResponse as? HTTPURLResponse)?.statusCode ?? -1, body: nil)
+        }
+
+        guard !audioData.isEmpty else {
+            logger.warning("Received empty audio data from Replicate TTS API.")
+            return nil
+        }
+
+        return audioData
+    }
+
+    private func pollReplicatePrediction(id: String, maxAttempts: Int = 30) async throws -> String? {
+        for attempt in 1...maxAttempts {
+            // Wait before polling
+            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+
+            let request = try await proxyService.makeProxiedRequest(
+                provider: .replicate,
+                endpoint: "https://api.replicate.com/v1/predictions/\(id)",
+                method: "GET",
+                headers: [:],
+                body: nil
+            )
+
+            let (data, response) = try await urlSession.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1, body: nil)
+            }
+
+            let decoder = JSONDecoder()
+            let prediction = try decoder.decode(ReplicateTTSResponse.self, from: data)
+
+            if prediction.status == "succeeded", let output = prediction.output {
+                return output
+            } else if prediction.status == "failed" {
+                throw LlmError.ttsError("Replicate prediction failed: \(prediction.error ?? "Unknown error")")
+            }
+
+            logger.debug("Replicate prediction \(id) status: \(prediction.status). Attempt \(attempt)/\(maxAttempts)")
+        }
+
+        throw LlmError.ttsError("Replicate prediction timed out after \(maxAttempts) attempts")
     }
 }
 

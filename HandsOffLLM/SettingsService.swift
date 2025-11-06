@@ -2,7 +2,6 @@
 import Foundation
 import OSLog
 import Combine // Import Combine for ObservableObject
-import FluidAudio
 
 @MainActor // Ensure updates happen on the main thread
 class SettingsService: ObservableObject { // Make ObservableObject
@@ -130,8 +129,13 @@ class SettingsService: ObservableObject { // Make ObservableObject
     let openAITTSModel = "gpt-4o-mini-tts"
 
     let defaultTTSVoice = "nova"    // Default OpenAI TTS voice
-    let defaultKokoroVoice = TtsConstants.recommendedVoice
-    let availableKokoroVoices = Set(TtsConstants.availableVoices)
+    let defaultKokoroVoice = "af_bella"  // Default Replicate Kokoro voice
+    let availableKokoroVoices: Set<String> = [
+        "af_bella", "af_nicole", "af_sarah", "af_sky",
+        "am_adam", "am_michael", "bf_emma", "bf_isabella",
+        "bm_george", "bm_lewis", "ff_siwis", "jf_gongitsune",
+        "zm_yunxi"
+    ]   // Subset of most common Replicate Kokoro voices
     let availableTTSVoices = [
         "alloy", "ash", "ballad", "coral", "echo",
         "fable", "nova", "onyx", "sage", "shimmer", "verse"
