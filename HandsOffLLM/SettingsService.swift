@@ -614,6 +614,16 @@ class SettingsService: ObservableObject { // Make ObservableObject
             logger.info("Setting default VAD silence threshold: \(self.vadSilenceThreshold)")
             changed = true
         }
+        if settings.selectedTTSProvider == nil {
+            settings.selectedTTSProvider = .openai
+            logger.info("Setting default TTS provider: OpenAI")
+            changed = true
+        }
+        if settings.selectedKokoroVoice == nil {
+            settings.selectedKokoroVoice = defaultKokoroVoice
+            logger.info("Setting default Kokoro voice: \(defaultKokoroVoice)")
+            changed = true
+        }
         return changed
     }
 
