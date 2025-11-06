@@ -1310,7 +1310,7 @@ extension AudioService {
         let request: URLRequest
 
         if useProxy {
-            // Route through proxy
+            // Route through proxy - add Prefer: wait header to block until completion
             guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
                 throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
             }
@@ -1318,11 +1318,14 @@ extension AudioService {
                 provider: .replicate,
                 endpoint: "https://api.replicate.com/v1/predictions",
                 method: "POST",
-                headers: ["Content-Type": "application/json"],
+                headers: [
+                    "Content-Type": "application/json",
+                    "Prefer": "wait"  // Block until completion, avoids polling latency
+                ],
                 body: payloadDict
             )
         } else {
-            // Direct API call with user's key
+            // Direct API call with user's key - add Prefer: wait header
             guard let apiKey = settingsService.replicateAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !apiKey.isEmpty else {
                 throw LlmError.apiKeyMissing(provider: "Replicate")
@@ -1334,6 +1337,7 @@ extension AudioService {
             directRequest.httpMethod = "POST"
             directRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
             directRequest.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            directRequest.addValue("wait", forHTTPHeaderField: "Prefer")  // Block until completion
             directRequest.httpBody = payloadData
             request = directRequest
         }
@@ -1353,12 +1357,24 @@ extension AudioService {
             throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
         }
 
-        // Parse response to get prediction ID and poll for result
+        // Parse response - with Prefer: wait, it usually completes immediately
         let decoder = JSONDecoder()
         let prediction = try decoder.decode(ReplicateTTSResponse.self, from: data)
 
-        // Poll for completion directly (no proxy) - Replicate GET endpoints are publicly accessible
-        guard let audioURL = try await pollReplicatePrediction(id: prediction.id) else {
+        // Check if already completed (thanks to Prefer: wait header)
+        let audioURL: String?
+        if prediction.status == "succeeded", let output = prediction.output {
+            audioURL = output
+            logger.info("Replicate TTS completed immediately (no polling needed)")
+        } else if prediction.status == "failed" {
+            throw LlmError.ttsError("Replicate prediction failed: \(prediction.error ?? "Unknown error")")
+        } else {
+            // Still processing, fall back to polling
+            logger.info("Replicate TTS still processing, falling back to polling")
+            audioURL = try await pollReplicatePrediction(id: prediction.id)
+        }
+
+        guard let audioURL = audioURL else {
             logger.warning("Replicate prediction completed but no output URL received.")
             return nil
         }
@@ -1384,10 +1400,12 @@ extension AudioService {
 
     private func pollReplicatePrediction(id: String, maxAttempts: Int = 30) async throws -> String? {
         // Poll directly to Replicate (no proxy) - GET endpoints are publicly accessible
-        // This minimizes edge function invocations and improves efficiency
+        // Only called if Prefer: wait timed out, so job is already running
         for attempt in 1...maxAttempts {
-            // Wait before polling
-            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+            // Don't wait on first attempt (job already started), then wait 500ms between polls
+            if attempt > 1 {
+                try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            }
 
             // Direct GET request to Replicate - no auth required for prediction status checks
             guard let url = URL(string: "https://api.replicate.com/v1/predictions/\(id)") else {
