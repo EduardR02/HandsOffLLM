@@ -24,6 +24,8 @@ class ProxyService {
             return settingsService.useOwnGeminiKey == false || settingsService.geminiAPIKey?.isEmpty != false
         case .xai:
             return settingsService.useOwnXAIKey == false || settingsService.xaiAPIKey?.isEmpty != false
+        case .moonshot:
+            return settingsService.useOwnMoonshotKey == false || settingsService.moonshotAPIKey?.isEmpty != false
         case .replicate:
             return settingsService.useOwnReplicateKey == false || settingsService.replicateAPIKey?.isEmpty != false
         }

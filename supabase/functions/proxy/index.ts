@@ -29,6 +29,13 @@ const PRICING = {
     'grok-4-fast': { input: 0.20, output: 0.50, cached_input: 0.05 },
     'grok-4': { input: 3.00, output: 15.00, cached_input: 0.75 },
   },
+  moonshot: {
+    'kimi-k2-0905-preview': { input: 0.60, output: 2.50, cached_input: 0.15 },
+    'kimi-k2-0711-preview': { input: 0.60, output: 2.50, cached_input: 0.15 },
+    'kimi-k2-turbo-preview': { input: 1.15, output: 8.00, cached_input: 0.15 },
+    'kimi-k2-thinking': { input: 0.60, output: 2.50, cached_input: 0.15 },
+    'kimi-k2-thinking-turbo': { input: 1.15, output: 8.00, cached_input: 0.15 },
+  },
   mistral: {
     'voxtral-mini': { input: 0.002, output: 0.04 }, // Input per minute, output per 1M tokens
   },
@@ -43,6 +50,7 @@ const PROVIDER_CONFIG: Record<string, { pricingKey: keyof typeof PRICING; envKey
   anthropic: { pricingKey: 'anthropic', envKey: 'ANTHROPIC' },
   gemini: { pricingKey: 'gemini', envKey: 'GEMINI' },
   xai: { pricingKey: 'xai', envKey: 'XAI' },
+  'moonshot ai': { pricingKey: 'moonshot', envKey: 'MOONSHOT' },
   mistral: { pricingKey: 'mistral', envKey: 'MISTRAL' },
   replicate: { pricingKey: 'replicate', envKey: 'REPLICATE' },
 }
@@ -73,6 +81,13 @@ const MODEL_ALIASES: Partial<Record<keyof typeof PRICING, Array<{ regex: RegExp;
   xai: [
     { regex: /^grok-4-fast(?:$|[-_])/, key: 'grok-4-fast' },
     { regex: /^grok-4(?:$|[-_])/, key: 'grok-4' },
+  ],
+  moonshot: [
+    { regex: /^kimi-k2-0905-preview(?:$|[-_])/, key: 'kimi-k2-0905-preview' },
+    { regex: /^kimi-k2-0711-preview(?:$|[-_])/, key: 'kimi-k2-0711-preview' },
+    { regex: /^kimi-k2-turbo-preview(?:$|[-_])/, key: 'kimi-k2-turbo-preview' },
+    { regex: /^kimi-k2-thinking-turbo(?:$|[-_])/, key: 'kimi-k2-thinking-turbo' },
+    { regex: /^kimi-k2-thinking(?:$|[-_])/, key: 'kimi-k2-thinking' },
   ],
   mistral: [
     { regex: /^voxtral-mini(?:$|[-_])/, key: 'voxtral-mini' },

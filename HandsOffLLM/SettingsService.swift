@@ -16,6 +16,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
     @Published private(set) var anthropicAPIKey: String?
     @Published private(set) var geminiAPIKey: String?
     @Published private(set) var xaiAPIKey: String?
+    @Published private(set) var moonshotAPIKey: String?
     @Published private(set) var mistralAPIKey: String?
     @Published private(set) var replicateAPIKey: String?
     
@@ -47,6 +48,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
         ModelInfo(id: "grok-4", name: "Grok 4", description: "Frontier level intelligence", provider: .xai),
         ModelInfo(id: "grok-4-fast", name: "Grok 4 Fast", description: "Ultra-fast responses with strong intelligence", provider: .xai),
         ModelInfo(id: "grok-4-fast-non-reasoning", name: "Grok 4 Fast (No Reasoning)", description: "Instant responses", provider: .xai),
+        // Moonshot AI
+        ModelInfo(id: "kimi-k2-thinking", name: "Kimi K2 Thinking", description: "Advanced reasoning model", provider: .moonshot),
+        ModelInfo(id: "kimi-k2-thinking-turbo", name: "Kimi K2 Thinking Turbo", description: "Fast reasoning model", provider: .moonshot),
+        ModelInfo(id: "kimi-k2-turbo-preview", name: "Kimi K2 Turbo Preview", description: "Fast general purpose model (Recommended)", provider: .moonshot),
+        ModelInfo(id: "kimi-k2-0905-preview", name: "Kimi K2 Preview (0905)", description: "Latest preview model", provider: .moonshot),
+        ModelInfo(id: "kimi-k2-0711-preview", name: "Kimi K2 Preview (0711)", description: "Previous preview model", provider: .moonshot),
     ]
     
     let availableSystemPrompts: [PromptPreset] = [
@@ -177,6 +184,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         static let anthropic = "user.anthropic.api_key"
         static let gemini = "user.gemini.api_key"
         static let xai = "user.xai.api_key"
+        static let moonshot = "user.moonshot.api_key"
         static let mistral = "user.mistral.api_key"
         static let replicate = "user.replicate.api_key"
     }
@@ -492,6 +500,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         xaiAPIKey = storeKey(value, keychainKey: KeychainKey.xai)
     }
 
+    func setMoonshotAPIKey(_ value: String?) {
+        moonshotAPIKey = storeKey(value, keychainKey: KeychainKey.moonshot)
+    }
+
     func setMistralAPIKey(_ value: String?) {
         mistralAPIKey = storeKey(value, keychainKey: KeychainKey.mistral)
     }
@@ -643,6 +655,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
         do { xaiAPIKey = try keychain.string(for: KeychainKey.xai) } catch {
             logger.error("Failed to load xAI API key from keychain: \(error.localizedDescription)")
             xaiAPIKey = nil
+        }
+        do { moonshotAPIKey = try keychain.string(for: KeychainKey.moonshot) } catch {
+            logger.error("Failed to load Moonshot API key from keychain: \(error.localizedDescription)")
+            moonshotAPIKey = nil
         }
         do { mistralAPIKey = try keychain.string(for: KeychainKey.mistral) } catch {
             logger.error("Failed to load Mistral API key from keychain: \(error.localizedDescription)")

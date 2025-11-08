@@ -101,6 +101,7 @@ struct SettingsData: Codable {
     var useOwnAnthropicKey: Bool = false
     var useOwnGeminiKey: Bool = false
     var useOwnXAIKey: Bool = false
+    var useOwnMoonshotKey: Bool = false
     var useOwnMistralKey: Bool = false
     var useOwnReplicateKey: Bool = false
 
@@ -245,13 +246,14 @@ enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     case claude = "Claude"
     case openai = "OpenAI"
     case xai = "xAI"
+    case moonshot = "Moonshot AI"
     case replicate = "Replicate" // Internal only for TTS proxy routing
 
     var id: String { self.rawValue }
 
     /// User-selectable providers (excludes internal-only providers like Replicate)
     static var userFacing: [LLMProvider] {
-        [.gemini, .claude, .openai, .xai]
+        [.gemini, .claude, .openai, .xai, .moonshot]
     }
 }
 

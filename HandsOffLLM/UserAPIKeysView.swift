@@ -8,6 +8,7 @@ struct UserAPIKeysView: View {
     @State private var anthropicKeyDraft: String = ""
     @State private var geminiKeyDraft: String = ""
     @State private var xaiKeyDraft: String = ""
+    @State private var moonshotKeyDraft: String = ""
     @State private var mistralKeyDraft: String = ""
     @State private var replicateKeyDraft: String = ""
 
@@ -15,6 +16,7 @@ struct UserAPIKeysView: View {
     @State private var revealAnthropic = false
     @State private var revealGemini = false
     @State private var revealXAI = false
+    @State private var revealMoonshot = false
     @State private var revealMistral = false
     @State private var revealReplicate = false
 
@@ -72,6 +74,17 @@ struct UserAPIKeysView: View {
             )
 
             keySection(
+                title: "Moonshot AI (Kimi)",
+                toggle: $settingsService.useOwnMoonshotKey,
+                fieldPlaceholder: "sk-...",
+                text: $moonshotKeyDraft,
+                reveal: $revealMoonshot,
+                statusIcon: "moon.stars.fill",
+                storedKey: settingsService.moonshotAPIKey,
+                onSave: settingsService.setMoonshotAPIKey
+            )
+
+            keySection(
                 title: "Mistral (Transcription)",
                 toggle: $settingsService.useOwnMistralKey,
                 fieldPlaceholder: "mst-...",
@@ -104,6 +117,7 @@ struct UserAPIKeysView: View {
         .onChange(of: settingsService.anthropicAPIKey) { _, newValue in anthropicKeyDraft = newValue ?? "" }
         .onChange(of: settingsService.geminiAPIKey) { _, newValue in geminiKeyDraft = newValue ?? "" }
         .onChange(of: settingsService.xaiAPIKey) { _, newValue in xaiKeyDraft = newValue ?? "" }
+        .onChange(of: settingsService.moonshotAPIKey) { _, newValue in moonshotKeyDraft = newValue ?? "" }
         .onChange(of: settingsService.mistralAPIKey) { _, newValue in mistralKeyDraft = newValue ?? "" }
         .onChange(of: settingsService.replicateAPIKey) { _, newValue in replicateKeyDraft = newValue ?? "" }
     }
@@ -113,6 +127,7 @@ struct UserAPIKeysView: View {
         anthropicKeyDraft = settingsService.anthropicAPIKey ?? ""
         geminiKeyDraft = settingsService.geminiAPIKey ?? ""
         xaiKeyDraft = settingsService.xaiAPIKey ?? ""
+        moonshotKeyDraft = settingsService.moonshotAPIKey ?? ""
         mistralKeyDraft = settingsService.mistralAPIKey ?? ""
         replicateKeyDraft = settingsService.replicateAPIKey ?? ""
     }

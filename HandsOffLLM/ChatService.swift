@@ -135,6 +135,7 @@ class ChatService: ObservableObject {
                 tokenCap: limits.maxTokens,
                 openAIKey: settingsService.openaiAPIKey,
                 xaiKey: settingsService.xaiAPIKey,
+                moonshotKey: settingsService.moonshotAPIKey,
                 anthropicKey: settingsService.anthropicAPIKey,
                 geminiKey: settingsService.geminiAPIKey,
                 webSearchEnabled: settingsService.webSearchEnabled,
@@ -559,6 +560,7 @@ struct LLMClientContext {
     let tokenCap: Int
     let openAIKey: String?
     let xaiKey: String?
+    let moonshotKey: String?
     let anthropicKey: String?
     let geminiKey: String?
     let webSearchEnabled: Bool
@@ -680,6 +682,63 @@ struct XAIClient: LLMClient {
         if context.webSearchEnabled, context.modelId.contains("grok-4") {
             requestBody["search_parameters"] = ["mode": "auto"]
         }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        return req
+    }
+
+    func decodeChunk(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let event = try? JSONDecoder().decode(XAIResponseEvent.self, from: data) else { return nil }
+        guard let choices = event.choices, let delta = choices.first?.delta else {
+            return nil
+        }
+        return delta.content
+    }
+}
+
+struct MoonshotClient: LLMClient {
+    func makeRequest(with context: LLMClientContext) throws -> URLRequest {
+        let useProxy = context.useProxy
+        let trimmedKey = context.moonshotKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !useProxy {
+            guard let key = trimmedKey, !key.isEmpty else {
+                throw LlmError.apiKeyMissing(provider: "Moonshot AI")
+            }
+        }
+        guard let url = URL(string: "https://api.moonshot.cn/v1/chat/completions") else {
+            throw LlmError.invalidURL
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !useProxy, let key = trimmedKey {
+            req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+
+        var messagesPayload: [[String: Any]] = context.messages.map { message in
+            [
+                "role": message.role,
+                "content": message.content
+            ]
+        }
+
+        if let sys = context.systemPrompt, !sys.isEmpty {
+            messagesPayload.insert([
+                "role": "system",
+                "content": sys
+            ], at: 0)
+        }
+
+        var requestBody: [String: Any] = [
+            "model": context.modelId,
+            "messages": messagesPayload,
+            "temperature": min(context.temperature, context.temperatureCap),
+            "max_tokens": min(context.maxTokens, context.tokenCap),
+            "stream": true,
+            "stream_options": ["include_usage": true]
+        ]
 
         req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         return req
@@ -848,6 +907,8 @@ struct LLMClientFactory {
             return GeminiClient()
         case .xai:
             return XAIClient()
+        case .moonshot:
+            return MoonshotClient()
         case .replicate:
             return OpenAIClient() // Replicate is TTS-only, fallback to OpenAI client
         }
