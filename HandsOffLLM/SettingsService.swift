@@ -53,7 +53,6 @@ class SettingsService: ObservableObject { // Make ObservableObject
         ModelInfo(id: "kimi-k2-thinking-turbo", name: "Kimi K2 Thinking Turbo", description: "Fast reasoning model", provider: .moonshot),
         ModelInfo(id: "kimi-k2-turbo-preview", name: "Kimi K2 Turbo Preview", description: "Fast general purpose model (Recommended)", provider: .moonshot),
         ModelInfo(id: "kimi-k2-0905-preview", name: "Kimi K2 Preview (0905)", description: "Latest preview model", provider: .moonshot),
-        ModelInfo(id: "kimi-k2-0711-preview", name: "Kimi K2 Preview (0711)", description: "Previous preview model", provider: .moonshot),
     ]
     
     let availableSystemPrompts: [PromptPreset] = [
@@ -127,6 +126,10 @@ class SettingsService: ObservableObject { // Make ObservableObject
     var useOwnXAIKey: Bool {
         get { settings.useOwnXAIKey }
         set { settings.useOwnXAIKey = newValue; saveSettings() }
+    }
+    var useOwnMoonshotKey: Bool {
+        get { settings.useOwnMoonshotKey }
+        set { settings.useOwnMoonshotKey = newValue; saveSettings() }
     }
     var useOwnMistralKey: Bool {
         get { settings.useOwnMistralKey }

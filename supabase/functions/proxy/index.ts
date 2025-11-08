@@ -31,7 +31,6 @@ const PRICING = {
   },
   moonshot: {
     'kimi-k2-0905-preview': { input: 0.60, output: 2.50, cached_input: 0.15 },
-    'kimi-k2-0711-preview': { input: 0.60, output: 2.50, cached_input: 0.15 },
     'kimi-k2-turbo-preview': { input: 1.15, output: 8.00, cached_input: 0.15 },
     'kimi-k2-thinking': { input: 0.60, output: 2.50, cached_input: 0.15 },
     'kimi-k2-thinking-turbo': { input: 1.15, output: 8.00, cached_input: 0.15 },
@@ -84,7 +83,6 @@ const MODEL_ALIASES: Partial<Record<keyof typeof PRICING, Array<{ regex: RegExp;
   ],
   moonshot: [
     { regex: /^kimi-k2-0905-preview(?:$|[-_])/, key: 'kimi-k2-0905-preview' },
-    { regex: /^kimi-k2-0711-preview(?:$|[-_])/, key: 'kimi-k2-0711-preview' },
     { regex: /^kimi-k2-turbo-preview(?:$|[-_])/, key: 'kimi-k2-turbo-preview' },
     { regex: /^kimi-k2-thinking-turbo(?:$|[-_])/, key: 'kimi-k2-thinking-turbo' },
     { regex: /^kimi-k2-thinking(?:$|[-_])/, key: 'kimi-k2-thinking' },
