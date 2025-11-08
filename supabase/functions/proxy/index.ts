@@ -542,23 +542,15 @@ function extractUsageFromChunk(
             break
 
           case 'moonshot':
-            // Moonshot sends usage in two places:
-            // 1. In choices[0].usage when finish_reason is "stop"
-            // 2. At root level when choices is empty
-            let moonshotUsage = null
+            // Use the last chunk with empty choices array (has same data as choices[0].usage)
             if (parsed.usage && parsed.choices?.length === 0) {
-              moonshotUsage = parsed.usage
-            } else if (parsed.choices?.[0]?.usage) {
-              moonshotUsage = parsed.choices[0].usage
-            }
-
-            if (moonshotUsage) {
-              const completion = moonshotUsage.completion_tokens || 0
-              const reasoning = moonshotUsage.completion_tokens_details?.reasoning_tokens || 0
+              const usage = parsed.usage
+              const completion = usage.completion_tokens || 0
+              const reasoning = usage.completion_tokens_details?.reasoning_tokens || 0
               return {
                 cached_input_tokens:
-                  moonshotUsage.prompt_tokens_details?.cached_tokens || 0,
-                input_tokens: moonshotUsage.prompt_tokens || 0,
+                  usage.prompt_tokens_details?.cached_tokens || 0,
+                input_tokens: usage.prompt_tokens || 0,
                 reasoning_output_tokens: reasoning,
                 output_tokens: Math.max(0, completion - reasoning),
                 cost_usd: 0,
@@ -658,22 +650,15 @@ function extractUsageFromChunk(
           }
           break
         case 'moonshot':
-          // Check both root-level usage and choices[0].usage
-          let moonshotUsageFallback = null
           if (parsed.usage) {
-            moonshotUsageFallback = parsed.usage
-          } else if (parsed.choices?.[0]?.usage) {
-            moonshotUsageFallback = parsed.choices[0].usage
-          }
-
-          if (moonshotUsageFallback) {
-            const completion = moonshotUsageFallback.completion_tokens || 0
+            const usage = parsed.usage
+            const completion = usage.completion_tokens || 0
             const reasoning =
-              moonshotUsageFallback.completion_tokens_details?.reasoning_tokens || 0
+              usage.completion_tokens_details?.reasoning_tokens || 0
             return {
               cached_input_tokens:
-                moonshotUsageFallback.prompt_tokens_details?.cached_tokens || 0,
-              input_tokens: moonshotUsageFallback.prompt_tokens || 0,
+                usage.prompt_tokens_details?.cached_tokens || 0,
+              input_tokens: usage.prompt_tokens || 0,
               reasoning_output_tokens: reasoning,
               output_tokens: Math.max(0, completion - reasoning),
               cost_usd: 0,
