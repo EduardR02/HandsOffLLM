@@ -203,7 +203,7 @@ serve(async (req) => {
     // Inject API key into headers
     const providerHeaders = { ...headers }
 
-    if (pricingProvider === 'openai' || pricingProvider === 'xai' || pricingProvider === 'mistral' || pricingProvider === 'replicate') {
+    if (pricingProvider === 'openai' || pricingProvider === 'xai' || pricingProvider === 'moonshot' || pricingProvider === 'mistral' || pricingProvider === 'replicate') {
       providerHeaders['Authorization'] = `Bearer ${apiKey}`
     } else if (pricingProvider === 'anthropic') {
       providerHeaders['x-api-key'] = apiKey
@@ -541,6 +541,23 @@ function extractUsageFromChunk(
             }
             break
 
+          case 'moonshot':
+            if (parsed.usage && parsed.choices?.length === 0) {
+              const usage = parsed.usage
+              const completion = usage.completion_tokens || 0
+              const reasoning = usage.completion_tokens_details?.reasoning_tokens || 0
+              return {
+                cached_input_tokens:
+                  usage.prompt_tokens_details?.cached_tokens || 0,
+                input_tokens: usage.prompt_tokens || 0,
+                reasoning_output_tokens: reasoning,
+                output_tokens: Math.max(0, completion - reasoning),
+                cost_usd: 0,
+                prompt_seconds: base.prompt_seconds
+              }
+            }
+            break
+
           case 'mistral':
             if (parsed.usage) {
               return {
@@ -617,6 +634,23 @@ function extractUsageFromChunk(
                 .slice()
                 .reverse()
                 .find((entry: any) => entry && typeof entry === 'object') ?? {}
+            const completion = usage.completion_tokens || 0
+            const reasoning =
+              usage.completion_tokens_details?.reasoning_tokens || 0
+            return {
+              cached_input_tokens:
+                usage.prompt_tokens_details?.cached_tokens || 0,
+              input_tokens: usage.prompt_tokens || 0,
+              reasoning_output_tokens: reasoning,
+              output_tokens: Math.max(0, completion - reasoning),
+              cost_usd: 0,
+              prompt_seconds: current?.prompt_seconds ?? 0
+            }
+          }
+          break
+        case 'moonshot':
+          if (parsed.usage) {
+            const usage = parsed.usage
             const completion = usage.completion_tokens || 0
             const reasoning =
               usage.completion_tokens_details?.reasoning_tokens || 0
