@@ -335,6 +335,54 @@ serve(async (req) => {
       })
     }
 
+    // Handle non-streaming Replicate TTS responses (with Prefer: wait header)
+    if (isReplicate && pricingProvider === 'replicate') {
+      const contentType = response.headers.get('Content-Type') || ''
+      if (contentType.includes('application/json')) {
+        // Replicate returned JSON (prediction object), not a stream
+        const responseData = await response.arrayBuffer()
+        const jsonText = new TextDecoder().decode(responseData)
+
+        // Estimate usage for Replicate TTS
+        const ttsInputText = bodyData?.input?.text || ''
+        const estimatedMinutes = Math.max(0.005, ttsInputText.length / 750) // ~150 words/min, ~5 chars/word
+        const estimatedSeconds = estimatedMinutes * 60
+
+        const usageData: UsageData = {
+          cached_input_tokens: 0,
+          input_tokens: 0,
+          reasoning_output_tokens: 0,
+          output_tokens: 0,
+          cost_usd: 0,
+          prompt_seconds: estimatedSeconds
+        }
+
+        const cost = calculateCost(pricingProvider, model, usageData)
+
+        if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
+          await supabaseAdmin.from('usage_logs').insert({
+            user_id: user.id,
+            provider: pricingProvider,
+            model,
+            cached_input_tokens: 0,
+            input_tokens: 0,
+            reasoning_output_tokens: 0,
+            output_tokens: 0,
+            cost_usd: cost
+          })
+
+          console.log(`🎤 Replicate TTS logged: ${ttsInputText.length} chars → ${estimatedSeconds.toFixed(2)}s audio - $${cost.toFixed(6)}`)
+        }
+
+        // Return JSON response to client unchanged
+        return new Response(responseData, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        })
+      }
+    }
+
     // Stream response back to client while capturing usage
     let streamingUsage: UsageData | null = null
 

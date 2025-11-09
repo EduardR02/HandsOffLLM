@@ -131,7 +131,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private lazy var vadSegmentationConfig: VadSegmentationConfig = {
         var config = VadSegmentationConfig.default  // Start with library defaults
         config.minSilenceDuration = settingsService.vadSilenceThreshold  // Override: user set hysteresis end, default is 1.5s
-        config.maxSpeechDuration = .infinity  // Override: Unlimited talks
+        config.maxSpeechDuration = 3600.0  // Override: 1 hour max speech duration (FluidAudio doesn't handle .infinity properly)
         return config
     }()
 
