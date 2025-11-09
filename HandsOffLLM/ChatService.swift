@@ -733,7 +733,7 @@ struct MoonshotClient: LLMClient {
             ], at: 0)
         }
 
-        var requestBody: [String: Any] = [
+        let requestBody: [String: Any] = [
             "model": context.modelId,
             "messages": messagesPayload,
             "temperature": min(context.temperature, context.temperatureCap),

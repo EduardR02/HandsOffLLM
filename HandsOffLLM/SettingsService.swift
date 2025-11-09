@@ -638,7 +638,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         }
         if settings.selectedKokoroVoice == nil {
             settings.selectedKokoroVoice = defaultKokoroVoice
-            logger.info("Setting default Kokoro voice: \(defaultKokoroVoice)")
+            logger.info("Setting default Kokoro voice: \(self.defaultKokoroVoice)")
             changed = true
         }
         return changed
