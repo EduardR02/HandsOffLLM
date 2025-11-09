@@ -544,6 +544,8 @@ class ChatService: ObservableObject {
             return (SettingsService.maxTempGemini, SettingsService.maxTokensGemini)
         case .xai:
             return (SettingsService.maxTempXAI, SettingsService.maxTokensXAI)
+        case .moonshot:
+            return (SettingsService.maxTempMoonshot, SettingsService.maxTokensMoonshot)
         case .replicate:
             return (2.0, 4096) // Replicate is TTS-only, not used for LLM
         }

@@ -321,7 +321,9 @@ class SettingsService: ObservableObject { // Make ObservableObject
     static let maxTokensGemini: Int = 8192
     static let maxTempXAI: Float = 2.0
     static let maxTokensXAI: Int = 131072
-    
+    static let maxTempMoonshot: Float = 1.0
+    static let maxTokensMoonshot: Int = 131072
+
     // MARK: - Personalization getters
     var userProfilePrompt: String {
         var lines: [String] = []
