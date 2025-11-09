@@ -63,17 +63,23 @@ struct HandsOffLLMApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                if !authService.isAuthenticated {
+                switch authService.authState {
+                case .checking:
+                    // Show splash screen while checking auth status
+                    SplashView()
+                case .unauthenticated:
                     // Auth gate - must sign in first
                     AuthView()
-                } else if settingsService.settings.hasCompletedInitialSetup {
-                    ContentView(viewModel: viewModel)
-                } else {
-                    ProfileFormView(isInitial: true)
-                        .onAppear {
-                            // Make sure we stop listening when setup view appears
-                            audioService.stopListeningCleanup()
-                        }
+                case .authenticated:
+                    if settingsService.settings.hasCompletedInitialSetup {
+                        ContentView(viewModel: viewModel)
+                    } else {
+                        ProfileFormView(isInitial: true)
+                            .onAppear {
+                                // Make sure we stop listening when setup view appears
+                                audioService.stopListeningCleanup()
+                            }
+                    }
                 }
             }
             .environmentObject(settingsService)

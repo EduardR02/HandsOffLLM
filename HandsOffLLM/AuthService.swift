@@ -4,15 +4,26 @@ import Supabase
 import AuthenticationServices
 import GoogleSignIn
 
+enum AuthState {
+    case checking
+    case authenticated
+    case unauthenticated
+}
+
 @MainActor
 class AuthService: ObservableObject {
     static let shared = AuthService()
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "AuthService")
 
-    @Published var isAuthenticated = false
+    @Published var authState: AuthState = .checking
     @Published var currentUser: User?
     @Published var session: Session?
+
+    // Computed property for backward compatibility
+    var isAuthenticated: Bool {
+        authState == .authenticated
+    }
 
     let supabase: SupabaseClient
 
@@ -46,11 +57,11 @@ class AuthService: ObservableObject {
             let session = try await supabase.auth.session
             self.session = session
             self.currentUser = session.user
-            self.isAuthenticated = true
+            self.authState = .authenticated
             logger.info("Existing session found for user: \(session.user.id)")
         } catch {
             logger.info("No existing session found")
-            self.isAuthenticated = false
+            self.authState = .unauthenticated
             self.currentUser = nil
             self.session = nil
         }
@@ -131,7 +142,7 @@ class AuthService: ObservableObject {
 
     func signOut() async throws {
         try await supabase.auth.signOut()
-        self.isAuthenticated = false
+        self.authState = .unauthenticated
         self.currentUser = nil
         self.session = nil
         logger.info("User signed out successfully")
@@ -169,7 +180,7 @@ class AuthService: ObservableObject {
         let newSession = try await supabase.auth.refreshSession()
         self.session = newSession
         self.currentUser = newSession.user
-        self.isAuthenticated = true
+        self.authState = .authenticated
         logger.info("Session refreshed successfully")
     }
 }
