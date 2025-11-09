@@ -708,7 +708,7 @@ struct MoonshotClient: LLMClient {
                 throw LlmError.apiKeyMissing(provider: "Moonshot AI")
             }
         }
-        guard let url = URL(string: "https://api.moonshot.cn/v1/chat/completions") else {
+        guard let url = URL(string: "https://api.moonshot.ai/v1/chat/completions") else {
             throw LlmError.invalidURL
         }
 
