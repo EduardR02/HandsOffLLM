@@ -640,12 +640,6 @@ class SettingsService: ObservableObject { // Make ObservableObject
             logger.info("Setting default Kokoro voice: \(self.defaultKokoroVoice)")
             changed = true
         }
-        // Migration: af_heart is no longer supported by Replicate API
-        if settings.selectedKokoroVoice == "af_heart" {
-            settings.selectedKokoroVoice = defaultKokoroVoice
-            logger.info("Migrating invalid Kokoro voice 'af_heart' to default: \(self.defaultKokoroVoice)")
-            changed = true
-        }
         return changed
     }
 
