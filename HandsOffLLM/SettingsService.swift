@@ -152,14 +152,13 @@ class SettingsService: ObservableObject { // Make ObservableObject
     ]   // All supported OpenAI voices
 
     let availableKokoroVoices: [VoiceInfo] = [
-        // Grade A voices
-        VoiceInfo(id: "af_heart", displayName: "Heart · EN-US"),
+        // Grade A voices (highest quality)
         VoiceInfo(id: "af_bella", displayName: "Bella · EN-US"),
-        // Grade B voices
+        // Grade B voices (high quality)
         VoiceInfo(id: "af_nicole", displayName: "Nicole · EN-US"),
         VoiceInfo(id: "bf_emma", displayName: "Emma · EN-GB"),
         VoiceInfo(id: "ff_siwis", displayName: "Siwis · FR"),
-        // Grade C+ voices
+        // Grade C+ voices (good quality)
         VoiceInfo(id: "af_aoede", displayName: "Aoede · EN-US"),
         VoiceInfo(id: "af_kore", displayName: "Kore · EN-US"),
         VoiceInfo(id: "af_sarah", displayName: "Sarah · EN-US"),
@@ -639,6 +638,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
         if settings.selectedKokoroVoice == nil {
             settings.selectedKokoroVoice = defaultKokoroVoice
             logger.info("Setting default Kokoro voice: \(self.defaultKokoroVoice)")
+            changed = true
+        }
+        // Migration: af_heart is no longer supported by Replicate API
+        if settings.selectedKokoroVoice == "af_heart" {
+            settings.selectedKokoroVoice = defaultKokoroVoice
+            logger.info("Migrating invalid Kokoro voice 'af_heart' to default: \(self.defaultKokoroVoice)")
             changed = true
         }
         return changed
