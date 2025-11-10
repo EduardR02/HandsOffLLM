@@ -311,7 +311,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
-            if newPhase == .active {
+            if newPhase == .active && !showHistory && !showUsage {
                 logger.info("ContentView foregrounded, restart listening.")
                 viewModel.startListening()
             }
