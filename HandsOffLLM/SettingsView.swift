@@ -25,8 +25,46 @@ struct SettingsView: View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
             Form {
-                // MARK: - User Profile
-                Section {
+                profileSection
+                appDefaultsSection
+                modelSelectionSection
+                reasoningSection
+                customizeChatSection
+                voiceDetectionSection
+                featuresSection
+                audioStorageSection
+                apiKeysSection
+                advancedSection
+                signOutSection
+            }
+            .onAppear {
+                tempDefaultPlaybackSpeed = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
+                let retentionDays = historyService.audioRetentionDays
+                audioAutoDeleteEnabled = retentionDays != 0
+                if retentionDays != 0 && retentionDays != 7 {
+                    historyService.updateAudioRetentionDays(7)
+                }
+                tempVADSilenceThreshold = settingsService.vadSilenceThreshold
+            }
+            .onChange(of: settingsService.settings.selectedDefaultPlaybackSpeed) { _, newValue in
+                tempDefaultPlaybackSpeed = newValue ?? 2.0
+            }
+            .onChange(of: historyService.audioRetentionDays) { _, newValue in
+                audioAutoDeleteEnabled = newValue != 0
+            }
+            .onChange(of: settingsService.vadSilenceThreshold) { _, newValue in
+                tempVADSilenceThreshold = newValue
+            }
+            .scrollContentBackground(.hidden)
+            .foregroundColor(Theme.primaryText)
+        }
+        .navigationTitle("Settings")
+    }
+
+    // MARK: - Section Views
+
+    private var profileSection: some View {
+        Section {
                     NavigationLink {
                         ProfileFormView(isInitial: false)
                     } label: {
@@ -49,9 +87,11 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - App Defaults
-                Section("App Defaults") {
+    private var appDefaultsSection: some View {
+        Section("App Defaults") {
                     Picker("LLM Provider", selection: Binding(
                         get: { settingsService.settings.selectedDefaultProvider ?? .claude },
                         set: { settingsService.updateDefaultProvider(provider: $0) }
@@ -91,9 +131,11 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - Model Selection
-                Section("LLM Models") {
+    private var modelSelectionSection: some View {
+        Section("LLM Models") {
                     ForEach(LLMProvider.userFacing) { provider in
                         NavigationLink {
                             ModelSelectionView(provider: provider)
@@ -116,9 +158,11 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - Reasoning Settings
-                Section("Reasoning") {
+    private var reasoningSection: some View {
+        Section("Reasoning") {
                     NavigationLink {
                         ReasoningSettingsView()
                     } label: {
@@ -135,9 +179,11 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - Prompt Presets
-                Section("Customize Chat Experience") {
+    private var customizeChatSection: some View {
+        Section("Customize Chat Experience") {
                     NavigationLink {
                         SystemPromptSelectionView()
                     } label: {
@@ -234,9 +280,11 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - Voice Detection
-                Section("Voice Detection") {
+    private var voiceDetectionSection: some View {
+        Section("Voice Detection") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Silence Duration")
@@ -270,9 +318,11 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
-                
-                // MARK: - Features & Preferences
-                Section("Features & Preferences") {
+        }
+    }
+
+    private var featuresSection: some View {
+        Section("Features & Preferences") {
                     Toggle(isOn: Binding(
                         get: { settingsService.webSearchEnabled },
                         set: { settingsService.updateAdvancedSetting(keyPath: \.webSearchEnabled, value: $0) }
@@ -316,8 +366,11 @@ struct SettingsView: View {
                     .tint(Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                Section("Audio Storage") {
+    private var audioStorageSection: some View {
+        Section("Audio Storage") {
                     Toggle(isOn: Binding(
                         get: { audioAutoDeleteEnabled },
                         set: { newValue in
@@ -358,9 +411,11 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - User API Keys
-                Section {
+    private var apiKeysSection: some View {
+        Section {
                     NavigationLink {
                         UserAPIKeysView()
                     } label: {
@@ -372,7 +427,7 @@ struct SettingsView: View {
                                settingsService.useOwnGeminiKey || settingsService.useOwnXAIKey ||
                                settingsService.useOwnReplicateKey {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
+                                    .foregroundColor(Theme.secondaryAccent)
                             }
                         }
                     }
@@ -383,9 +438,11 @@ struct SettingsView: View {
                     Text("Use your own API keys and get billed directly by each provider. Keys are encrypted and stored only on your device.")
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - Advanced Settings
-                Section("Advanced Settings") {
+    private var advancedSection: some View {
+        Section("Advanced Settings") {
                     NavigationLink {
                         AdvancedSettingsView()
                     } label: {
@@ -394,9 +451,11 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
+        }
+    }
 
-                // MARK: - Sign Out
-                Section {
+    private var signOutSection: some View {
+        Section {
                     Button(role: .destructive) {
                         Task {
                             do {
@@ -419,29 +478,7 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
-            }
-            .onAppear {
-                tempDefaultPlaybackSpeed = settingsService.settings.selectedDefaultPlaybackSpeed ?? 2.0
-                let retentionDays = historyService.audioRetentionDays
-                audioAutoDeleteEnabled = retentionDays != 0
-                if retentionDays != 0 && retentionDays != 7 {
-                    historyService.updateAudioRetentionDays(7)
-                }
-                tempVADSilenceThreshold = settingsService.vadSilenceThreshold
-            }
-            .onChange(of: settingsService.settings.selectedDefaultPlaybackSpeed) { _, newValue in
-                tempDefaultPlaybackSpeed = newValue ?? 2.0
-            }
-            .onChange(of: historyService.audioRetentionDays) { _, newValue in
-                audioAutoDeleteEnabled = newValue != 0
-            }
-            .onChange(of: settingsService.vadSilenceThreshold) { _, newValue in
-                tempVADSilenceThreshold = newValue
-            }
-            .scrollContentBackground(.hidden)
-            .foregroundColor(Theme.primaryText)
         }
-        .navigationTitle("Settings")
     }
 }
 
