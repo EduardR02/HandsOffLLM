@@ -63,7 +63,7 @@ struct SettingsData: Codable {
     // Model Selections: Store the ID of the selected model for each provider
     var selectedModelIdPerProvider: [LLMProvider: String] = [:]
     var openAIReasoningEffort: OpenAIReasoningEffort?
-    var claudeReasoningEnabled: Bool? = nil
+    var reasoningEnabled: Bool? = nil
     
     // Preset Selections: Store the ID of the selected preset
     var selectedSystemPromptPresetId: String?

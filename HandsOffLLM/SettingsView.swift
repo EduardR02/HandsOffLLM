@@ -117,39 +117,22 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Theme.menuAccent)
 
+                // MARK: - Reasoning Settings
                 Section("Reasoning") {
-                    Picker(selection: Binding(
-                        get: { settingsService.openAIReasoningEffort },
-                        set: { settingsService.updateOpenAIReasoningEffort($0) }
-                    )) {
-                        ForEach(OpenAIReasoningEffort.allCases, id: \.self) { effort in
-                            Text(effort.displayName).tag(effort)
-                                .foregroundColor(Theme.primaryText)
-                        }
+                    NavigationLink {
+                        ReasoningSettingsView()
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("OpenAI Reasoning Effort")
-                            Text("Choose how long GPT-5 thinks before replying.")
-                                .font(.caption)
-                                .foregroundColor(Theme.secondaryText)
-                        }
-                    }
-                    .tint(Theme.secondaryAccent)
-                    .id("reasoningEffortPicker-\(darkerModeObserver)")
-                    
-                    Toggle(isOn: Binding(
-                        get: { settingsService.claudeReasoningEnabled },
-                        set: { settingsService.updateClaudeReasoningEnabled($0) }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Claude Reasoning")
+                        HStack {
+                            Text("Extended Reasoning")
                                 .foregroundColor(Theme.primaryText)
-                            Text("Let Claude think before replying.")
-                                .font(.caption)
-                                .foregroundColor(Theme.secondaryText)
+                            Spacer()
+                            if settingsService.reasoningEnabled {
+                                Text("Enabled")
+                                    .foregroundColor(Theme.secondaryAccent)
+                            }
                         }
                     }
-                    .tint(Theme.secondaryAccent)
+                    .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 }
                 .listRowBackground(Theme.menuAccent)
 
@@ -206,7 +189,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    Picker(selection: Binding(
+                    Picker("TTS Provider", selection: Binding(
                         get: { settingsService.selectedTTSProvider },
                         set: { settingsService.updateSelectedTTSProvider($0) }
                     )) {
@@ -214,24 +197,9 @@ struct SettingsView: View {
                             Text(provider.displayName).tag(provider)
                                 .foregroundColor(Theme.primaryText)
                         }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("TTS Provider")
-                                .foregroundColor(Theme.primaryText)
-                            Text("Kokoro uses Replicate API")
-                                .font(.caption)
-                                .foregroundColor(Theme.secondaryText)
-                        }
                     }
                     .tint(Theme.secondaryAccent)
                     .id("ttsProviderPicker-\(darkerModeObserver)")
-
-                    // Show cost/quality tradeoff for Kokoro
-                    if settingsService.selectedTTSProvider == .kokoro {
-                        Text("~10x cheaper. Similar quality if language stays the same.")
-                            .font(.caption)
-                            .foregroundColor(Theme.secondaryText)
-                    }
 
                     // Show voice picker for both providers
                     if settingsService.selectedTTSProvider == .openai {
@@ -258,6 +226,11 @@ struct SettingsView: View {
                         }
                         .tint(Theme.secondaryAccent)
                         .id("kokoroVoicePicker-\(darkerModeObserver)")
+                    }
+                } footer: {
+                    if settingsService.selectedTTSProvider == .kokoro {
+                        Text("Kokoro is ~10x cheaper than OpenAI. Similar quality if language stays the same.")
+                            .foregroundColor(Theme.secondaryText)
                     }
                 }
                 .listRowBackground(Theme.menuAccent)
@@ -298,13 +271,13 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Theme.menuAccent)
                 
-                // MARK: - Experimental Features
-                Section("Experimental Features") {
+                // MARK: - Features & Preferences
+                Section("Features & Preferences") {
                     Toggle(isOn: Binding(
                         get: { settingsService.webSearchEnabled },
                         set: { settingsService.updateAdvancedSetting(keyPath: \.webSearchEnabled, value: $0) }
                     )) {
-                        VStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text("Web Search (Experimental)")
                                 .foregroundColor(Theme.primaryText)
                             Text("GPT-4.1 and Grok 4 models")
@@ -313,16 +286,12 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Theme.secondaryAccent)
-                }
-                .listRowBackground(Theme.menuAccent)
 
-                // MARK: - Energy Saver Mode
-                Section("Energy Saver") {
                     Toggle(isOn: Binding(
                         get: { settingsService.energySaverEnabled },
                         set: { settingsService.updateEnergySaverEnabled($0) }
                     )) {
-                        VStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text("Energy Saver Mode")
                                  .foregroundColor(Theme.primaryText)
                             Text("Circle won't move - reduces energy usage by ~30%")
@@ -331,16 +300,12 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Theme.secondaryAccent)
-                }
-                .listRowBackground(Theme.menuAccent)
 
-                // MARK: - Appearance
-                Section("Appearance") {
                     Toggle(isOn: Binding(
                         get: { settingsService.darkerMode },
                         set: { settingsService.updateDarkerMode($0) }
                     )) {
-                        VStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text("Darker Mode")
                                 .foregroundColor(Theme.primaryText)
                             Text("Rose Pine theme with deeper background")

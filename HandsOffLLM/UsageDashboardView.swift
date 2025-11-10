@@ -22,7 +22,7 @@ struct UsageDashboardView: View {
             } else if let error = errorMessage {
                 Section {
                     Text(error)
-                        .foregroundColor(.red)
+                        .foregroundColor(Theme.accent)
                         .font(.caption)
                 }
                 .listRowBackground(Color.clear)
@@ -45,20 +45,20 @@ struct UsageDashboardView: View {
                         if monthlyUsage > monthlyLimit * 0.8 {
                             HStack {
                                 Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(Theme.accent)
                                 Text("You're approaching your monthly limit")
                                     .font(.caption)
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(Theme.accent)
                             }
                         }
 
                         if monthlyUsage >= monthlyLimit {
                             HStack {
                                 Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.red)
+                                    .foregroundColor(Theme.accent)
                                 Text("Monthly limit exceeded - requests will be blocked")
                                     .font(.caption)
-                                    .foregroundColor(.red)
+                                    .foregroundColor(Theme.accent)
                             }
                         }
                     }
@@ -79,7 +79,7 @@ struct UsageDashboardView: View {
                                         .fontWeight(.medium)
                                     Text("\(usage.requestCount) requests")
                                         .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(Theme.secondaryText)
                                 }
                                 Spacer()
                                 Text("$\(usage.totalCost, specifier: "%.4f")")
@@ -124,11 +124,11 @@ struct UsageDashboardView: View {
 
     private var usageColor: Color {
         if monthlyUsage >= monthlyLimit {
-            return .red
+            return Theme.accent
         } else if monthlyUsage > monthlyLimit * 0.8 {
-            return .orange
+            return Theme.accent
         } else {
-            return .green
+            return Theme.secondaryAccent
         }
     }
 

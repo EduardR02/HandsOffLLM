@@ -140,7 +140,7 @@ class ChatService: ObservableObject {
                 geminiKey: settingsService.geminiAPIKey,
                 webSearchEnabled: settingsService.webSearchEnabled,
                 openAIReasoningEffort: settingsService.openAIReasoningEffortOpt,
-                claudeReasoningEnabled: settingsService.claudeReasoningEnabled,
+                reasoningEnabled: settingsService.reasoningEnabled,
                 useProxy: useProxy
             )
             let client = LLMClientFactory.client(for: provider)
@@ -567,7 +567,7 @@ struct LLMClientContext {
     let geminiKey: String?
     let webSearchEnabled: Bool
     let openAIReasoningEffort: OpenAIReasoningEffort?
-    let claudeReasoningEnabled: Bool
+    let reasoningEnabled: Bool
     let useProxy: Bool
 }
 
@@ -681,8 +681,14 @@ struct XAIClient: LLMClient {
             "stream_options": ["include_usage": true]
         ]
 
-        if context.webSearchEnabled, context.modelId.contains("grok-4") {
-            requestBody["search_parameters"] = ["mode": "auto"]
+        // Grok-4 supports extended reasoning
+        if context.modelId.contains("grok-4") {
+            if context.webSearchEnabled {
+                requestBody["search_parameters"] = ["mode": "auto"]
+            }
+            if context.reasoningEnabled {
+                requestBody["reasoning_effort"] = "high"
+            }
         }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -790,7 +796,7 @@ struct ClaudeClient: LLMClient {
         }
 
         let canThink = context.modelId.contains("sonnet-4") || context.modelId.contains("opus-4")
-        let isThinking = canThink && context.claudeReasoningEnabled
+        let isThinking = canThink && context.reasoningEnabled
 
         var payload: [String: Any] = [
             "model": context.modelId,
@@ -862,8 +868,10 @@ struct GeminiClient: LLMClient {
             "maxOutputTokens": min(context.maxTokens, context.tokenCap),
             "responseMimeType": "text/plain"
         ]
+        // Gemini 2.5 Flash supports extended thinking
         if context.modelId.contains("2.5-flash") {
-            generationConfig["thinking_config"] = ["thinkingBudget": 0]
+            let thinkingBudget = context.reasoningEnabled ? 8192 : 0
+            generationConfig["thinking_config"] = ["thinkingBudget": thinkingBudget]
         }
 
         var body: [String: Any] = [

@@ -165,34 +165,40 @@ struct UserAPIKeysView: View {
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
 
-                    HStack(spacing: 12) {
-                        Button(reveal.wrappedValue ? "Hide" : "Show") {
-                            reveal.wrappedValue.toggle()
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Paste") {
-                            if let pasted = UIPasteboard.general.string {
-                                text.wrappedValue = pasted
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            Button(reveal.wrappedValue ? "Hide" : "Show") {
+                                reveal.wrappedValue.toggle()
                             }
-                        }
-                        .buttonStyle(.bordered)
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
 
-                        Spacer()
-
-                        Button("Save") {
-                            commit(trimmedDraft, storedKey: storedKey, onSave: onSave)
+                            Button("Paste") {
+                                if let pasted = UIPasteboard.general.string {
+                                    text.wrappedValue = pasted
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
-                        .disabled(trimmedDraft == storedKey)
 
-                        Button("Clear") {
-                            text.wrappedValue = ""
-                            commit("", storedKey: storedKey, onSave: onSave)
+                        HStack(spacing: 8) {
+                            Button("Save") {
+                                commit(trimmedDraft, storedKey: storedKey, onSave: onSave)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Theme.accent)
+                            .disabled(trimmedDraft == storedKey)
+                            .frame(maxWidth: .infinity)
+
+                            Button("Clear") {
+                                text.wrappedValue = ""
+                                commit("", storedKey: storedKey, onSave: onSave)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(Theme.accent)
+                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
                     }
 
                     statusRow(icon: statusIcon, storedKey: storedKey)
@@ -210,10 +216,10 @@ struct UserAPIKeysView: View {
         let hasKey = !(storedKey?.isEmpty ?? true)
         HStack(spacing: 8) {
             Image(systemName: hasKey ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundColor(hasKey ? .green : .orange)
+                .foregroundColor(hasKey ? Theme.secondaryAccent : Theme.accent)
             Text(hasKey ? "Key saved in keychain" : "No key saved yet")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(Theme.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

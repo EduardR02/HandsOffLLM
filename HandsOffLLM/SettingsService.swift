@@ -153,21 +153,21 @@ class SettingsService: ObservableObject { // Make ObservableObject
 
     let availableKokoroVoices: [VoiceInfo] = [
         // Grade A voices (highest quality)
-        VoiceInfo(id: "af_bella", displayName: "Bella · EN-US"),
+        VoiceInfo(id: "af_bella", displayName: "Bella"),
         // Grade B voices (high quality)
-        VoiceInfo(id: "af_nicole", displayName: "Nicole · EN-US"),
-        VoiceInfo(id: "bf_emma", displayName: "Emma · EN-GB"),
-        VoiceInfo(id: "ff_siwis", displayName: "Siwis · FR"),
+        VoiceInfo(id: "af_nicole", displayName: "Nicole"),
+        VoiceInfo(id: "bf_emma", displayName: "Emma"),
+        VoiceInfo(id: "ff_siwis", displayName: "Siwis"),
         // Grade C+ voices (good quality)
-        VoiceInfo(id: "af_aoede", displayName: "Aoede · EN-US"),
-        VoiceInfo(id: "af_kore", displayName: "Kore · EN-US"),
-        VoiceInfo(id: "af_sarah", displayName: "Sarah · EN-US"),
-        VoiceInfo(id: "am_fenrir", displayName: "Fenrir · EN-US"),
-        VoiceInfo(id: "am_michael", displayName: "Michael · EN-US"),
-        VoiceInfo(id: "am_puck", displayName: "Puck · EN-US"),
-        VoiceInfo(id: "bm_george", displayName: "George · EN-GB"),
-        VoiceInfo(id: "bm_fable", displayName: "Fable · EN-GB"),
-        VoiceInfo(id: "jf_alpha", displayName: "Alpha · JA"),
+        VoiceInfo(id: "af_aoede", displayName: "Aoede"),
+        VoiceInfo(id: "af_kore", displayName: "Kore"),
+        VoiceInfo(id: "af_sarah", displayName: "Sarah"),
+        VoiceInfo(id: "am_fenrir", displayName: "Fenrir"),
+        VoiceInfo(id: "am_michael", displayName: "Michael"),
+        VoiceInfo(id: "am_puck", displayName: "Puck"),
+        VoiceInfo(id: "bm_george", displayName: "George"),
+        VoiceInfo(id: "bm_fable", displayName: "Fable"),
+        VoiceInfo(id: "jf_alpha", displayName: "Alpha"),
     ]
 
     var openAITTSVoice: String {    // Dynamic: picks saved setting or falls back to default
@@ -289,8 +289,8 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.openAIReasoningEffort
     }
 
-    var claudeReasoningEnabled: Bool {
-        settings.claudeReasoningEnabled ?? false
+    var reasoningEnabled: Bool {
+        settings.reasoningEnabled ?? false
     }
 
     // Energy Saver Mode
@@ -433,8 +433,8 @@ class SettingsService: ObservableObject { // Make ObservableObject
         saveSettings()
     }
     
-    func updateClaudeReasoningEnabled(_ enabled: Bool) {
-        settings.claudeReasoningEnabled = enabled
+    func updateReasoningEnabled(_ enabled: Bool) {
+        settings.reasoningEnabled = enabled
         saveSettings()
     }
     
@@ -621,8 +621,8 @@ class SettingsService: ObservableObject { // Make ObservableObject
             logger.info("Setting default OpenAI reasoning effort: medium")
             changed = true
         }
-        if settings.claudeReasoningEnabled == nil {
-            settings.claudeReasoningEnabled = false
+        if settings.reasoningEnabled == nil {
+            settings.reasoningEnabled = false
             changed = true
         }
         if settings.vadSilenceThreshold == nil {
