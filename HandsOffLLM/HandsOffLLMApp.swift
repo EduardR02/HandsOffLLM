@@ -55,10 +55,11 @@ struct HandsOffLLMApp: App {
         _viewModel = StateObject(wrappedValue: localViewModel)
 
         // Set up cleanup callback for auth failure
-        localAuthService.onAuthenticationFailed = {
+        localAuthService.onAuthenticationFailed = { [weak localAudioService] in
             Task { @MainActor in
-                localAudioService.stopListeningCleanup()
-                logger.info("Cleaned up services after auth failure")
+                localAudioService?.stopListeningCleanup()
+                Logger(subsystem: Bundle.main.bundleIdentifier!, category: "App")
+                    .info("Cleaned up services after auth failure")
             }
         }
 
