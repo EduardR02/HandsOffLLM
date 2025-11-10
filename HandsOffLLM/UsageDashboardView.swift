@@ -9,112 +9,161 @@ struct UsageDashboardView: View {
     @State private var providerBreakdown: [ProviderUsage] = []
 
     var body: some View {
-        List {
+        ZStack {
+            Theme.background.edgesIgnoringSafeArea(.all)
+
             if isLoading {
-                Section {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                }
-                .listRowBackground(Color.clear)
+                ProgressView()
             } else if let error = errorMessage {
-                Section {
-                    Text(error)
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
                         .foregroundColor(Theme.accent)
-                        .font(.caption)
+                    Text(error)
+                        .foregroundColor(Theme.secondaryText)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
                 }
-                .listRowBackground(Color.clear)
+                .padding()
             } else {
-                // MARK: - Usage Summary
-                Section {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Text("This Month")
-                                .font(.headline)
-                            Spacer()
-                            Text("$\(monthlyUsage, specifier: "%.2f") / $\(monthlyLimit, specifier: "%.2f")")
-                                .font(.headline)
-                                .foregroundColor(usageColor)
-                        }
-
-                        ProgressView(value: min(monthlyUsage, monthlyLimit), total: monthlyLimit)
-                            .tint(usageColor)
-
-                        if monthlyUsage > monthlyLimit * 0.8 {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        // MARK: - Usage Summary Card
+                        VStack(spacing: 16) {
+                            // Header
                             HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(Theme.accent)
-                                Text("You're approaching your monthly limit")
-                                    .font(.caption)
-                                    .foregroundColor(Theme.accent)
-                            }
-                        }
-
-                        if monthlyUsage >= monthlyLimit {
-                            HStack {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(Theme.accent)
-                                Text("Monthly limit exceeded - requests will be blocked")
-                                    .font(.caption)
-                                    .foregroundColor(Theme.accent)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 8)
-                } header: {
-                    Text("Usage Summary")
-                }
-                .listRowBackground(Theme.menuAccent)
-
-                // MARK: - Provider Breakdown
-                if !providerBreakdown.isEmpty {
-                    Section {
-                        ForEach(providerBreakdown) { usage in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(usage.provider.capitalized)
-                                        .font(.subheadline)
-                                        .fontWeight(.medium)
-                                    Text("\(usage.requestCount) requests")
-                                        .font(.caption)
-                                        .foregroundColor(Theme.secondaryText)
-                                }
+                                Image(systemName: "chart.bar.fill")
+                                    .font(.title2)
+                                    .foregroundColor(Theme.secondaryAccent)
+                                Text("This Month")
+                                    .font(.headline)
+                                    .foregroundColor(Theme.primaryText)
                                 Spacer()
-                                Text("$\(usage.totalCost, specifier: "%.4f")")
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
+                            }
+
+                            // Usage Amount
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                Text("$\(monthlyUsage, specifier: "%.2f")")
+                                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                                    .foregroundColor(usageColor)
+                                Text("/ $\(monthlyLimit, specifier: "%.2f")")
+                                    .font(.title3)
+                                    .foregroundColor(Theme.secondaryText.opacity(0.7))
+                                Spacer()
+                            }
+
+                            // Progress Bar
+                            GeometryReader { geometry in
+                                ZStack(alignment: .leading) {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Theme.overlayMask.opacity(0.3))
+                                        .frame(height: 8)
+
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(usageColor)
+                                        .frame(width: geometry.size.width * CGFloat(min(monthlyUsage / monthlyLimit, 1.0)), height: 8)
+                                }
+                            }
+                            .frame(height: 8)
+
+                            // Warning Messages
+                            if monthlyUsage >= monthlyLimit {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(Theme.accent)
+                                    Text("Limit exceeded")
+                                        .font(.subheadline)
+                                        .foregroundColor(Theme.accent)
+                                    Spacer()
+                                }
+                            } else if monthlyUsage > monthlyLimit * 0.8 {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(Theme.accent)
+                                    Text("Approaching limit")
+                                        .font(.subheadline)
+                                        .foregroundColor(Theme.accent)
+                                    Spacer()
+                                }
                             }
                         }
-                    } header: {
-                        Text("By Provider")
-                    }
-                    .listRowBackground(Theme.menuAccent)
-                }
+                        .padding(20)
+                        .background(Theme.menuAccent)
+                        .cornerRadius(16)
 
-                // MARK: - Refresh Button
-                Section {
-                    Button {
-                        Task {
-                            await fetchUsage()
+                        // MARK: - Provider Breakdown
+                        if !providerBreakdown.isEmpty {
+                            VStack(spacing: 12) {
+                                HStack {
+                                    Image(systemName: "square.stack.3d.up.fill")
+                                        .font(.title2)
+                                        .foregroundColor(Theme.secondaryAccent)
+                                    Text("Providers")
+                                        .font(.headline)
+                                        .foregroundColor(Theme.primaryText)
+                                    Spacer()
+                                }
+
+                                VStack(spacing: 0) {
+                                    ForEach(Array(providerBreakdown.enumerated()), id: \.element.id) { index, usage in
+                                        VStack(spacing: 0) {
+                                            if index > 0 {
+                                                Divider()
+                                                    .background(Theme.overlayMask.opacity(0.3))
+                                            }
+
+                                            HStack(spacing: 12) {
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text(usage.provider.capitalized)
+                                                        .font(.body)
+                                                        .fontWeight(.medium)
+                                                        .foregroundColor(Theme.primaryText)
+                                                    Text("\(usage.requestCount) requests")
+                                                        .font(.caption)
+                                                        .foregroundColor(Theme.secondaryText.opacity(0.7))
+                                                }
+                                                Spacer()
+                                                Text("$\(usage.totalCost, specifier: "%.4f")")
+                                                    .font(.system(.body, design: .rounded))
+                                                    .fontWeight(.semibold)
+                                                    .foregroundColor(Theme.secondaryAccent)
+                                            }
+                                            .padding(.vertical, 12)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(20)
+                            .background(Theme.menuAccent)
+                            .cornerRadius(16)
                         }
-                    } label: {
-                        HStack {
-                            Image(systemName: "arrow.clockwise")
-                            Text("Refresh Usage")
+
+                        // MARK: - Refresh Button
+                        Button {
+                            Task {
+                                await fetchUsage()
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.clockwise")
+                                Text("Refresh")
+                            }
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(Theme.secondaryAccent)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Theme.menuAccent)
+                            .cornerRadius(12)
                         }
-                        .frame(maxWidth: .infinity)
+                        .disabled(isLoading)
                     }
-                    .disabled(isLoading)
+                    .padding(16)
                 }
-                .listRowBackground(Theme.menuAccent)
             }
         }
         .navigationTitle("Usage")
         .navigationBarTitleDisplayMode(.inline)
-        .scrollContentBackground(.hidden)
-        .background(Theme.background.edgesIgnoringSafeArea(.all))
         .onAppear {
             Task {
                 await fetchUsage()

@@ -14,20 +14,23 @@ struct ReasoningSettingsView: View {
                         get: { settingsService.reasoningEnabled },
                         set: { settingsService.updateReasoningEnabled($0) }
                     )) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Extended Reasoning")
-                                .foregroundColor(Theme.primaryText)
-                            Text("Let the AI think before replying. Applies to Claude, Grok, and Gemini.")
-                                .font(.caption)
-                                .foregroundColor(Theme.secondaryText)
+                        HStack(spacing: 12) {
+                            Image(systemName: "brain")
+                                .font(.title2)
+                                .foregroundColor(Theme.secondaryAccent)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Extended Reasoning")
+                                    .foregroundColor(Theme.primaryText)
+                                Text("Claude · Grok · Gemini")
+                                    .font(.caption2)
+                                    .foregroundColor(Theme.secondaryText.opacity(0.7))
+                            }
                         }
                     }
                     .tint(Theme.secondaryAccent)
-                } footer: {
-                    Text("When enabled, models take extra time to reason through complex questions before responding.")
-                        .foregroundColor(Theme.secondaryText)
+                    .listRowBackground(Theme.menuAccent)
                 }
-                .listRowBackground(Theme.menuAccent)
 
                 // MARK: - OpenAI Reasoning Effort
                 Section {
@@ -40,21 +43,24 @@ struct ReasoningSettingsView: View {
                                 .foregroundColor(Theme.primaryText)
                         }
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("GPT-5 Reasoning Effort")
-                                .foregroundColor(Theme.primaryText)
-                            Text("Control how deeply GPT-5 thinks before answering.")
-                                .font(.caption)
-                                .foregroundColor(Theme.secondaryText)
+                        HStack(spacing: 12) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.title2)
+                                .foregroundColor(Theme.secondaryAccent)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("GPT-5 Reasoning Effort")
+                                    .foregroundColor(Theme.primaryText)
+                                Text("Low · Medium · High")
+                                    .font(.caption2)
+                                    .foregroundColor(Theme.secondaryText.opacity(0.7))
+                            }
                         }
                     }
                     .tint(Theme.secondaryAccent)
                     .id("reasoningEffortPicker-\(darkerModeObserver)")
-                } footer: {
-                    Text("GPT-5 uses reasoning effort levels instead of a simple toggle. Higher effort means more thorough thinking but slower responses.")
-                        .foregroundColor(Theme.secondaryText)
+                    .listRowBackground(Theme.menuAccent)
                 }
-                .listRowBackground(Theme.menuAccent)
             }
             .scrollContentBackground(.hidden)
         }

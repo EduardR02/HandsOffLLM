@@ -68,19 +68,22 @@ struct SettingsView: View {
             NavigationLink {
                 ProfileFormView(isInitial: false)
             } label: {
-                HStack {
+                HStack(spacing: 12) {
+                    Image(systemName: "person.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
                     Text("User Profile")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
                     if !settingsService.settings.userProfileEnabled {
                         Text("Disabled")
-                            .foregroundColor(Theme.secondaryText)
+                            .foregroundColor(Theme.secondaryText.opacity(0.6))
+                            .font(.subheadline)
                     } else if let name = settingsService.settings.userDisplayName, !name.isEmpty {
-                        Text("Hello, \(name)")
+                        Text(name)
                             .foregroundColor(Theme.secondaryAccent)
-                    } else {
-                        Text("Set up…")
-                            .foregroundColor(Theme.secondaryText)
+                            .font(.subheadline)
                     }
                 }
             }
@@ -90,21 +93,32 @@ struct SettingsView: View {
     }
 
     private var appDefaultsSection: some View {
-        Section("App Defaults") {
-            Picker("LLM Provider", selection: Binding(
-                get: { settingsService.settings.selectedDefaultProvider ?? .claude },
-                set: { settingsService.updateDefaultProvider(provider: $0) }
-            )) {
-                ForEach(LLMProvider.userFacing) { provider in
-                    Text(provider.rawValue).tag(provider)
-                        .foregroundColor(Theme.primaryText)
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.title2)
+                    .foregroundColor(Theme.secondaryAccent)
+                    .frame(width: 32)
+                Picker("Provider", selection: Binding(
+                    get: { settingsService.settings.selectedDefaultProvider ?? .claude },
+                    set: { settingsService.updateDefaultProvider(provider: $0) }
+                )) {
+                    ForEach(LLMProvider.userFacing) { provider in
+                        Text(provider.rawValue).tag(provider)
+                            .foregroundColor(Theme.primaryText)
+                    }
                 }
+                .tint(Theme.secondaryAccent)
+                .id("llmProviderPicker-\(darkerModeObserver)")
             }
-            .tint(Theme.secondaryAccent)
-            .id("llmProviderPicker-\(darkerModeObserver)")
             .listRowBackground(Theme.menuAccent)
 
-            HStack {
+            HStack(spacing: 12) {
+                Image(systemName: "gauge.with.dots.needle.50percent")
+                    .font(.title2)
+                    .foregroundColor(Theme.secondaryAccent)
+                    .frame(width: 32)
+
                 Text("Speed")
                     .foregroundColor(Theme.primaryText)
 
@@ -130,16 +144,22 @@ struct SettingsView: View {
                     .foregroundColor(Theme.secondaryAccent)
             }
             .listRowBackground(Theme.menuAccent)
+        } header: {
+            Text("Defaults")
         }
     }
 
     private var modelSelectionSection: some View {
-        Section("LLM Models") {
+        Section {
             ForEach(LLMProvider.userFacing) { provider in
                 NavigationLink {
                     ModelSelectionView(provider: provider)
                 } label: {
-                    HStack {
+                    HStack(spacing: 12) {
+                        Image(systemName: "cpu")
+                            .font(.title2)
+                            .foregroundColor(Theme.secondaryAccent)
+                            .frame(width: 32)
                         Text(provider.rawValue)
                             .foregroundColor(Theme.primaryText)
                         Spacer()
@@ -147,30 +167,35 @@ struct SettingsView: View {
                            let selModel = settingsService.availableModels.first(where: { $0.id == selectedId }) {
                             Text(selModel.name)
                               .foregroundColor(Theme.secondaryAccent)
-                        } else {
-                            Text("Select Model")
-                                .foregroundColor(Theme.secondaryText)
+                              .font(.subheadline)
                         }
                     }
                 }
                 .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 .listRowBackground(Theme.menuAccent)
             }
+        } header: {
+            Text("Models")
         }
     }
 
     private var reasoningSection: some View {
-        Section("Reasoning") {
+        Section {
             NavigationLink {
                 ReasoningSettingsView()
             } label: {
-                HStack {
-                    Text("Extended Reasoning")
+                HStack(spacing: 12) {
+                    Image(systemName: "brain")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    Text("Reasoning")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
                     if settingsService.reasoningEnabled {
-                        Text("Enabled")
+                        Text("On")
                             .foregroundColor(Theme.secondaryAccent)
+                            .font(.subheadline)
                     }
                 }
             }
@@ -184,115 +209,140 @@ struct SettingsView: View {
             NavigationLink {
                 SystemPromptSelectionView()
             } label: {
-                HStack {
-                    Text("LLM System Prompt")
+                HStack(spacing: 12) {
+                    Image(systemName: "text.bubble")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    Text("System Prompt")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
-                    Text(
-                        settingsService
-                            .availableSystemPrompts
-                            .first { $0.id == settingsService.settings.selectedSystemPromptPresetId }?
-                            .name
-                        ?? "Select…"
-                    )
-                    .foregroundColor(Theme.secondaryAccent)
+                    if settingsService.settings.advancedSystemPromptEnabled {
+                        Text("Custom")
+                            .foregroundColor(Theme.accent)
+                            .font(.caption)
+                    } else {
+                        Text(
+                            settingsService
+                                .availableSystemPrompts
+                                .first { $0.id == settingsService.settings.selectedSystemPromptPresetId }?
+                                .name
+                            ?? "None"
+                        )
+                        .foregroundColor(Theme.secondaryAccent)
+                        .font(.subheadline)
+                    }
                 }
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
-
-            if settingsService.settings.advancedSystemPromptEnabled {
-                Text("using custom")
-                    .font(.caption2)
-                    .foregroundColor(Theme.secondaryAccent)
-                    .listRowBackground(Theme.menuAccent)
-            }
 
             // TTS instructions only supported by OpenAI, not Kokoro
             if settingsService.selectedTTSProvider != .kokoro {
                 NavigationLink {
                     TTSInstructionSelectionView()
                 } label: {
-                    HStack {
-                        Text("Speech Instructions")
+                    HStack(spacing: 12) {
+                        Image(systemName: "waveform.circle")
+                            .font(.title2)
+                            .foregroundColor(Theme.secondaryAccent)
+                            .frame(width: 32)
+                        Text("Speech Style")
                             .foregroundColor(Theme.primaryText)
                         Spacer()
-                        Text(
-                            settingsService
-                                .availableTTSInstructions
-                                .first { $0.id == settingsService.settings.selectedTTSInstructionPresetId }?
-                                .name
-                            ?? "Select…"
-                        )
-                        .foregroundColor(Theme.secondaryAccent)
+                        if settingsService.settings.advancedTTSInstructionEnabled {
+                            Text("Custom")
+                                .foregroundColor(Theme.accent)
+                                .font(.caption)
+                        } else {
+                            Text(
+                                settingsService
+                                    .availableTTSInstructions
+                                    .first { $0.id == settingsService.settings.selectedTTSInstructionPresetId }?
+                                    .name
+                                ?? "None"
+                            )
+                            .foregroundColor(Theme.secondaryAccent)
+                            .font(.subheadline)
+                        }
                     }
                 }
                 .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
                 .listRowBackground(Theme.menuAccent)
-
-                if settingsService.settings.advancedTTSInstructionEnabled {
-                    Text("using custom")
-                        .font(.caption2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .listRowBackground(Theme.menuAccent)
-                }
             }
 
-            Picker("TTS Provider", selection: Binding(
-                get: { settingsService.selectedTTSProvider },
-                set: { settingsService.updateSelectedTTSProvider($0) }
-            )) {
-                ForEach(TTSProvider.allCases) { provider in
-                    Text(provider.displayName).tag(provider)
-                        .foregroundColor(Theme.primaryText)
+            HStack(spacing: 12) {
+                Image(systemName: "speaker.wave.2")
+                    .font(.title2)
+                    .foregroundColor(Theme.secondaryAccent)
+                    .frame(width: 32)
+                Picker("TTS", selection: Binding(
+                    get: { settingsService.selectedTTSProvider },
+                    set: { settingsService.updateSelectedTTSProvider($0) }
+                )) {
+                    ForEach(TTSProvider.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                            .foregroundColor(Theme.primaryText)
+                    }
                 }
+                .tint(Theme.secondaryAccent)
+                .id("ttsProviderPicker-\(darkerModeObserver)")
             }
-            .tint(Theme.secondaryAccent)
-            .id("ttsProviderPicker-\(darkerModeObserver)")
             .listRowBackground(Theme.menuAccent)
 
             // Show voice picker for both providers
             if settingsService.selectedTTSProvider == .openai {
-                Picker("Voice", selection: Binding(
-                    get: { settingsService.openAITTSVoice },
-                    set: { settingsService.updateSelectedTTSVoice(voice: $0) }
-                )) {
-                    ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
-                        Text(voice.capitalized).tag(voice)
-                            .foregroundColor(Theme.primaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "person.wave.2")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    Picker("Voice", selection: Binding(
+                        get: { settingsService.openAITTSVoice },
+                        set: { settingsService.updateSelectedTTSVoice(voice: $0) }
+                    )) {
+                        ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
+                            Text(voice.capitalized).tag(voice)
+                                .foregroundColor(Theme.primaryText)
+                        }
                     }
+                    .tint(Theme.secondaryAccent)
+                    .id("voicePicker-\(darkerModeObserver)")
                 }
-                .tint(Theme.secondaryAccent)
-                .id("voicePicker-\(darkerModeObserver)")
                 .listRowBackground(Theme.menuAccent)
             } else if settingsService.selectedTTSProvider == .kokoro {
-                Picker("Voice", selection: Binding(
-                    get: { settingsService.kokoroTTSVoice },
-                    set: { settingsService.updateSelectedKokoroVoice(voice: $0) }
-                )) {
-                    ForEach(settingsService.availableKokoroVoices) { voice in
-                        Text(voice.displayName).tag(voice.id)
-                            .foregroundColor(Theme.primaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "person.wave.2")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    Picker("Voice", selection: Binding(
+                        get: { settingsService.kokoroTTSVoice },
+                        set: { settingsService.updateSelectedKokoroVoice(voice: $0) }
+                    )) {
+                        ForEach(settingsService.availableKokoroVoices) { voice in
+                            Text(voice.displayName).tag(voice.id)
+                                .foregroundColor(Theme.primaryText)
+                        }
                     }
+                    .tint(Theme.secondaryAccent)
+                    .id("kokoroVoicePicker-\(darkerModeObserver)")
                 }
-                .tint(Theme.secondaryAccent)
-                .id("kokoroVoicePicker-\(darkerModeObserver)")
                 .listRowBackground(Theme.menuAccent)
             }
         } header: {
-            Text("Customize Chat Experience")
-        } footer: {
-            if settingsService.selectedTTSProvider == .kokoro {
-                Text("Kokoro is ~10x cheaper than OpenAI. Similar quality if language stays the same.")
-                    .foregroundColor(Theme.secondaryText)
-            }
+            Text("Chat Experience")
         }
     }
 
     private var voiceDetectionSection: some View {
-        Section("Voice Detection") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
+        Section {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    Image(systemName: "waveform")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
                     Text("Silence Duration")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
@@ -317,27 +367,32 @@ struct SettingsView: View {
                     }
                 )
                 .tint(Theme.accent)
-
-                Text("How long to wait after you finish speaking before answering")
-                    .font(.caption)
-                    .foregroundColor(Theme.secondaryText)
+                .padding(.leading, 44)
             }
             .listRowBackground(Theme.menuAccent)
+        } header: {
+            Text("Voice Input")
         }
     }
 
     private var featuresSection: some View {
-        Section("Features & Preferences") {
+        Section {
             Toggle(isOn: Binding(
                 get: { settingsService.webSearchEnabled },
                 set: { settingsService.updateAdvancedSetting(keyPath: \.webSearchEnabled, value: $0) }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Web Search (Experimental)")
-                        .foregroundColor(Theme.primaryText)
-                    Text("GPT-4.1 and Grok 4 models")
-                        .font(.caption)
-                        .foregroundColor(Theme.secondaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Web Search")
+                            .foregroundColor(Theme.primaryText)
+                        Text("GPT · Grok")
+                            .font(.caption2)
+                            .foregroundColor(Theme.secondaryText.opacity(0.7))
+                    }
                 }
             }
             .tint(Theme.secondaryAccent)
@@ -347,12 +402,18 @@ struct SettingsView: View {
                 get: { settingsService.energySaverEnabled },
                 set: { settingsService.updateEnergySaverEnabled($0) }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Energy Saver Mode")
-                         .foregroundColor(Theme.primaryText)
-                    Text("Circle won't move - reduces energy usage by ~30%")
-                        .font(.caption)
-                        .foregroundColor(Theme.secondaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "leaf")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Energy Saver")
+                            .foregroundColor(Theme.primaryText)
+                        Text("Reduce battery usage")
+                            .font(.caption2)
+                            .foregroundColor(Theme.secondaryText.opacity(0.7))
+                    }
                 }
             }
             .tint(Theme.secondaryAccent)
@@ -362,21 +423,29 @@ struct SettingsView: View {
                 get: { settingsService.darkerMode },
                 set: { settingsService.updateDarkerMode($0) }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Darker Mode")
-                        .foregroundColor(Theme.primaryText)
-                    Text("Rose Pine theme with deeper background")
-                        .font(.caption)
-                        .foregroundColor(Theme.secondaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "moon.fill")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Darker Mode")
+                            .foregroundColor(Theme.primaryText)
+                        Text("Deeper background")
+                            .font(.caption2)
+                            .foregroundColor(Theme.secondaryText.opacity(0.7))
+                    }
                 }
             }
             .tint(Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
+        } header: {
+            Text("Preferences")
         }
     }
 
     private var audioStorageSection: some View {
-        Section("Audio Storage") {
+        Section {
             Toggle(isOn: Binding(
                 get: { audioAutoDeleteEnabled },
                 set: { newValue in
@@ -385,14 +454,18 @@ struct SettingsView: View {
                     historyService.updateAudioRetentionDays(retention)
                 }
             )) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Delete recordings after 7 days")
-                        .foregroundColor(Theme.primaryText)
-                    Text(audioAutoDeleteEnabled
-                         ? "Keeps only the latest week of audio clips to free space. Chat transcripts stay intact."
-                         : "Keeps all audio clips on this device until you delete them. Chat transcripts stay intact.")
-                        .font(.caption)
-                        .foregroundColor(Theme.secondaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Delete Audio")
+                            .foregroundColor(Theme.primaryText)
+                        Text(audioAutoDeleteEnabled ? "After 7 days" : "Never")
+                            .font(.caption2)
+                            .foregroundColor(Theme.secondaryText.opacity(0.7))
+                    }
                 }
             }
             .tint(Theme.secondaryAccent)
@@ -401,9 +474,14 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 showingAudioPurgeConfirmation = true
             } label: {
-                Label("Delete Saved Audio", systemImage: "trash")
+                HStack(spacing: 12) {
+                    Image(systemName: "trash")
+                        .font(.title2)
+                        .frame(width: 32)
+                    Text("Delete All Audio")
+                }
             }
-            .foregroundColor(.red)
+            .foregroundColor(Theme.accent)
             .confirmationDialog(
                 "Delete all saved audio clips?",
                 isPresented: $showingAudioPurgeConfirmation,
@@ -414,9 +492,11 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("Audio clips live entirely on this device. Removing them frees storage—your chat transcripts stay intact.")
+                Text("Audio clips are stored on this device. Transcripts stay intact.")
             }
             .listRowBackground(Theme.menuAccent)
+        } header: {
+            Text("Storage")
         }
     }
 
@@ -425,9 +505,13 @@ struct SettingsView: View {
             NavigationLink {
                 UserAPIKeysView()
             } label: {
-                HStack {
+                HStack(spacing: 12) {
                     Image(systemName: "key.fill")
-                    Text("Use Your Own API Keys")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    Text("API Keys")
+                        .foregroundColor(Theme.primaryText)
                     Spacer()
                     if settingsService.useOwnOpenAIKey || settingsService.useOwnAnthropicKey ||
                        settingsService.useOwnGeminiKey || settingsService.useOwnXAIKey ||
@@ -439,19 +523,22 @@ struct SettingsView: View {
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
-        } header: {
-            Text("API Keys")
-        } footer: {
-            Text("Use your own API keys and get billed directly by each provider. Keys are encrypted and stored only on your device.")
         }
     }
 
     private var advancedSection: some View {
-        Section("Advanced Settings") {
+        Section {
             NavigationLink {
                 AdvancedSettingsView()
             } label: {
-                Text("Advanced Settings")
+                HStack(spacing: 12) {
+                    Image(systemName: "gearshape.2")
+                        .font(.title2)
+                        .foregroundColor(Theme.secondaryAccent)
+                        .frame(width: 32)
+                    Text("Advanced")
+                        .foregroundColor(Theme.primaryText)
+                }
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
@@ -469,18 +556,15 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                HStack {
+                HStack(spacing: 12) {
                     Image(systemName: "arrow.right.square")
+                        .font(.title2)
+                        .frame(width: 32)
                     Text("Sign Out")
                     Spacer()
                 }
             }
             .listRowBackground(Theme.menuAccent)
-        } footer: {
-            if let user = AuthService.shared.currentUser {
-                Text("Signed in as \(user.email ?? "Unknown")")
-                    .font(.caption)
-            }
         }
     }
 }
