@@ -54,6 +54,14 @@ struct HandsOffLLMApp: App {
         _chatService = StateObject(wrappedValue: localChatService)
         _viewModel = StateObject(wrappedValue: localViewModel)
 
+        // Set up cleanup callback for auth failure
+        localAuthService.onAuthenticationFailed = {
+            Task { @MainActor in
+                localAudioService.stopListeningCleanup()
+                logger.info("Cleaned up services after auth failure")
+            }
+        }
+
         // Set global UI appearance
         UIBarButtonItem.appearance().tintColor = UIColor(Theme.accent)
 
@@ -64,9 +72,6 @@ struct HandsOffLLMApp: App {
         WindowGroup {
             NavigationStack {
                 switch authService.authState {
-                case .checking:
-                    // Show splash screen while checking auth status
-                    SplashView()
                 case .unauthenticated:
                     // Auth gate - must sign in first
                     AuthView()

@@ -5,7 +5,6 @@ import AuthenticationServices
 import GoogleSignIn
 
 enum AuthState {
-    case checking
     case authenticated
     case unauthenticated
 }
@@ -16,7 +15,8 @@ class AuthService: ObservableObject {
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "AuthService")
 
-    @Published var authState: AuthState = .checking
+    // Optimistic: assume authenticated, only switch to unauthenticated if check fails
+    @Published var authState: AuthState = .authenticated
     @Published var currentUser: User?
     @Published var session: Session?
 
@@ -24,6 +24,9 @@ class AuthService: ObservableObject {
     var isAuthenticated: Bool {
         authState == .authenticated
     }
+
+    // Cleanup callback for when auth fails after app has started
+    var onAuthenticationFailed: (() -> Void)?
 
     let supabase: SupabaseClient
 
@@ -64,6 +67,9 @@ class AuthService: ObservableObject {
             self.authState = .unauthenticated
             self.currentUser = nil
             self.session = nil
+
+            // Trigger cleanup if app has already started
+            onAuthenticationFailed?()
         }
     }
 
