@@ -28,6 +28,12 @@ class AuthService: ObservableObject {
     // Cleanup callback for when auth fails after app has started
     var onAuthenticationFailed: (() -> Void)?
 
+    // Track initial session check to prevent race conditions
+    private var initialSessionCheck: Task<Void, Never>?
+
+    // Track in-flight token refresh to prevent duplicate requests
+    private var refreshTask: Task<Void, Error>?
+
     let supabase: SupabaseClient
 
     private init() {
@@ -49,8 +55,8 @@ class AuthService: ObservableObject {
 
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: googleClientID)
 
-        // Check for existing session
-        Task {
+        // Check for existing session and track it
+        initialSessionCheck = Task {
             await checkSession()
         }
     }
@@ -60,11 +66,21 @@ class AuthService: ObservableObject {
             let session = try await supabase.auth.session
             self.session = session
             self.currentUser = session.user
-            self.authState = .authenticated
+
+            // Only update state if it changed (prevents unnecessary view updates)
+            if authState != .authenticated {
+                self.authState = .authenticated
+            }
+
             logger.info("Existing session found for user: \(session.user.id)")
         } catch {
             logger.info("No existing session found")
-            self.authState = .unauthenticated
+
+            // Only update state if it changed
+            if authState != .unauthenticated {
+                self.authState = .unauthenticated
+            }
+
             self.currentUser = nil
             self.session = nil
 
@@ -104,7 +120,14 @@ class AuthService: ObservableObject {
                                 )
                             )
 
-                            await self.checkSession()
+                            // Extract session directly (already validated by signInWithIdToken)
+                            let session = try await self.supabase.auth.session
+                            self.session = session
+                            self.currentUser = session.user
+                            if self.authState != .authenticated {
+                                self.authState = .authenticated
+                            }
+
                             continuation.resume()
                         } catch {
                             continuation.resume(throwing: error)
@@ -142,7 +165,14 @@ class AuthService: ObservableObject {
             )
         )
 
-        await checkSession()
+        // Extract session directly (already validated by signInWithIdToken)
+        let session = try await supabase.auth.session
+        self.session = session
+        self.currentUser = session.user
+        if authState != .authenticated {
+            self.authState = .authenticated
+        }
+
         logger.info("Google Sign-In completed successfully")
     }
 
@@ -155,6 +185,9 @@ class AuthService: ObservableObject {
     }
 
     func getCurrentJWT() async throws -> String {
+        // Wait for initial session check to complete (prevents race condition on cold start)
+        await initialSessionCheck?.value
+
         guard let session = session else {
             throw NSError(domain: "AuthService", code: -1, userInfo: [
                 NSLocalizedDescriptionKey: "No active session"
@@ -173,7 +206,15 @@ class AuthService: ObservableObject {
                 return self.session?.accessToken ?? session.accessToken
             } catch {
                 logger.error("Failed to refresh session: \(error.localizedDescription)")
-                // Return old token and let the request fail, which will prompt re-auth
+
+                // Refresh failed - likely both tokens expired, redirect to login
+                if authState != .unauthenticated {
+                    self.authState = .unauthenticated
+                    self.currentUser = nil
+                    self.session = nil
+                    onAuthenticationFailed?()
+                }
+
                 throw error
             }
         }
@@ -182,12 +223,35 @@ class AuthService: ObservableObject {
     }
 
     func refreshSession() async throws {
-        logger.info("Refreshing session")
-        let newSession = try await supabase.auth.refreshSession()
-        self.session = newSession
-        self.currentUser = newSession.user
-        self.authState = .authenticated
-        logger.info("Session refreshed successfully")
+        // If refresh is already in progress, wait for it instead of starting a new one
+        if let existingRefresh = refreshTask {
+            logger.info("Refresh already in progress, waiting for it to complete")
+            try await existingRefresh.value
+            return
+        }
+
+        // Start new refresh task
+        let task = Task<Void, Error> {
+            logger.info("Refreshing session")
+            let newSession = try await supabase.auth.refreshSession()
+            self.session = newSession
+            self.currentUser = newSession.user
+            if self.authState != .authenticated {
+                self.authState = .authenticated
+            }
+            logger.info("Session refreshed successfully")
+        }
+
+        refreshTask = task
+
+        do {
+            try await task.value
+        } catch {
+            throw error
+        }
+
+        // Clear task after completion
+        refreshTask = nil
     }
 }
 
