@@ -27,7 +27,8 @@ class ChatViewModel: ObservableObject {
         }
     }
     @Published var lastError: String? = nil
-    
+    @Published var isViewVisible: Bool = false
+
     private let audioService: AudioService
     private let chatService: ChatService
     private let settingsService: SettingsService
@@ -216,6 +217,7 @@ class ChatViewModel: ObservableObject {
     }
     
     func startListening(useCooldown: Bool = false) {
+        guard isViewVisible else { return }
         lastError = nil
         audioService.startListening(useCooldown: useCooldown)
     }

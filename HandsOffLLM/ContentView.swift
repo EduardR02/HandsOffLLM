@@ -103,7 +103,6 @@ struct ContentView: View {
     @State private var isMenuOpen = false
     @State private var isEditingSlider: Bool = false
     @State private var showInitialSliderValueHelpText: Bool = false
-    @State private var isVisible = false
     private let menuWidth: CGFloat = 300
     @State private var selectedQuickPromptId: String = "current"
     
@@ -300,7 +299,7 @@ struct ContentView: View {
         }
         .onAppear {
             logger.info("ContentView appeared, start listening.")
-            isVisible = true
+            viewModel.isViewVisible = true
             isMenuOpen = false
             viewModel.startListening()
 
@@ -313,14 +312,14 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
-            if newPhase == .active && isVisible {
+            if newPhase == .active {
                 logger.info("ContentView foregrounded, restart listening.")
                 viewModel.startListening()
             }
         }
         .onDisappear {
             logger.info("ContentView disappeared, cleanup.")
-            isVisible = false
+            viewModel.isViewVisible = false
             viewModel.cancelProcessingAndSpeaking()
         }
     }
