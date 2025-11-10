@@ -58,6 +58,9 @@ class AuthService: ObservableObject {
         // Check for existing session and track it
         initialSessionCheck = Task {
             await checkSession()
+            await MainActor.run {
+                self.initialSessionCheck = nil
+            }
         }
     }
 
@@ -120,6 +123,10 @@ class AuthService: ObservableObject {
                                 )
                             )
 
+                            // Cancel initial check to prevent race
+                            self.initialSessionCheck?.cancel()
+                            self.initialSessionCheck = nil
+
                             // Extract session directly (already validated by signInWithIdToken)
                             let session = try await self.supabase.auth.session
                             self.session = session
@@ -165,6 +172,10 @@ class AuthService: ObservableObject {
             )
         )
 
+        // Cancel initial check to prevent race
+        initialSessionCheck?.cancel()
+        initialSessionCheck = nil
+
         // Extract session directly (already validated by signInWithIdToken)
         let session = try await supabase.auth.session
         self.session = session
@@ -177,6 +188,12 @@ class AuthService: ObservableObject {
     }
 
     func signOut() async throws {
+        // Cancel any in-flight auth operations to prevent races
+        initialSessionCheck?.cancel()
+        initialSessionCheck = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+
         try await supabase.auth.signOut()
         self.authState = .unauthenticated
         self.currentUser = nil
@@ -243,15 +260,9 @@ class AuthService: ObservableObject {
         }
 
         refreshTask = task
+        defer { refreshTask = nil }  // Always clear, even on error
 
-        do {
-            try await task.value
-        } catch {
-            throw error
-        }
-
-        // Clear task after completion
-        refreshTask = nil
+        try await task.value
     }
 }
 
