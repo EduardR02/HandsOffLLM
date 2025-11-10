@@ -85,8 +85,8 @@ struct SettingsView: View {
                 }
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var appDefaultsSection: some View {
@@ -102,6 +102,7 @@ struct SettingsView: View {
             }
             .tint(Theme.secondaryAccent)
             .id("llmProviderPicker-\(darkerModeObserver)")
+            .listRowBackground(Theme.menuAccent)
 
             HStack {
                 Text("Speed")
@@ -128,8 +129,8 @@ struct SettingsView: View {
                     .monospacedDigit()
                     .foregroundColor(Theme.secondaryAccent)
             }
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var modelSelectionSection: some View {
@@ -153,9 +154,9 @@ struct SettingsView: View {
                     }
                 }
                 .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                .listRowBackground(Theme.menuAccent)
             }
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var reasoningSection: some View {
@@ -174,8 +175,8 @@ struct SettingsView: View {
                 }
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var customizeChatSection: some View {
@@ -198,10 +199,13 @@ struct SettingsView: View {
                 }
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
+
             if settingsService.settings.advancedSystemPromptEnabled {
                 Text("using custom")
                     .font(.caption2)
                     .foregroundColor(Theme.secondaryAccent)
+                    .listRowBackground(Theme.menuAccent)
             }
 
             // TTS instructions only supported by OpenAI, not Kokoro
@@ -224,10 +228,13 @@ struct SettingsView: View {
                     }
                 }
                 .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                .listRowBackground(Theme.menuAccent)
+
                 if settingsService.settings.advancedTTSInstructionEnabled {
                     Text("using custom")
                         .font(.caption2)
                         .foregroundColor(Theme.secondaryAccent)
+                        .listRowBackground(Theme.menuAccent)
                 }
             }
 
@@ -242,6 +249,7 @@ struct SettingsView: View {
             }
             .tint(Theme.secondaryAccent)
             .id("ttsProviderPicker-\(darkerModeObserver)")
+            .listRowBackground(Theme.menuAccent)
 
             // Show voice picker for both providers
             if settingsService.selectedTTSProvider == .openai {
@@ -256,6 +264,7 @@ struct SettingsView: View {
                 }
                 .tint(Theme.secondaryAccent)
                 .id("voicePicker-\(darkerModeObserver)")
+                .listRowBackground(Theme.menuAccent)
             } else if settingsService.selectedTTSProvider == .kokoro {
                 Picker("Voice", selection: Binding(
                     get: { settingsService.kokoroTTSVoice },
@@ -268,6 +277,7 @@ struct SettingsView: View {
                 }
                 .tint(Theme.secondaryAccent)
                 .id("kokoroVoicePicker-\(darkerModeObserver)")
+                .listRowBackground(Theme.menuAccent)
             }
         } footer: {
             if settingsService.selectedTTSProvider == .kokoro {
@@ -275,7 +285,6 @@ struct SettingsView: View {
                     .foregroundColor(Theme.secondaryText)
             }
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var voiceDetectionSection: some View {
@@ -311,8 +320,8 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(Theme.secondaryText)
             }
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var featuresSection: some View {
@@ -330,6 +339,7 @@ struct SettingsView: View {
                 }
             }
             .tint(Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
 
             Toggle(isOn: Binding(
                 get: { settingsService.energySaverEnabled },
@@ -344,6 +354,7 @@ struct SettingsView: View {
                 }
             }
             .tint(Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
 
             Toggle(isOn: Binding(
                 get: { settingsService.darkerMode },
@@ -358,8 +369,8 @@ struct SettingsView: View {
                 }
             }
             .tint(Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var audioStorageSection: some View {
@@ -383,6 +394,7 @@ struct SettingsView: View {
                 }
             }
             .tint(Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
 
             Button(role: .destructive) {
                 showingAudioPurgeConfirmation = true
@@ -402,8 +414,8 @@ struct SettingsView: View {
             } message: {
                 Text("Audio clips live entirely on this device. Removing them frees storage—your chat transcripts stay intact.")
             }
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var apiKeysSection: some View {
@@ -424,12 +436,12 @@ struct SettingsView: View {
                 }
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
         } header: {
             Text("API Keys")
         } footer: {
             Text("Use your own API keys and get billed directly by each provider. Keys are encrypted and stored only on your device.")
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var advancedSection: some View {
@@ -440,8 +452,8 @@ struct SettingsView: View {
                 Text("Advanced Settings")
             }
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
         }
-        .listRowBackground(Theme.menuAccent)
     }
 
     private var signOutSection: some View {
@@ -461,13 +473,13 @@ struct SettingsView: View {
                     Spacer()
                 }
             }
+            .listRowBackground(Theme.menuAccent)
         } footer: {
             if let user = AuthService.shared.currentUser {
                 Text("Signed in as \(user.email ?? "Unknown")")
                     .font(.caption)
             }
         }
-        .listRowBackground(Theme.menuAccent)
     }
 }
 
