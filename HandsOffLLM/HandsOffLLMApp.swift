@@ -112,7 +112,8 @@ struct HandsOffLLMApp: App {
                     await authService.checkSession()
                 }
 
-                // Note: ContentView handles its own listening restart via scenePhase observer
+                // Restart listening (guard in startListening checks isViewVisible)
+                viewModel.startListening()
             default:
                 break
             }

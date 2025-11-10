@@ -89,7 +89,6 @@ private struct QuickPromptBar: View {
 struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Environment(\.sizeCategory) private var sizeCategory
-    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     // Compute row height based on Dynamic Type
     private var pickerRowHeight: CGFloat {
@@ -309,12 +308,6 @@ struct ContentView: View {
                 withAnimation(.easeInOut(duration: 0.25)) { // Explicitly animate only the fade-out
                     showInitialSliderValueHelpText = false
                 }
-            }
-        }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
-            if newPhase == .active {
-                logger.info("ContentView foregrounded, restart listening.")
-                viewModel.startListening()
             }
         }
         .onDisappear {
