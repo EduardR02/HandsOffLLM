@@ -89,6 +89,7 @@ private struct QuickPromptBar: View {
 struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     // Compute row height based on Dynamic Type
     private var pickerRowHeight: CGFloat {
@@ -300,13 +301,19 @@ struct ContentView: View {
             logger.info("ContentView appeared, start listening.")
             isMenuOpen = false
             viewModel.startListening()
-            
+
             // slider text fade out so user doesn't confuse speed slider with "loading"
             showInitialSliderValueHelpText = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 withAnimation(.easeInOut(duration: 0.25)) { // Explicitly animate only the fade-out
                     showInitialSliderValueHelpText = false
                 }
+            }
+        }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            if newPhase == .active {
+                logger.info("ContentView foregrounded, restart listening.")
+                viewModel.startListening()
             }
         }
         .onDisappear {

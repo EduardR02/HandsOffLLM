@@ -106,9 +106,13 @@ struct HandsOffLLMApp: App {
                 UIApplication.shared.isIdleTimerDisabled = true
                 logger.info("App became active: reconfiguring audio.")
                 audioService.applyAudioSessionSettings()
-                if settingsService.settings.hasCompletedInitialSetup {
-                    audioService.startListening()   // restart listening if not in initial setup screen
+
+                // Optimistic auth check (non-blocking, runs in background)
+                Task {
+                    await authService.checkSession()
                 }
+
+                // Note: ContentView handles its own listening restart via scenePhase observer
             default:
                 break
             }
