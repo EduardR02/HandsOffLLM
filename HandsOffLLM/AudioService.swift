@@ -819,6 +819,11 @@ extension AudioService {
         }
         let fileURL = docs.appendingPathComponent(relativePath)
 
+        // Stop listening/VAD before playing audio (prevents mic from picking up playback)
+        if isListening {
+            stopListeningCleanup()
+        }
+
         do {
             let data = try Data(contentsOf: fileURL)
             currentAudioPlayer?.stop()
@@ -1115,6 +1120,11 @@ extension AudioService {
             logger.warning("Attempted to play empty audio data.")
             scheduleNext()
             return
+        }
+
+        // Stop listening/VAD before playing TTS (prevents mic from picking up TTS audio)
+        if isListening {
+            stopListeningCleanup()
         }
 
         do {
