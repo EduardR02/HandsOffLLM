@@ -86,7 +86,6 @@ struct SettingsData: Codable {
     var selectedDefaultPlaybackSpeed: Float?
     var webSearchEnabled: Bool? = false
     var energySaverEnabled: Bool? = false
-    var darkerMode: Bool? = true
 
     // Personalization Settings
     var userDisplayName: String?

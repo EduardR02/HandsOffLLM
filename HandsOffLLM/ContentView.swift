@@ -89,7 +89,6 @@ private struct QuickPromptBar: View {
 struct ContentView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Environment(\.sizeCategory) private var sizeCategory
-    @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     // Compute row height based on Dynamic Type
     private var pickerRowHeight: CGFloat {
         let font = UIFont.preferredFont(forTextStyle: .body)
@@ -241,9 +240,6 @@ struct ContentView: View {
                                 }
                             }
                             .pickerStyle(SegmentedPickerStyle())
-                            .onChange(of: darkerModeObserver) {
-                                updateSegmentedControlColors()
-                            }
                             .onAppear {
                                 updateSegmentedControlColors()
                             }

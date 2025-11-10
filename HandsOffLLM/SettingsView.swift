@@ -18,7 +18,6 @@ struct SettingsView: View {
     @State private var tempVADSilenceThreshold: Double = 1.0
     @State private var audioAutoDeleteEnabled = true
     @State private var showingAudioPurgeConfirmation = false
-    @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "SettingsView")
 
     var body: some View {
@@ -68,17 +67,13 @@ struct SettingsView: View {
             NavigationLink {
                 ProfileFormView(isInitial: false)
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "person.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    Text("User Profile")
+                HStack {
+                    Text("Profile")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
                     if !settingsService.settings.userProfileEnabled {
                         Text("Disabled")
-                            .foregroundColor(Theme.secondaryText.opacity(0.6))
+                            .foregroundColor(Theme.secondaryText.opacity(0.5))
                             .font(.subheadline)
                     } else if let name = settingsService.settings.userDisplayName, !name.isEmpty {
                         Text(name)
@@ -94,32 +89,20 @@ struct SettingsView: View {
 
     private var appDefaultsSection: some View {
         Section {
-            HStack(spacing: 12) {
-                Image(systemName: "sparkles")
-                    .font(.title2)
-                    .foregroundColor(Theme.secondaryAccent)
-                    .frame(width: 32)
-                Picker("Provider", selection: Binding(
-                    get: { settingsService.settings.selectedDefaultProvider ?? .claude },
-                    set: { settingsService.updateDefaultProvider(provider: $0) }
-                )) {
-                    ForEach(LLMProvider.userFacing) { provider in
-                        Text(provider.rawValue).tag(provider)
-                            .foregroundColor(Theme.primaryText)
-                    }
+            Picker("Provider", selection: Binding(
+                get: { settingsService.settings.selectedDefaultProvider ?? .claude },
+                set: { settingsService.updateDefaultProvider(provider: $0) }
+            )) {
+                ForEach(LLMProvider.userFacing) { provider in
+                    Text(provider.rawValue).tag(provider)
+                        .foregroundColor(Theme.primaryText)
                 }
-                .tint(Theme.secondaryAccent)
-                .id("llmProviderPicker-\(darkerModeObserver)")
             }
+            .tint(Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
 
-            HStack(spacing: 12) {
-                Image(systemName: "gauge.with.dots.needle.50percent")
-                    .font(.title2)
-                    .foregroundColor(Theme.secondaryAccent)
-                    .frame(width: 32)
-
-                Text("Speed")
+            HStack {
+                Text("Playback Speed")
                     .foregroundColor(Theme.primaryText)
 
                 Slider(
@@ -155,11 +138,7 @@ struct SettingsView: View {
                 NavigationLink {
                     ModelSelectionView(provider: provider)
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "cpu")
-                            .font(.title2)
-                            .foregroundColor(Theme.secondaryAccent)
-                            .frame(width: 32)
+                    HStack {
                         Text(provider.rawValue)
                             .foregroundColor(Theme.primaryText)
                         Spacer()
@@ -184,16 +163,12 @@ struct SettingsView: View {
             NavigationLink {
                 ReasoningSettingsView()
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "brain")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    Text("Reasoning")
+                HStack {
+                    Text("Extended Reasoning")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
                     if settingsService.reasoningEnabled {
-                        Text("On")
+                        Text("Enabled")
                             .foregroundColor(Theme.secondaryAccent)
                             .font(.subheadline)
                     }
@@ -209,11 +184,7 @@ struct SettingsView: View {
             NavigationLink {
                 SystemPromptSelectionView()
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "text.bubble")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
+                HStack {
                     Text("System Prompt")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
@@ -237,16 +208,11 @@ struct SettingsView: View {
             .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
 
-            // TTS instructions only supported by OpenAI, not Kokoro
             if settingsService.selectedTTSProvider != .kokoro {
                 NavigationLink {
                     TTSInstructionSelectionView()
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "waveform.circle")
-                            .font(.title2)
-                            .foregroundColor(Theme.secondaryAccent)
-                            .frame(width: 32)
+                    HStack {
                         Text("Speech Style")
                             .foregroundColor(Theme.primaryText)
                         Spacer()
@@ -271,63 +237,41 @@ struct SettingsView: View {
                 .listRowBackground(Theme.menuAccent)
             }
 
-            HStack(spacing: 12) {
-                Image(systemName: "speaker.wave.2")
-                    .font(.title2)
-                    .foregroundColor(Theme.secondaryAccent)
-                    .frame(width: 32)
-                Picker("TTS", selection: Binding(
-                    get: { settingsService.selectedTTSProvider },
-                    set: { settingsService.updateSelectedTTSProvider($0) }
+            Picker("TTS Provider", selection: Binding(
+                get: { settingsService.selectedTTSProvider },
+                set: { settingsService.updateSelectedTTSProvider($0) }
+            )) {
+                ForEach(TTSProvider.allCases) { provider in
+                    Text(provider.displayName).tag(provider)
+                        .foregroundColor(Theme.primaryText)
+                }
+            }
+            .tint(Theme.secondaryAccent)
+            .listRowBackground(Theme.menuAccent)
+
+            if settingsService.selectedTTSProvider == .openai {
+                Picker("Voice", selection: Binding(
+                    get: { settingsService.openAITTSVoice },
+                    set: { settingsService.updateSelectedTTSVoice(voice: $0) }
                 )) {
-                    ForEach(TTSProvider.allCases) { provider in
-                        Text(provider.displayName).tag(provider)
+                    ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
+                        Text(voice.capitalized).tag(voice)
                             .foregroundColor(Theme.primaryText)
                     }
                 }
                 .tint(Theme.secondaryAccent)
-                .id("ttsProviderPicker-\(darkerModeObserver)")
-            }
-            .listRowBackground(Theme.menuAccent)
-
-            // Show voice picker for both providers
-            if settingsService.selectedTTSProvider == .openai {
-                HStack(spacing: 12) {
-                    Image(systemName: "person.wave.2")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    Picker("Voice", selection: Binding(
-                        get: { settingsService.openAITTSVoice },
-                        set: { settingsService.updateSelectedTTSVoice(voice: $0) }
-                    )) {
-                        ForEach(settingsService.availableTTSVoices, id: \.self) { voice in
-                            Text(voice.capitalized).tag(voice)
-                                .foregroundColor(Theme.primaryText)
-                        }
-                    }
-                    .tint(Theme.secondaryAccent)
-                    .id("voicePicker-\(darkerModeObserver)")
-                }
                 .listRowBackground(Theme.menuAccent)
             } else if settingsService.selectedTTSProvider == .kokoro {
-                HStack(spacing: 12) {
-                    Image(systemName: "person.wave.2")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    Picker("Voice", selection: Binding(
-                        get: { settingsService.kokoroTTSVoice },
-                        set: { settingsService.updateSelectedKokoroVoice(voice: $0) }
-                    )) {
-                        ForEach(settingsService.availableKokoroVoices) { voice in
-                            Text(voice.displayName).tag(voice.id)
-                                .foregroundColor(Theme.primaryText)
-                        }
+                Picker("Voice", selection: Binding(
+                    get: { settingsService.kokoroTTSVoice },
+                    set: { settingsService.updateSelectedKokoroVoice(voice: $0) }
+                )) {
+                    ForEach(settingsService.availableKokoroVoices) { voice in
+                        Text(voice.displayName).tag(voice.id)
+                            .foregroundColor(Theme.primaryText)
                     }
-                    .tint(Theme.secondaryAccent)
-                    .id("kokoroVoicePicker-\(darkerModeObserver)")
                 }
+                .tint(Theme.secondaryAccent)
                 .listRowBackground(Theme.menuAccent)
             }
         } header: {
@@ -337,12 +281,8 @@ struct SettingsView: View {
 
     private var voiceDetectionSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    Image(systemName: "waveform")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
                     Text("Silence Duration")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
@@ -367,7 +307,6 @@ struct SettingsView: View {
                     }
                 )
                 .tint(Theme.accent)
-                .padding(.leading, 44)
             }
             .listRowBackground(Theme.menuAccent)
         } header: {
@@ -377,66 +316,17 @@ struct SettingsView: View {
 
     private var featuresSection: some View {
         Section {
-            Toggle(isOn: Binding(
+            Toggle("Web Search", isOn: Binding(
                 get: { settingsService.webSearchEnabled },
                 set: { settingsService.updateAdvancedSetting(keyPath: \.webSearchEnabled, value: $0) }
-            )) {
-                HStack(spacing: 12) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Web Search")
-                            .foregroundColor(Theme.primaryText)
-                        Text("GPT · Grok")
-                            .font(.caption2)
-                            .foregroundColor(Theme.secondaryText.opacity(0.7))
-                    }
-                }
-            }
+            ))
             .tint(Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
 
-            Toggle(isOn: Binding(
+            Toggle("Energy Saver", isOn: Binding(
                 get: { settingsService.energySaverEnabled },
                 set: { settingsService.updateEnergySaverEnabled($0) }
-            )) {
-                HStack(spacing: 12) {
-                    Image(systemName: "leaf")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Energy Saver")
-                            .foregroundColor(Theme.primaryText)
-                        Text("Reduce battery usage")
-                            .font(.caption2)
-                            .foregroundColor(Theme.secondaryText.opacity(0.7))
-                    }
-                }
-            }
-            .tint(Theme.secondaryAccent)
-            .listRowBackground(Theme.menuAccent)
-
-            Toggle(isOn: Binding(
-                get: { settingsService.darkerMode },
-                set: { settingsService.updateDarkerMode($0) }
-            )) {
-                HStack(spacing: 12) {
-                    Image(systemName: "moon.fill")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Darker Mode")
-                            .foregroundColor(Theme.primaryText)
-                        Text("Deeper background")
-                            .font(.caption2)
-                            .foregroundColor(Theme.secondaryText.opacity(0.7))
-                    }
-                }
-            }
+            ))
             .tint(Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
         } header: {
@@ -446,40 +336,21 @@ struct SettingsView: View {
 
     private var audioStorageSection: some View {
         Section {
-            Toggle(isOn: Binding(
+            Toggle("Auto-Delete After 7 Days", isOn: Binding(
                 get: { audioAutoDeleteEnabled },
                 set: { newValue in
                     audioAutoDeleteEnabled = newValue
                     let retention = newValue ? 7 : 0
                     historyService.updateAudioRetentionDays(retention)
                 }
-            )) {
-                HStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto-Delete Audio")
-                            .foregroundColor(Theme.primaryText)
-                        Text(audioAutoDeleteEnabled ? "After 7 days" : "Never")
-                            .font(.caption2)
-                            .foregroundColor(Theme.secondaryText.opacity(0.7))
-                    }
-                }
-            }
+            ))
             .tint(Theme.secondaryAccent)
             .listRowBackground(Theme.menuAccent)
 
             Button(role: .destructive) {
                 showingAudioPurgeConfirmation = true
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "trash")
-                        .font(.title2)
-                        .frame(width: 32)
-                    Text("Delete All Audio")
-                }
+                Text("Delete All Audio")
             }
             .foregroundColor(Theme.accent)
             .confirmationDialog(
@@ -505,11 +376,7 @@ struct SettingsView: View {
             NavigationLink {
                 UserAPIKeysView()
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "key.fill")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
+                HStack {
                     Text("API Keys")
                         .foregroundColor(Theme.primaryText)
                     Spacer()
@@ -518,6 +385,7 @@ struct SettingsView: View {
                        settingsService.useOwnReplicateKey {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(Theme.secondaryAccent)
+                            .font(.subheadline)
                     }
                 }
             }
@@ -528,20 +396,9 @@ struct SettingsView: View {
 
     private var advancedSection: some View {
         Section {
-            NavigationLink {
-                AdvancedSettingsView()
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "gearshape.2")
-                        .font(.title2)
-                        .foregroundColor(Theme.secondaryAccent)
-                        .frame(width: 32)
-                    Text("Advanced")
-                        .foregroundColor(Theme.primaryText)
-                }
-            }
-            .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
-            .listRowBackground(Theme.menuAccent)
+            NavigationLink("Advanced", destination: AdvancedSettingsView())
+                .foregroundStyle(Theme.primaryText, Theme.secondaryAccent)
+                .listRowBackground(Theme.menuAccent)
         }
     }
 
@@ -556,13 +413,8 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "arrow.right.square")
-                        .font(.title2)
-                        .frame(width: 32)
-                    Text("Sign Out")
-                    Spacer()
-                }
+                Text("Sign Out")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .listRowBackground(Theme.menuAccent)
         }
@@ -798,7 +650,6 @@ struct SystemPromptSelectionView: View {
 
 struct AdvancedSettingsView: View {
     @EnvironmentObject private var settingsService: SettingsService
-    @AppStorage("darkerMode") private var darkerModeObserver: Bool = true
     @State private var tempAdvancedTemperature: Float = SettingsService.defaultAdvancedTemperature
     @State private var tempAdvancedSystemPrompt: String = ""
     @State private var tempAdvancedTTSInstruction: String = ""
