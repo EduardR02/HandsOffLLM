@@ -180,7 +180,7 @@ struct SettingsView: View {
     }
 
     private var customizeChatSection: some View {
-        Section("Customize Chat Experience") {
+        Section {
             NavigationLink {
                 SystemPromptSelectionView()
             } label: {
@@ -279,6 +279,8 @@ struct SettingsView: View {
                 .id("kokoroVoicePicker-\(darkerModeObserver)")
                 .listRowBackground(Theme.menuAccent)
             }
+        } header: {
+            Text("Customize Chat Experience")
         } footer: {
             if settingsService.selectedTTSProvider == .kokoro {
                 Text("Kokoro is ~10x cheaper than OpenAI. Similar quality if language stays the same.")
