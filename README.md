@@ -2,7 +2,9 @@
 
 A hands-free voice interface for frontier LLMs on iOS. Talk to Claude, GPT, Gemini, Grok, or Kimi — while driving, cooking, walking, whatever.
 
-<!-- screenshots go here -->
+<p align="center">
+  <img src="images/main_screenshot.jpeg" alt="HandsOffLLM main screen" width="300">
+</p>
 
 ## Why this exists
 
