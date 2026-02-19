@@ -74,6 +74,120 @@ struct HandsOffLLMTests {
         #expect(body["reasoning_effort"] as? String == nil)
     }
 
+    @Test func claudeRequestBuildsThinkingPayloadAndMarksLastMessageEphemeral() throws {
+        let messages = [
+            ChatMessage(id: UUID(), role: "user", content: "hello"),
+            ChatMessage(id: UUID(), role: "assistant", content: "hi"),
+            ChatMessage(id: UUID(), role: "user", content: "please help")
+        ]
+        let context = makeContext(
+            modelId: "claude-sonnet-4.6",
+            anthropicKey: "anthropic-key",
+            messages: messages,
+            systemPrompt: "You are concise",
+            maxTokens: 7000,
+            reasoningEnabled: true
+        )
+
+        let request = try ClaudeClient().makeRequest(with: context)
+        let body = try requestBody(from: request)
+
+        #expect(body["system"] as? String == "You are concise")
+        #expect(body["temperature"] == nil)
+        #expect((body["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+        #expect((body["thinking"] as? [String: Any])?["budget_tokens"] as? Int == 3000)
+
+        guard let payloadMessages = body["messages"] as? [[String: Any]] else {
+            Issue.record("Claude payload did not contain messages")
+            return
+        }
+
+        let firstContent = (payloadMessages.first?["content"] as? [[String: Any]])?.first
+        let lastContent = (payloadMessages.last?["content"] as? [[String: Any]])?.first
+
+        #expect(firstContent?["cache_control"] == nil)
+        #expect((lastContent?["cache_control"] as? [String: String])?["type"] == "ephemeral")
+    }
+
+    @Test func claudeNonThinkingRequestUsesTemperatureAndNoThinkingBlock() throws {
+        let context = makeContext(
+            modelId: "claude-sonnet-4.6",
+            anthropicKey: "anthropic-key",
+            systemPrompt: nil,
+            reasoningEnabled: false
+        )
+
+        let body = try requestBody(from: try ClaudeClient().makeRequest(with: context))
+        #expect(body["system"] == nil)
+        #expect(body["thinking"] == nil)
+        let temperature = (body["temperature"] as? NSNumber)?.floatValue
+        #expect(temperature != nil)
+        #expect(abs((temperature ?? 0) - 0.8) < 0.0001)
+    }
+
+    @Test func geminiRequestBuildsSSEURLAndPayloadShape() throws {
+        let context = makeContext(
+            modelId: "gemini-3-flash",
+            geminiKey: "  gemini-key  ",
+            messages: [
+                ChatMessage(id: UUID(), role: "user", content: "Question"),
+                ChatMessage(id: UUID(), role: "assistant", content: "Answer")
+            ],
+            systemPrompt: "Stay short",
+            reasoningEnabled: true
+        )
+
+        let request = try GeminiClient().makeRequest(with: context)
+        guard let url = request.url,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            Issue.record("Gemini request URL should be valid")
+            return
+        }
+
+        #expect(url.path == "/v1beta/models/gemini-3-flash:streamGenerateContent")
+        #expect(components.queryItems?.contains(URLQueryItem(name: "alt", value: "sse")) == true)
+        #expect(components.queryItems?.contains(URLQueryItem(name: "key", value: "gemini-key")) == true)
+
+        let body = try requestBody(from: request)
+        let contents = body["contents"] as? [[String: Any]]
+        let generationConfig = body["generationConfig"] as? [String: Any]
+        let safety = body["safetySettings"] as? [[String: String]]
+        let systemInstruction = body["systemInstruction"] as? [String: Any]
+
+        #expect(contents?.count == 2)
+        #expect(contents?.first?["role"] as? String == "user")
+        #expect(contents?.last?["role"] as? String == "model")
+        #expect((generationConfig?["thinking_config"] as? [String: Int])?["thinkingBudget"] == 8192)
+        #expect((systemInstruction?["parts"] as? [[String: String]])?.first?["text"] == "Stay short")
+
+        let expectedSafety = Set([
+            "HARM_CATEGORY_HARASSMENT",
+            "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "HARM_CATEGORY_DANGEROUS_CONTENT"
+        ])
+        let categories = Set((safety ?? []).compactMap { $0["category"] })
+        #expect(categories == expectedSafety)
+        #expect((safety ?? []).allSatisfy { $0["threshold"] == "BLOCK_NONE" })
+    }
+
+    @Test func geminiProxyRequestOmitsKeyFromQueryString() throws {
+        let context = makeContext(
+            modelId: "gemini-3-pro",
+            geminiKey: nil,
+            useProxy: true
+        )
+
+        let request = try GeminiClient().makeRequest(with: context)
+        guard let components = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) else {
+            Issue.record("Gemini request URL should be valid")
+            return
+        }
+
+        #expect(components.queryItems?.contains(URLQueryItem(name: "alt", value: "sse")) == true)
+        #expect(components.queryItems?.contains(where: { $0.name == "key" }) == false)
+    }
+
     @Test func geminiThinkingToggleAppliesToFlashModelsOnly() throws {
         let flashThinkingEnabled = makeContext(
             modelId: "gemini-3-flash",
@@ -113,6 +227,8 @@ struct HandsOffLLMTests {
         #expect(LLMProvider.provider(forModelId: "grok-4-fast") == .xai)
         #expect(LLMProvider.provider(forModelId: "kimi-k2.5") == .moonshot)
         #expect(LLMProvider.provider(forModelId: "unknown-model") == nil)
+        #expect(LLMProvider.provider(forModelId: "") == nil)
+        #expect(LLMProvider.provider(forModelId: "   ") == nil)
     }
 
     @Test func replicatePredictionResponseDecodesOutputShapes() throws {
@@ -148,7 +264,7 @@ struct HandsOffLLMTests {
     }
 
     @Test func proxyPayloadEmbeddingPreservesRawBodyData() throws {
-        let bodyData = Data("{\"model\":\"gpt-5.2\",\"stream\":true}".utf8)
+        let bodyData = Data("{\"model\":\"gpt-5.2\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"say \\\"hi\\\"\"}],\"metadata\":{\"attempt\":2,\"flags\":[true,false,null]}}".utf8)
         let payloadData = try ProxyService.makeProxyPayload(
             provider: .openai,
             endpoint: "https://api.openai.com/v1/responses",
@@ -168,11 +284,10 @@ struct HandsOffLLMTests {
         #expect((payload["headers"] as? [String: String])?["Content-Type"] == "application/json")
         #expect((payload["bodyData"] as? [String: Any])?["model"] as? String == "gpt-5.2")
         #expect((payload["bodyData"] as? [String: Any])?["stream"] as? Bool == true)
-    }
+        #expect(((payload["bodyData"] as? [String: Any])?["messages"] as? [[String: String]])?.first?["content"] == "say \"hi\"")
+        #expect(((payload["bodyData"] as? [String: Any])?["metadata"] as? [String: Any])?["attempt"] as? Int == 2)
 
-    @Test @MainActor func settingsServiceRemovesTemporarySystemPromptPreset() {
-        let settingsService = SettingsService()
-        #expect(settingsService.availableSystemPrompts.contains(where: { $0.id == "remove-later" }) == false)
+        #expect((try? JSONSerialization.jsonObject(with: payloadData)) != nil)
     }
 
     @Test @MainActor func historyServiceSurfacesLoadErrorsViaPublishedLastError() async throws {
@@ -201,28 +316,34 @@ struct HandsOffLLMTests {
         openAIKey: String? = nil,
         xaiKey: String? = nil,
         moonshotKey: String? = nil,
+        anthropicKey: String? = nil,
         geminiKey: String? = nil,
+        messages: [ChatMessage] = [ChatMessage(id: UUID(), role: "user", content: "hello")],
+        systemPrompt: String? = "You are helpful",
+        temperature: Float = 0.8,
+        maxTokens: Int = 4096,
         webSearchEnabled: Bool = false,
         openAIReasoningEffort: OpenAIReasoningEffort? = nil,
-        reasoningEnabled: Bool = false
+        reasoningEnabled: Bool = false,
+        useProxy: Bool = false
     ) -> LLMClientContext {
         LLMClientContext(
-            messages: [ChatMessage(id: UUID(), role: "user", content: "hello")],
-            systemPrompt: "You are helpful",
-            temperature: 0.8,
-            maxTokens: 4096,
+            messages: messages,
+            systemPrompt: systemPrompt,
+            temperature: temperature,
+            maxTokens: maxTokens,
             modelId: modelId,
             temperatureCap: 2.0,
             tokenCap: 8192,
             openAIKey: openAIKey,
             xaiKey: xaiKey,
             moonshotKey: moonshotKey,
-            anthropicKey: nil,
+            anthropicKey: anthropicKey,
             geminiKey: geminiKey,
             webSearchEnabled: webSearchEnabled,
             openAIReasoningEffort: openAIReasoningEffort,
             reasoningEnabled: reasoningEnabled,
-            useProxy: false
+            useProxy: useProxy
         )
     }
 
