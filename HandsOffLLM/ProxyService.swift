@@ -37,7 +37,7 @@ class ProxyService {
         endpoint: String,
         method: String = "POST",
         headers: [String: String],
-        body: [String: Any]?
+        bodyData: Data?
     ) async throws -> URLRequest {
         let jwt = try await authService.getCurrentJWT()
 
@@ -55,6 +55,25 @@ class ProxyService {
         request.addValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
+        request.httpBody = try Self.makeProxyPayload(
+            provider: provider,
+            endpoint: endpoint,
+            method: method,
+            headers: headers,
+            bodyData: bodyData
+        )
+
+        logger.info("Routing \(provider.rawValue) request through proxy")
+        return request
+    }
+
+    nonisolated static func makeProxyPayload(
+        provider: LLMProvider,
+        endpoint: String,
+        method: String,
+        headers: [String: String],
+        bodyData: Data?
+    ) throws -> Data {
         var proxyPayload: [String: Any] = [
             "provider": provider.rawValue.lowercased(),
             "endpoint": endpoint,
@@ -62,14 +81,21 @@ class ProxyService {
             "headers": headers
         ]
 
-        if let body = body {
-            proxyPayload["bodyData"] = body
+        guard let bodyData, !bodyData.isEmpty else {
+            return try JSONSerialization.data(withJSONObject: proxyPayload)
         }
 
-        request.httpBody = try JSONSerialization.data(withJSONObject: proxyPayload)
+        let placeholder = "__RAW_BODY_\(UUID().uuidString)__"
+        proxyPayload["bodyData"] = placeholder
+        var payloadData = try JSONSerialization.data(withJSONObject: proxyPayload)
 
-        logger.info("Routing \(provider.rawValue) request through proxy")
-        return request
+        let quotedPlaceholder = Data("\"\(placeholder)\"".utf8)
+        guard let range = payloadData.range(of: quotedPlaceholder) else {
+            throw ProxyError.requestEncodingFailed("Failed to embed bodyData into proxy payload")
+        }
+
+        payloadData.replaceSubrange(range, with: bodyData)
+        return payloadData
     }
 
     /// Creates a proxied transcription request (for audio file uploads)
@@ -138,6 +164,7 @@ class ProxyService {
 enum ProxyError: Error, LocalizedError {
     case missingConfiguration(String)
     case invalidURL(String)
+    case requestEncodingFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -145,6 +172,8 @@ enum ProxyError: Error, LocalizedError {
             return "Configuration error: \(message)"
         case .invalidURL(let url):
             return "Invalid URL: \(url)"
+        case .requestEncodingFailed(let message):
+            return "Request encoding error: \(message)"
         }
     }
 }

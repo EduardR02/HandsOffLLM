@@ -123,7 +123,7 @@ class ChatService: ObservableObject {
             let activeMaxTokens = settingsService.activeMaxTokens
             // --- End Get ACTIVE settings ---
 
-            let limits = providerLimits(for: provider)
+            let limits = try providerLimits(for: provider)
             let useProxy = proxyService.shouldUseProxy(for: provider)
             let context = LLMClientContext(
                 messages: sanitizedHistory(),
@@ -143,7 +143,7 @@ class ChatService: ObservableObject {
                 reasoningEnabled: settingsService.reasoningEnabled,
                 useProxy: useProxy
             )
-            let client = LLMClientFactory.client(for: provider)
+            let client = try LLMClientFactory.client(for: provider)
 
             // Determine if we should use proxy or direct call
             let request: URLRequest
@@ -160,18 +160,12 @@ class ChatService: ObservableObject {
                 var headers: [String: String] = [:]
                 directRequest.allHTTPHeaderFields?.forEach { headers[$0.key] = $0.value }
 
-                var body: [String: Any] = [:]
-                if let httpBody = directRequest.httpBody,
-                   let jsonBody = try? JSONSerialization.jsonObject(with: httpBody) as? [String: Any] {
-                    body = jsonBody
-                }
-
                 request = try await proxyService.makeProxiedRequest(
                     provider: provider,
                     endpoint: url.absoluteString,
                     method: directRequest.httpMethod ?? "POST",
                     headers: headers,
-                    body: body
+                    bodyData: directRequest.httpBody
                 )
             } else {
                 // Direct call with user's own API key
@@ -325,12 +319,13 @@ class ChatService: ObservableObject {
         let req: URLRequest
         if proxyService.shouldUseProxy(for: .xai) {
             // Route through proxy
+            let requestBodyData = try JSONSerialization.data(withJSONObject: requestBody)
             req = try await proxyService.makeProxiedRequest(
                 provider: .xai,
                 endpoint: "https://api.x.ai/v1/chat/completions",
                 method: "POST",
                 headers: ["Content-Type": "application/json"],
-                body: requestBody
+                bodyData: requestBodyData
             )
         } else {
             // Direct call with user's key
@@ -534,7 +529,7 @@ class ChatService: ObservableObject {
         currentConversation?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
     }
 
-    private func providerLimits(for provider: LLMProvider) -> (temperature: Float, maxTokens: Int) {
+    private func providerLimits(for provider: LLMProvider) throws -> (temperature: Float, maxTokens: Int) {
         switch provider {
         case .openai:
             return (SettingsService.maxTempOpenAI, SettingsService.maxTokensOpenAI)
@@ -547,7 +542,7 @@ class ChatService: ObservableObject {
         case .moonshot:
             return (SettingsService.maxTempMoonshot, SettingsService.maxTokensMoonshot)
         case .replicate:
-            return (2.0, 4096) // Replicate is TTS-only, not used for LLM
+            throw LlmError.streamingError("Replicate is not an LLM provider")
         }
     }
 }
@@ -612,7 +607,7 @@ struct OpenAIClient: LLMClient {
         ]
 
         if context.webSearchEnabled,
-           ["gpt-4.1", "gpt-4.1-mini", "gpt-5"].contains(where: context.modelId.contains) {
+           Self.supportsWebSearch(modelId: context.modelId) {
             body["tools"] = [["type": "web_search_preview"]]
         }
 
@@ -636,85 +631,34 @@ struct OpenAIClient: LLMClient {
         else { return nil }
         return event.delta
     }
-}
 
-struct XAIClient: LLMClient {
-    func makeRequest(with context: LLMClientContext) throws -> URLRequest {
-        let useProxy = context.useProxy
-        let trimmedKey = context.xaiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !useProxy {
-            guard let key = trimmedKey, !key.isEmpty else {
-                throw LlmError.apiKeyMissing(provider: "xAI")
-            }
-        }
-        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
-            throw LlmError.invalidURL
-        }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !useProxy, let key = trimmedKey {
-            req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        }
-
-        var messagesPayload: [[String: Any]] = context.messages.map { message in
-            [
-                "role": message.role,
-                "content": [["type": "text", "text": message.content]]
-            ]
-        }
-
-        if let sys = context.systemPrompt, !sys.isEmpty {
-            messagesPayload.insert([
-                "role": "system",
-                "content": [["type": "text", "text": sys]]
-            ], at: 0)
-        }
-
-        var requestBody: [String: Any] = [
-            "model": context.modelId,
-            "messages": messagesPayload,
-            "temperature": min(context.temperature, context.temperatureCap),
-            "max_completion_tokens": min(context.maxTokens, context.tokenCap),
-            "stream": true,
-            "stream_options": ["include_usage": true]
-        ]
-
-        // Grok-4 supports extended reasoning
-        if context.modelId.contains("grok-4") {
-            if context.webSearchEnabled {
-                requestBody["search_parameters"] = ["mode": "auto"]
-            }
-            if context.reasoningEnabled {
-                requestBody["reasoning_effort"] = "high"
-            }
-        }
-
-        req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        return req
-    }
-
-    func decodeChunk(_ raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-              let event = try? JSONDecoder().decode(XAIResponseEvent.self, from: data) else { return nil }
-        guard let choices = event.choices, let delta = choices.first?.delta else {
-            return nil
-        }
-        return delta.content
+    private static func supportsWebSearch(modelId: String) -> Bool {
+        modelId.hasPrefix("gpt-5")
     }
 }
 
-struct MoonshotClient: LLMClient {
+class OpenAICompatibleChatCompletionsClient: LLMClient {
+    var endpoint: String {
+        preconditionFailure("Subclasses must override endpoint")
+    }
+
+    private var apiKeyPath: KeyPath<LLMClientContext, String?> {
+        endpoint.contains("api.x.ai") ? \.xaiKey : \.moonshotKey
+    }
+
+    private var providerName: String {
+        endpoint.contains("api.x.ai") ? "xAI" : "Moonshot AI"
+    }
+
     func makeRequest(with context: LLMClientContext) throws -> URLRequest {
         let useProxy = context.useProxy
-        let trimmedKey = context.moonshotKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = context[keyPath: apiKeyPath]?.trimmingCharacters(in: .whitespacesAndNewlines)
         if !useProxy {
             guard let key = trimmedKey, !key.isEmpty else {
-                throw LlmError.apiKeyMissing(provider: "Moonshot AI")
+                throw LlmError.apiKeyMissing(provider: providerName)
             }
         }
-        guard let url = URL(string: "https://api.moonshot.ai/v1/chat/completions") else {
+        guard let url = URL(string: endpoint) else {
             throw LlmError.invalidURL
         }
 
@@ -739,14 +683,29 @@ struct MoonshotClient: LLMClient {
             ], at: 0)
         }
 
-        let requestBody: [String: Any] = [
+        var requestBody: [String: Any] = [
             "model": context.modelId,
             "messages": messagesPayload,
             "temperature": min(context.temperature, context.temperatureCap),
-            "max_tokens": min(context.maxTokens, context.tokenCap),
             "stream": true,
             "stream_options": ["include_usage": true]
         ]
+
+        let cappedTokens = min(context.maxTokens, context.tokenCap)
+        if url.host == "api.x.ai" {
+            requestBody["max_completion_tokens"] = cappedTokens
+        } else {
+            requestBody["max_tokens"] = cappedTokens
+        }
+
+        let isGrok4Model = context.modelId.contains("grok-4")
+        let supportsGrokReasoning = isGrok4Model && !context.modelId.contains("non-reasoning")
+        if isGrok4Model, context.webSearchEnabled {
+            requestBody["search_parameters"] = ["mode": "auto"]
+        }
+        if supportsGrokReasoning, context.reasoningEnabled {
+            requestBody["reasoning_effort"] = "high"
+        }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         return req
@@ -754,11 +713,23 @@ struct MoonshotClient: LLMClient {
 
     func decodeChunk(_ raw: String) -> String? {
         guard let data = raw.data(using: .utf8),
-              let event = try? JSONDecoder().decode(XAIResponseEvent.self, from: data) else { return nil }
+              let event = try? JSONDecoder().decode(OpenAICompatibleResponseEvent.self, from: data) else { return nil }
         guard let choices = event.choices, let delta = choices.first?.delta else {
             return nil
         }
         return delta.content
+    }
+}
+
+final class XAIClient: OpenAICompatibleChatCompletionsClient {
+    override var endpoint: String {
+        "https://api.x.ai/v1/chat/completions"
+    }
+}
+
+final class MoonshotClient: OpenAICompatibleChatCompletionsClient {
+    override var endpoint: String {
+        "https://api.moonshot.ai/v1/chat/completions"
     }
 }
 
@@ -868,8 +839,8 @@ struct GeminiClient: LLMClient {
             "maxOutputTokens": min(context.maxTokens, context.tokenCap),
             "responseMimeType": "text/plain"
         ]
-        // Gemini 2.5 Flash supports extended thinking
-        if context.modelId.contains("2.5-flash") {
+        // Gemini 3 Flash models support extended thinking
+        if context.modelId.contains("3-flash") {
             let thinkingBudget = context.reasoningEnabled ? 8192 : 0
             generationConfig["thinking_config"] = ["thinkingBudget": thinkingBudget]
         }
@@ -907,7 +878,7 @@ struct GeminiClient: LLMClient {
 }
 
 struct LLMClientFactory {
-    static func client(for provider: LLMProvider) -> LLMClient {
+    static func client(for provider: LLMProvider) throws -> LLMClient {
         switch provider {
         case .openai:
             return OpenAIClient()
@@ -920,7 +891,7 @@ struct LLMClientFactory {
         case .moonshot:
             return MoonshotClient()
         case .replicate:
-            return OpenAIClient() // Replicate is TTS-only, fallback to OpenAI client
+            throw LlmError.streamingError("Replicate is not an LLM provider")
         }
     }
 }

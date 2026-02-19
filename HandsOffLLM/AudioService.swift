@@ -565,6 +565,16 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
+    private func makeDesiredInputFormat(sampleRate: Double) throws -> AVAudioFormat {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: sampleRate,
+                                         channels: 1,
+                                         interleaved: false) else {
+            throw AudioError.audioEngineError("Failed to create desired input format")
+        }
+        return format
+    }
+
     private func configureAudioEngineTap() {
         let input = audioEngine.inputNode
         let hardwareInputFormat = input.inputFormat(forBus: 0)
@@ -578,10 +588,21 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
 
         let desiredSampleRate: Double = 16_000
-        let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                          sampleRate: desiredSampleRate,
-                                          channels: 1,
-                                          interleaved: false)!
+        let desiredFormat: AVAudioFormat
+        do {
+            desiredFormat = try makeDesiredInputFormat(sampleRate: desiredSampleRate)
+        } catch let audioError as AudioError {
+            logger.error("🚨 Failed to create desired input format.")
+            errorSubject.send(audioError)
+            if audioEngine.isRunning { audioEngine.stop() }
+            return
+        } catch {
+            logger.error("🚨 Unexpected error creating desired input format: \(error.localizedDescription)")
+            let audioError = AudioError.audioEngineError("Failed to create desired input format")
+            errorSubject.send(audioError)
+            if audioEngine.isRunning { audioEngine.stop() }
+            return
+        }
         let needsConversion = hardwareInputFormat.sampleRate != desiredSampleRate ||
                               hardwareInputFormat.channelCount != 1 ||
                               hardwareInputFormat.commonFormat != .pcmFormatFloat32
@@ -781,7 +802,9 @@ extension AudioService {
         logger.debug("Received text chunk (\(textChunk.count) chars). IsLast: \(isLastChunk)")
         ttsState.textBuffer.append(textChunk)
         if isLastChunk { ttsState.llmFinished = true }
-        scheduleNext()
+        Task { @MainActor [weak self] in
+            self?.scheduleNext()
+        }
     }
     
     func stopSpeaking() {
@@ -1182,9 +1205,6 @@ extension AudioService {
         )
 
         let payloadData = try JSONEncoder().encode(payload)
-        guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-            throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
-        }
 
         let request: URLRequest
         if useProxy {
@@ -1194,7 +1214,7 @@ extension AudioService {
                 endpoint: "https://api.openai.com/v1/audio/speech",
                 method: "POST",
                 headers: ["Content-Type": "application/json"],
-                body: payloadDict
+                bodyData: payloadData
             )
         } else {
             // Direct call
@@ -1260,27 +1280,25 @@ extension AudioService {
 
         // Check if we should use proxy or direct API
         let useProxy = proxyService.shouldUseProxy(for: .replicate)
+        let trimmedKey = settingsService.replicateAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replicateHeaders = [
+            "Content-Type": "application/json",
+            "Prefer": "wait"
+        ]
         let request: URLRequest
 
         if useProxy {
-            // Route through proxy - add Prefer: wait header to block until completion
-            guard let payloadDict = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-                throw LlmError.requestEncodingError(NSError(domain: "AudioService", code: -1))
-            }
+            // Route through proxy - Prefer: wait blocks until completion when possible
             request = try await proxyService.makeProxiedRequest(
                 provider: .replicate,
                 endpoint: "https://api.replicate.com/v1/predictions",
                 method: "POST",
-                headers: [
-                    "Content-Type": "application/json",
-                    "Prefer": "wait"  // Block until completion, avoids polling latency
-                ],
-                body: payloadDict
+                headers: replicateHeaders,
+                bodyData: payloadData
             )
         } else {
-            // Direct API call with user's key - add Prefer: wait header
-            guard let apiKey = settingsService.replicateAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !apiKey.isEmpty else {
+            // Direct API call with user's key
+            guard let apiKey = trimmedKey, !apiKey.isEmpty else {
                 throw LlmError.apiKeyMissing(provider: "Replicate")
             }
             guard let url = URL(string: "https://api.replicate.com/v1/predictions") else {
@@ -1288,9 +1306,8 @@ extension AudioService {
             }
             var directRequest = URLRequest(url: url)
             directRequest.httpMethod = "POST"
-            directRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
             directRequest.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            directRequest.addValue("wait", forHTTPHeaderField: "Prefer")  // Block until completion
+            replicateHeaders.forEach { directRequest.addValue($0.value, forHTTPHeaderField: $0.key) }
             directRequest.httpBody = payloadData
             request = directRequest
         }
@@ -1310,21 +1327,31 @@ extension AudioService {
             throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
         }
 
-        // Parse response - with Prefer: wait, it usually completes immediately
-        let decoder = JSONDecoder()
-        let prediction = try decoder.decode(ReplicateTTSResponse.self, from: data)
+        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        if !contentType.contains("application/json") {
+            let body = String(data: data, encoding: .utf8)
+            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: body)
+        }
+
+        // Parse response - with Prefer: wait, this often completes immediately
+        let prediction = try decodeReplicatePrediction(from: data)
 
         // Check if already completed (thanks to Prefer: wait header)
         let audioURL: String?
-        if prediction.status == "succeeded", let output = prediction.output {
+        let status = prediction.status.lowercased()
+        if status == "succeeded", let output = prediction.outputURL {
             audioURL = output
             logger.info("Replicate TTS completed immediately (no polling needed)")
-        } else if prediction.status == "failed" {
-            throw LlmError.ttsError("Replicate prediction failed: \(prediction.error ?? "Unknown error")")
+        } else if status == "failed" || status == "canceled" {
+            throw LlmError.ttsError("Replicate prediction \(status): \(prediction.error ?? "Unknown error")")
         } else {
             // Still processing, fall back to polling
             logger.info("Replicate TTS still processing, falling back to polling")
-            audioURL = try await pollReplicatePrediction(id: prediction.id)
+            audioURL = try await pollReplicatePrediction(
+                id: prediction.id,
+                useProxy: useProxy,
+                apiKey: useProxy ? nil : trimmedKey
+            )
         }
 
         guard let audioURL = audioURL else {
@@ -1351,8 +1378,12 @@ extension AudioService {
         return audioData
     }
 
-    private func pollReplicatePrediction(id: String, maxAttempts: Int = 30) async throws -> String? {
-        // Poll directly to Replicate (no proxy) - GET endpoints are publicly accessible
+    private func pollReplicatePrediction(
+        id: String,
+        useProxy: Bool,
+        apiKey: String?,
+        maxAttempts: Int = 30
+    ) async throws -> String? {
         // Only called if Prefer: wait timed out, so job is already running
         for attempt in 1...maxAttempts {
             // Don't wait on first attempt (job already started), then wait 500ms between polls
@@ -1360,14 +1391,28 @@ extension AudioService {
                 try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
             }
 
-            // Direct GET request to Replicate - no auth required for prediction status checks
-            guard let url = URL(string: "https://api.replicate.com/v1/predictions/\(id)") else {
-                throw LlmError.invalidURL
+            let request: URLRequest
+            if useProxy {
+                request = try await proxyService.makeProxiedRequest(
+                    provider: .replicate,
+                    endpoint: "https://api.replicate.com/v1/predictions/\(id)",
+                    method: "GET",
+                    headers: ["Content-Type": "application/json"],
+                    bodyData: nil
+                )
+            } else {
+                guard let apiKey, !apiKey.isEmpty else {
+                    throw LlmError.apiKeyMissing(provider: "Replicate")
+                }
+                guard let url = URL(string: "https://api.replicate.com/v1/predictions/\(id)") else {
+                    throw LlmError.invalidURL
+                }
+                var directRequest = URLRequest(url: url)
+                directRequest.httpMethod = "GET"
+                directRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+                directRequest.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                request = directRequest
             }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
             let (data, response) = try await urlSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
@@ -1375,19 +1420,29 @@ extension AudioService {
                 throw LlmError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1, body: nil)
             }
 
-            let decoder = JSONDecoder()
-            let prediction = try decoder.decode(ReplicateTTSResponse.self, from: data)
+            let prediction = try decodeReplicatePrediction(from: data)
+            let status = prediction.status.lowercased()
 
-            if prediction.status == "succeeded", let output = prediction.output {
+            if status == "succeeded", let output = prediction.outputURL {
                 return output
-            } else if prediction.status == "failed" {
-                throw LlmError.ttsError("Replicate prediction failed: \(prediction.error ?? "Unknown error")")
+            } else if status == "failed" || status == "canceled" {
+                throw LlmError.ttsError("Replicate prediction \(status): \(prediction.error ?? "Unknown error")")
             }
 
             logger.debug("Replicate prediction \(id) status: \(prediction.status). Attempt \(attempt)/\(maxAttempts)")
         }
 
         throw LlmError.ttsError("Replicate prediction timed out after \(maxAttempts) attempts")
+    }
+
+    private func decodeReplicatePrediction(from data: Data) throws -> ReplicateTTSResponse {
+        do {
+            return try JSONDecoder().decode(ReplicateTTSResponse.self, from: data)
+        } catch {
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+            logger.error("Failed to decode Replicate prediction: \(body)")
+            throw LlmError.responseDecodingError(error)
+        }
     }
 }
 

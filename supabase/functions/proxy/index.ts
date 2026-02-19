@@ -2,46 +2,15 @@
 // Routes authenticated requests to LLM providers with usage tracking
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-
-// Provider pricing (per 1M tokens, in USD)
-const PRICING = {
-  openai: {
-    'gpt-4o': { input: 2.50, output: 10.00, cached_input: 1.25 },
-    'gpt-4o-mini-tts': { input: 0.6, output: 12.00 }, // TTS model
-    'gpt-5': { input: 1.25, output: 10.00, cached_input: 0.125 },
-    'gpt-5-mini': { input: 0.25, output: 2.00, cached_input: 0.025 },
-    'gpt-4.1': { input: 2.00, output: 8.00, cached_input: 0.50 },
-  },
-  anthropic: {
-    'claude-sonnet-4.5': { input: 3.75, output: 15.00, cached_input: 0.30},
-    'claude-sonnet-4': { input: 3.75, output: 15.00, cached_input: 0.30},
-    'claude-opus-4.1': { input: 18.75, output: 75.00, cached_input: 1.50 },
-    'claude-haiku-4.5': { input: 1.25, output: 5.00, cached_input: 0.10 },
-  },
-  gemini: {
-    'gemini-2.0-flash': { input: 0.10, output: 0.40, cached_input: 0.025 },
-    'gemini-2.5-flash': { input: 0.3, output: 2.50, cached_input: 0.03 },
-    'gemini-2.5-flash-preview': { input: 0.3, output: 2.50, cached_input: 0.03 },
-    'gemini-2.5-pro': { input: 1.25, output: 5.00, cached_input: 0.125 },
-  },
-  xai: {
-    'grok-4-fast': { input: 0.20, output: 0.50, cached_input: 0.05 },
-    'grok-4': { input: 3.00, output: 15.00, cached_input: 0.75 },
-  },
-  moonshot: {
-    'kimi-k2-0905-preview': { input: 0.60, output: 2.50, cached_input: 0.15 },
-    'kimi-k2-turbo-preview': { input: 1.15, output: 8.00, cached_input: 0.15 },
-    'kimi-k2-thinking': { input: 0.60, output: 2.50, cached_input: 0.15 },
-    'kimi-k2-thinking-turbo': { input: 1.15, output: 8.00, cached_input: 0.15 },
-  },
-  mistral: {
-    'voxtral-mini': { input: 0.002, output: 0.04 }, // Input per minute, output per 1M tokens
-  },
-  replicate: {
-    'kokoro-82m': { per_second: 0.000225 }, // $0.000225 per second
-  }
-}
+import {
+  checkUserQuota,
+  createSupabaseClients,
+  DISABLE_USAGE_TRACKING,
+  insertUsageLog,
+  validateJwt,
+} from '../_shared/auth.ts'
+import { handleCorsOptions } from '../_shared/cors.ts'
+import { calculateCost, PRICING } from '../_shared/pricing.ts'
 
 const PROVIDER_CONFIG: Record<string, { pricingKey: keyof typeof PRICING; envKey: string }> = {
   openai: { pricingKey: 'openai', envKey: 'OPENAI' },
@@ -54,48 +23,6 @@ const PROVIDER_CONFIG: Record<string, { pricingKey: keyof typeof PRICING; envKey
   replicate: { pricingKey: 'replicate', envKey: 'REPLICATE' },
 }
 
-const MODEL_ALIASES: Partial<Record<keyof typeof PRICING, Array<{ regex: RegExp; key: string }>>> = {
-  openai: [
-    { regex: /^gpt-4o-mini-tts(?:$|[-_])/, key: 'gpt-4o-mini-tts' },
-    { regex: /^gpt-4o(?:$|[-_])/, key: 'gpt-4o' },
-    { regex: /^chatgpt-4o(?:$|[-_])/, key: 'gpt-4o' },
-    { regex: /^o4-mini(?:$|[-_])/, key: 'gpt-4o' },
-    { regex: /^gpt-5-mini(?:$|[-_])/, key: 'gpt-5-mini' },
-    { regex: /^gpt-5(?:$|[-_])/, key: 'gpt-5' },
-    { regex: /^gpt-4\.1-mini(?:$|[-_])/, key: 'gpt-4.1' },
-    { regex: /^gpt-4\.1(?:$|[-_])/, key: 'gpt-4.1' },
-  ],
-  anthropic: [
-    { regex: /^claude-sonnet-4-5(?:$|[-_])/, key: 'claude-sonnet-4.5' },
-    { regex: /^claude-sonnet-4(?:$|[-_])/, key: 'claude-sonnet-4' },
-    { regex: /^claude-opus-4(?:-1)?(?:$|[-_])/, key: 'claude-opus-4.1' },
-    { regex: /^claude-haiku-4(?:[-_]5)?(?:$|[-_])/, key: 'claude-haiku-4.5' },
-  ],
-  gemini: [
-    { regex: /^gemini-2\.5-flash-preview(?:$|[-_])/, key: 'gemini-2.5-flash-preview' },
-    { regex: /^gemini-2\.5-flash(?:$|[-_])/, key: 'gemini-2.5-flash' },
-    { regex: /^gemini-2\.5-pro(?:$|[-_])/, key: 'gemini-2.5-pro' },
-    { regex: /^gemini-2\.0-flash(?:$|[-_])/, key: 'gemini-2.0-flash' },
-  ],
-  xai: [
-    { regex: /^grok-4-fast(?:$|[-_])/, key: 'grok-4-fast' },
-    { regex: /^grok-4(?:$|[-_])/, key: 'grok-4' },
-  ],
-  moonshot: [
-    { regex: /^kimi-k2-0905-preview(?:$|[-_])/, key: 'kimi-k2-0905-preview' },
-    { regex: /^kimi-k2-turbo-preview(?:$|[-_])/, key: 'kimi-k2-turbo-preview' },
-    { regex: /^kimi-k2-thinking-turbo(?:$|[-_])/, key: 'kimi-k2-thinking-turbo' },
-    { regex: /^kimi-k2-thinking(?:$|[-_])/, key: 'kimi-k2-thinking' },
-  ],
-  mistral: [
-    { regex: /^voxtral-mini(?:$|[-_])/, key: 'voxtral-mini' },
-    { regex: /^voxtral(?:$|[-_])/, key: 'voxtral-mini' },
-  ],
-}
-
-const DISABLE_USAGE_TRACKING =
-  (Deno.env.get('DISABLE_USAGE_TRACKING') ?? 'false').toLowerCase() === 'true'
-
 interface UsageData {
   cached_input_tokens: number
   input_tokens: number
@@ -105,68 +32,27 @@ interface UsageData {
   prompt_seconds?: number
 }
 
-serve(async (req) => {
-  // CORS headers
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      }
-    })
+const handler = async (req: Request) => {
+  const corsResponse = handleCorsOptions(req)
+  if (corsResponse) {
+    return corsResponse
   }
 
   try {
-    // Initialize Supabase clients once (reuse across requests via module cache)
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-    const authHeader = req.headers.get('Authorization')!
+    const authHeader = req.headers.get('Authorization')
+    const { supabaseAuth, supabaseAdmin } = createSupabaseClients(authHeader)
 
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    })
-
-    // Create admin client for database writes (bypasses RLS)
-    const supabaseAdmin = (!DISABLE_USAGE_TRACKING && supabaseServiceKey)
-      ? createClient(supabaseUrl, supabaseServiceKey)
-      : null
-
-    // Validate JWT and get user
-    const { data: { user }, error: authError } = await supabaseAuth.auth.getUser()
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+    const { user, response: authResponse } = await validateJwt(supabaseAuth)
+    if (authResponse || !user) {
+      return authResponse || new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       })
     }
 
-    // Check quota using optimized combined query
-    if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-      const { data: quotaData, error: quotaError } = await supabaseAdmin.rpc('check_user_quota', {
-        p_user_id: user.id
-      })
-
-      if (quotaError) {
-        console.error('Quota check failed:', quotaError)
-        return new Response(JSON.stringify({ error: 'Failed to check usage quota' }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' }
-        })
-      }
-
-      const quota = quotaData?.[0]
-      if (quota?.quota_exceeded) {
-        return new Response(JSON.stringify({
-          error: 'Monthly usage limit exceeded',
-          current_usage: quota.current_usage,
-          limit: quota.monthly_limit
-        }), {
-          status: 429,
-          headers: { 'Content-Type': 'application/json' }
-        })
-      }
+    const quotaResponse = await checkUserQuota(supabaseAdmin, user.id)
+    if (quotaResponse) {
+      return quotaResponse
     }
 
     // Parse request body
@@ -222,9 +108,25 @@ serve(async (req) => {
       }
     }
 
+    if (pricingProvider === 'replicate') {
+      const preferWaitHeader =
+        providerHeaders['Prefer'] ||
+        providerHeaders['prefer'] ||
+        req.headers.get('Prefer') ||
+        req.headers.get('prefer')
+
+      if (preferWaitHeader) {
+        providerHeaders['Prefer'] = preferWaitHeader
+      }
+
+      delete providerHeaders['prefer']
+    }
+
+    const requestMethod = (method || 'POST').toUpperCase()
+
     // Detect TTS and transcription endpoints early
     const isTTS = endpoint.includes('/audio/speech') || endpoint.includes('/predictions')
-    const isReplicate = endpoint.includes('api.replicate.com')
+    const isReplicatePost = shouldLogReplicateUsage(endpoint, requestMethod)
     const isTranscription = endpoint.includes('/audio/transcriptions')
 
     // Handle transcription with base64 audio
@@ -254,16 +156,23 @@ serve(async (req) => {
 
     // Forward request to provider
     const response = await fetch(endpoint, {
-      method: method || 'POST',
+      method: requestMethod,
       headers: providerHeaders,
       body: requestBody
     })
 
+    const responseContentType = response.headers.get('Content-Type') || ''
+
+    // 1) Handle provider errors first
     if (!response.ok) {
       const errorText = await response.text()
       return new Response(errorText, {
         status: response.status,
-        headers: { 'Content-Type': response.headers.get('Content-Type') || 'text/plain' }
+        headers: {
+          'Content-Type': pricingProvider === 'replicate'
+            ? 'application/json'
+            : (responseContentType || 'text/plain')
+        }
       })
     }
 
@@ -283,131 +192,115 @@ serve(async (req) => {
       model = 'kokoro-82m'
     }
 
-    // Debug log for model extraction
     if (model === 'unknown') {
       console.warn(`⚠️ Model extraction failed for ${pricingProvider}. Endpoint: ${endpoint}, bodyData:`, JSON.stringify(bodyData).substring(0, 200))
     }
 
-    // Handle non-streaming responses (Mistral transcription)
-    if (isTranscription && pricingProvider === 'mistral') {
+    // 2) Handle all non-SSE responses before streaming fallback
+    if (!isSSEContentType(responseContentType)) {
       const responseData = await response.arrayBuffer()
-      const jsonText = new TextDecoder().decode(responseData)
-      const jsonData = JSON.parse(jsonText)
 
-      // Extract usage from Mistral transcription response
-      const usage = jsonData.usage
-      if (usage) {
-        const promptSeconds = usage.prompt_audio_seconds || 0
-        const outputTokens = usage.completion_tokens || 0
-
-        const usageData: UsageData = {
-          cached_input_tokens: 0,
-          input_tokens: 0,
-          reasoning_output_tokens: 0,
-          output_tokens: outputTokens,
-          cost_usd: 0,
-          prompt_seconds: promptSeconds
+      // Mistral transcription returns JSON payload with usage
+      if (isTranscription && pricingProvider === 'mistral') {
+        const mistralUsage = extractUsageFromChunk(new TextDecoder().decode(responseData), pricingProvider, null)
+        if (mistralUsage) {
+          await logUsage(supabaseAdmin, user.id, pricingProvider, model, mistralUsage)
+          console.log(`🎤 Mistral transcription logged: ${(mistralUsage.prompt_seconds || 0).toFixed(2)}s audio, ${mistralUsage.output_tokens} tokens`)
         }
 
-        const cost = calculateCost(pricingProvider, model, usageData)
-
-        if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-          await supabaseAdmin.from('usage_logs').insert({
-            user_id: user.id,
-            provider: pricingProvider,
-            model,
-            cached_input_tokens: 0,
-            input_tokens: 0,
-            reasoning_output_tokens: 0,
-            output_tokens: outputTokens,
-            cost_usd: cost
-          })
-
-          console.log(`🎤 Mistral transcription logged: ${promptSeconds}s audio, ${outputTokens} tokens - $${cost.toFixed(6)}`)
-        }
+        return new Response(responseData, {
+          status: response.status,
+          headers: {
+            'Content-Type': responseContentType || 'application/json'
+          }
+        })
       }
 
-      // Return the response to client
-      return new Response(responseData, {
-        headers: {
-          'Content-Type': response.headers.get('Content-Type') || 'application/json'
-        }
-      })
-    }
-
-    // Handle non-streaming Replicate TTS responses (with Prefer: wait header)
-    if (isReplicate && pricingProvider === 'replicate') {
-      const contentType = response.headers.get('Content-Type') || ''
-      if (contentType.includes('application/json')) {
-        // Replicate returned JSON (prediction object), not a stream
-        const responseData = await response.arrayBuffer()
-        const jsonText = new TextDecoder().decode(responseData)
-
-        // Estimate usage for Replicate TTS
+      // Replicate TTS should always return JSON from this endpoint (including 201 pending)
+      if (isReplicatePost && pricingProvider === 'replicate') {
         const ttsInputText = bodyData?.input?.text || ''
-        const estimatedMinutes = Math.max(0.005, ttsInputText.length / 750) // ~150 words/min, ~5 chars/word
-        const estimatedSeconds = estimatedMinutes * 60
-
         const usageData: UsageData = {
           cached_input_tokens: 0,
           input_tokens: 0,
           reasoning_output_tokens: 0,
           output_tokens: 0,
           cost_usd: 0,
-          prompt_seconds: estimatedSeconds
+          prompt_seconds: estimateReplicateSeconds(ttsInputText)
         }
 
-        const cost = calculateCost(pricingProvider, model, usageData)
+        await logUsage(supabaseAdmin, user.id, pricingProvider, model, usageData)
+        console.log(`🎤 Replicate TTS logged: ${ttsInputText.length} chars → ${(usageData.prompt_seconds || 0).toFixed(2)}s audio`)
 
-        if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-          await supabaseAdmin.from('usage_logs').insert({
-            user_id: user.id,
-            provider: pricingProvider,
-            model,
-            cached_input_tokens: 0,
-            input_tokens: 0,
-            reasoning_output_tokens: 0,
-            output_tokens: 0,
-            cost_usd: cost
-          })
-
-          console.log(`🎤 Replicate TTS logged: ${ttsInputText.length} chars → ${estimatedSeconds.toFixed(2)}s audio - $${cost.toFixed(6)}`)
-        }
-
-        // Return JSON response to client unchanged
         return new Response(responseData, {
+          status: response.status,
           headers: {
             'Content-Type': 'application/json'
           }
         })
       }
+
+      let nonStreamingUsage: UsageData | null = null
+
+      // OpenAI TTS is non-SSE audio; estimate token usage for cost accounting
+      if (isTTS && pricingProvider === 'openai') {
+        const ttsInputText = bodyData?.input || ''
+        const inputTokens = Math.ceil(ttsInputText.length / 4)
+        const outputTokens = Math.ceil(inputTokens * 6.25)
+
+        nonStreamingUsage = {
+          cached_input_tokens: 0,
+          input_tokens: inputTokens,
+          reasoning_output_tokens: 0,
+          output_tokens: outputTokens,
+          cost_usd: 0
+        }
+
+        console.log(`🎤 TTS usage estimated: ${inputTokens} input tokens → ${outputTokens} audio tokens`)
+      } else if (responseContentType.includes('application/json') || responseContentType.includes('text/')) {
+        nonStreamingUsage = extractUsageFromChunk(new TextDecoder().decode(responseData), pricingProvider, null)
+      }
+
+      if (nonStreamingUsage) {
+        await logUsage(supabaseAdmin, user.id, pricingProvider, model, nonStreamingUsage)
+      } else if (!isTTS && !isTranscription && !DISABLE_USAGE_TRACKING) {
+        console.warn(`⚠️ No usage data captured for ${pricingProvider} ${model}`)
+      }
+
+      return new Response(responseData, {
+        status: response.status,
+        headers: {
+          'Content-Type': responseContentType || 'application/json'
+        }
+      })
     }
 
-    // Stream response back to client while capturing usage
+    // 3) Stream actual SSE responses while capturing usage
     let streamingUsage: UsageData | null = null
+    const streamDecoder = new TextDecoder()
 
     const transformedStream = new TransformStream({
       transform(chunk, controller) {
-        controller.enqueue(chunk) // Pass through immediately
+        controller.enqueue(chunk)
 
-        // Try to extract usage from this chunk
         try {
-          const text = new TextDecoder().decode(chunk)
+          const text = streamDecoder.decode(chunk)
+          if (!containsUsageSignal(text)) {
+            return
+          }
+
           const usage = extractUsageFromChunk(text, pricingProvider, streamingUsage)
           if (usage) {
             streamingUsage = usage
           }
-        } catch (e) {
-          // Ignore parsing errors
+        } catch (_err) {
+          // Ignore parsing errors in individual chunks
         }
       },
       async flush() {
-        // Handle special cases for TTS that don't return usage
         if (isTTS && pricingProvider === 'openai') {
-          // Estimate OpenAI TTS usage based on input text
           const ttsInputText = bodyData?.input || ''
-          const inputTokens = Math.ceil(ttsInputText.length / 4) // ~4 chars per token
-          const outputTokens = Math.ceil(inputTokens * 6.25) // Audio tokens = text tokens * 6.25
+          const inputTokens = Math.ceil(ttsInputText.length / 4)
+          const outputTokens = Math.ceil(inputTokens * 6.25)
 
           streamingUsage = {
             cached_input_tokens: 0,
@@ -418,12 +311,9 @@ serve(async (req) => {
           }
 
           console.log(`🎤 TTS usage estimated: ${inputTokens} input tokens → ${outputTokens} audio tokens`)
-        } else if (isReplicate && pricingProvider === 'replicate') {
-          // Estimate Replicate TTS usage based on input text length
-          // Approximate: ~150 words per minute, ~5 chars per word = 750 chars per minute
+        } else if (isReplicatePost && pricingProvider === 'replicate') {
           const ttsInputText = bodyData?.input?.text || ''
-          const estimatedMinutes = Math.max(0.005, ttsInputText.length / 750) // Minimum 0.3 seconds
-          const estimatedSeconds = estimatedMinutes * 60
+          const estimatedSeconds = estimateReplicateSeconds(ttsInputText)
 
           streamingUsage = {
             cached_input_tokens: 0,
@@ -437,42 +327,29 @@ serve(async (req) => {
           console.log(`🎤 Replicate TTS usage estimated: ${ttsInputText.length} chars → ${estimatedSeconds.toFixed(2)}s audio`)
         }
 
-        // Stream finished, write usage to database
-        if (streamingUsage && !DISABLE_USAGE_TRACKING && supabaseAdmin) {
-          const cost = calculateCost(pricingProvider, model, streamingUsage)
-
-          const { error: insertError } = await supabaseAdmin.from('usage_logs').insert({
-            user_id: user.id,
-            provider: pricingProvider,
-            model,
-            cached_input_tokens: streamingUsage.cached_input_tokens,
-            input_tokens: streamingUsage.input_tokens,
-            reasoning_output_tokens: streamingUsage.reasoning_output_tokens,
-            output_tokens: streamingUsage.output_tokens,
-            cost_usd: cost
-          })
-
-          if (insertError) {
-            console.error('Failed to log usage:', insertError)
-          } else {
-            console.log(`✅ Logged usage: ${model} - $${cost.toFixed(6)} (user: ${user.id.substring(0, 8)})`)
-          }
+        if (streamingUsage) {
+          await logUsage(supabaseAdmin, user.id, pricingProvider, model, streamingUsage)
         } else if (!isTTS && !isTranscription && !DISABLE_USAGE_TRACKING) {
           console.warn(`⚠️ No usage data captured for ${pricingProvider} ${model}`)
         }
       }
     })
 
-    return new Response(
-      response.body!.pipeThrough(transformedStream),
-      {
-        headers: {
-          'Content-Type': response.headers.get('Content-Type') || 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        }
+    if (!response.body) {
+      return new Response(JSON.stringify({ error: 'Missing SSE response body from provider' }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+
+    return new Response(response.body.pipeThrough(transformedStream), {
+      status: response.status,
+      headers: {
+        'Content-Type': responseContentType || 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
       }
-    )
+    })
 
   } catch (error) {
     console.error('Proxy error:', error)
@@ -484,9 +361,87 @@ serve(async (req) => {
       headers: { 'Content-Type': 'application/json' }
     })
   }
-})
+}
 
-function extractUsageFromChunk(
+if (import.meta.main) {
+  serve(handler)
+}
+
+export function isSSEContentType(contentType: string): boolean {
+  return contentType.toLowerCase().includes('text/event-stream')
+}
+
+export function estimateReplicateSeconds(ttsInputText: string): number {
+  const estimatedMinutes = Math.max(0.005, ttsInputText.length / 750)
+  return estimatedMinutes * 60
+}
+
+export function shouldLogReplicateUsage(endpoint: string, method?: string): boolean {
+  return endpoint.includes('api.replicate.com') && (method || 'POST').toUpperCase() === 'POST'
+}
+
+export function containsUsageSignal(text: string): boolean {
+  return text.includes('usage')
+}
+
+function mapOpenAIUsage(rawUsage: any, promptSeconds: number): UsageData | null {
+  if (!rawUsage || typeof rawUsage !== 'object') {
+    return null
+  }
+
+  const completionTokens = rawUsage.output_tokens || rawUsage.completion_tokens || 0
+  const reasoningTokens =
+    rawUsage.reasoning_tokens ||
+    rawUsage.reasoning_output_tokens ||
+    rawUsage.output_tokens_details?.reasoning_tokens ||
+    rawUsage.completion_tokens_details?.reasoning_tokens ||
+    0
+
+  return {
+    cached_input_tokens:
+      rawUsage.cached_input_tokens ||
+      rawUsage.prompt_tokens_details?.cached_tokens ||
+      0,
+    input_tokens: rawUsage.input_tokens || rawUsage.prompt_tokens || 0,
+    reasoning_output_tokens: reasoningTokens,
+    output_tokens: completionTokens,
+    cost_usd: 0,
+    prompt_seconds: promptSeconds
+  }
+}
+
+async function logUsage(
+  supabaseAdmin: any,
+  userId: string,
+  provider: keyof typeof PRICING,
+  model: string,
+  usage: UsageData
+): Promise<void> {
+  if (DISABLE_USAGE_TRACKING || !supabaseAdmin) {
+    return
+  }
+
+  const cost = calculateCost(provider, model, usage)
+  const insertError = await insertUsageLog(supabaseAdmin, {
+    user_id: userId,
+    provider,
+    model,
+    cached_input_tokens: usage.cached_input_tokens,
+    input_tokens: usage.input_tokens,
+    reasoning_output_tokens: usage.reasoning_output_tokens,
+    output_tokens: usage.output_tokens,
+    cost_usd: cost
+  })
+
+  if (insertError) {
+    console.error('Failed to log usage:', insertError)
+    return
+  }
+
+  console.log(`✅ Logged usage: ${model} - $${cost.toFixed(6)} (user: ${userId.substring(0, 8)})`)
+}
+
+export function extractUsageFromChunk(
   text: string,
   provider: keyof typeof PRICING,
   current: UsageData | null
@@ -510,23 +465,24 @@ function extractUsageFromChunk(
         }
 
         switch (provider) {
-          case 'openai':
-            if (parsed.type === 'response.completed' && parsed.response?.usage) {
-              const usage = parsed.response.usage
-              return {
-                cached_input_tokens: usage.cached_input_tokens || 0,
-                input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
-                reasoning_output_tokens:
-                  usage.reasoning_tokens ||
-                  usage.reasoning_output_tokens ||
-                  usage.output_tokens_details?.reasoning_tokens ||
-                  0,
-                output_tokens: usage.output_tokens || 0,
-                cost_usd: 0,
-                prompt_seconds: base.prompt_seconds
-              }
+          case 'openai': {
+            const isResponseUsageEvent =
+              parsed.type === 'response.completed' ||
+              parsed.type === 'response.incomplete' ||
+              parsed.type === 'response.failed'
+
+            const openaiUsage =
+              (isResponseUsageEvent ? parsed.response?.usage : null) ||
+              parsed.response?.usage ||
+              parsed.usage
+
+            const mapped = mapOpenAIUsage(openaiUsage, base.prompt_seconds || 0)
+            if (mapped) {
+              return mapped
             }
+
             break
+          }
 
           case 'anthropic': {
             if (parsed.type === 'message_start' && parsed.message?.usage) {
@@ -627,19 +583,13 @@ function extractUsageFromChunk(
 
       switch (provider) {
         case 'openai':
-          if (parsed.usage) {
-            const usage = parsed.usage
-            return {
-              cached_input_tokens: usage.cached_input_tokens || 0,
-              input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
-              reasoning_output_tokens:
-                usage.reasoning_tokens ||
-                usage.reasoning_output_tokens ||
-                usage.output_tokens_details?.reasoning_tokens ||
-                0,
-              output_tokens: usage.output_tokens || usage.completion_tokens || 0,
-              cost_usd: 0,
-              prompt_seconds: current?.prompt_seconds ?? 0
+          {
+            const mapped = mapOpenAIUsage(
+              parsed.response?.usage || parsed.usage,
+              current?.prompt_seconds ?? 0
+            )
+            if (mapped) {
+              return mapped
             }
           }
           break
@@ -733,66 +683,4 @@ function extractUsageFromChunk(
   return null
 }
 
-function calculateCost(provider: keyof typeof PRICING, model: string, usage: UsageData): number {
-  const providerPricing = PRICING[provider]
-  if (!providerPricing) return 0
-
-  const normalizedModel = model.toLowerCase()
-
-  let modelPricing: any = null
-
-  // Direct match first (case-insensitive)
-  for (const [modelKey, pricing] of Object.entries(providerPricing)) {
-    if (normalizedModel === modelKey.toLowerCase()) {
-      modelPricing = pricing
-      break
-    }
-  }
-
-  // Alias / regex-based matching
-  if (!modelPricing) {
-    const aliases = MODEL_ALIASES[provider] || []
-    for (const { regex, key } of aliases) {
-      if (regex.test(normalizedModel) && providerPricing[key]) {
-        modelPricing = providerPricing[key]
-        break
-      }
-    }
-  }
-
-  // Fallback to longest key contained within the model string
-  if (!modelPricing) {
-    const sortedKeys = Object.keys(providerPricing).sort((a, b) => b.length - a.length)
-    for (const key of sortedKeys) {
-      if (normalizedModel.includes(key.toLowerCase())) {
-        modelPricing = providerPricing[key]
-        break
-      }
-    }
-  }
-
-  if (!modelPricing) return 0
-
-  if (provider === 'mistral') {
-    const minutes = (usage.prompt_seconds || 0) / 60
-    const perMinute = modelPricing.input || 0
-    const outputRate = modelPricing.output || 0
-    const minuteCost = minutes * perMinute
-    const textCost = (usage.output_tokens / 1_000_000) * outputRate
-    return minuteCost + textCost
-  }
-
-  if (provider === 'replicate') {
-    const seconds = usage.prompt_seconds || 0
-    const perSecond = modelPricing.per_second || 0
-    return seconds * perSecond
-  }
-
-  // Calculate cost (divide by 1M since pricing is per 1M tokens)
-  const cachedInputCost = (usage.cached_input_tokens / 1_000_000) * (modelPricing.cached_input || modelPricing.input)
-  const inputCost = (usage.input_tokens / 1_000_000) * modelPricing.input
-  const reasoningOutputCost = (usage.reasoning_output_tokens / 1_000_000) * (modelPricing.reasoning_output || modelPricing.output)
-  const outputCost = (usage.output_tokens / 1_000_000) * modelPricing.output
-
-  return cachedInputCost + inputCost + reasoningOutputCost + outputCost
-}
+export { calculateCost }

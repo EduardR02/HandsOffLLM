@@ -14,8 +14,18 @@ class HistoryService: ObservableObject {
     // Published metadata index (for list views)
     @Published var indexEntries: [ConversationIndexEntry] = []
     @Published var audioRetentionDays: Int
+    @Published var lastError: Error?
     // In-memory store for SwiftUI previews
     private var previewStore: [UUID: Conversation] = [:]
+
+    struct HistoryOperationError: Error, LocalizedError {
+        let operation: String
+        let underlying: Error
+
+        var errorDescription: String? {
+            "\(operation): \(underlying.localizedDescription)"
+        }
+    }
 
     // MARK: - JSON Coding
     nonisolated private static let encoder: JSONEncoder = {
@@ -44,6 +54,10 @@ class HistoryService: ObservableObject {
     }
     private var audioFolderURL: URL? {
         documentsURL?.appendingPathComponent("Audio")
+    }
+
+    private func setLastError(operation: String, underlying: Error) {
+        lastError = HistoryOperationError(operation: operation, underlying: underlying)
     }
     
     init() {
@@ -93,19 +107,25 @@ class HistoryService: ObservableObject {
     
     private func saveIndex() async {
         guard let url = indexFileURL else {
-            logger.error("Could not get index file URL for saving.")
+            logger.error("Could not get index file URL for saving")
+            setLastError(operation: "Save index", underlying: NSError(
+                domain: "HistoryService",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Index file URL is unavailable"]
+            ))
             return
         }
+
         let entriesToSave = self.indexEntries
-        let capturedLogger = self.logger
-        await Task.detached {
-            do {
+        do {
+            try await Task.detached {
                 let data = try Self.encoder.encode(entriesToSave)
                 try data.write(to: url, options: [.atomicWrite])
-            } catch {
-                capturedLogger.error("Failed to save index in background: \(error.localizedDescription)")
-            }
-        }.value
+            }.value
+        } catch {
+            logger.error("Failed to save index in background: \(error.localizedDescription)")
+            setLastError(operation: "Save index", underlying: error)
+        }
     }
     
     // MARK: - Full Conversation Storage
@@ -113,25 +133,34 @@ class HistoryService: ObservableObject {
         convFolderURL?.appendingPathComponent("\(id.uuidString).json")
     }
     
-    private func saveConversationFile(_ conversation: Conversation) async {
+    private func saveConversationFile(_ conversation: Conversation) async -> Bool {
         guard let url = conversationFileURL(for: conversation.id) else {
             logger.error("Could not get file URL for conversation \(conversation.id)")
-            return
+            setLastError(operation: "Save conversation", underlying: NSError(
+                domain: "HistoryService",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Conversation file URL is unavailable"]
+            ))
+            return false
         }
-        let capturedLogger = self.logger
-        await Task.detached {
-            do {
+
+        do {
+            try await Task.detached {
                 let data = try Self.encoder.encode(conversation)
                 try data.write(to: url, options: [.atomicWrite])
-            } catch {
-                capturedLogger.error("Failed to save conversation \(conversation.id) in background: \(error.localizedDescription)")
-            }
-        }.value
+            }.value
+            return true
+        } catch {
+            logger.error("Failed to save conversation \(conversation.id) in background: \(error.localizedDescription)")
+            setLastError(operation: "Save conversation", underlying: error)
+            return false
+        }
     }
     
     // MARK: - Conversation Management
 
     func addOrUpdateConversation(_ conversation: Conversation, updateTimestamp: Bool = true) async {
+        lastError = nil
         var updatedConversation = conversation
 
         // Update timestamp: preserve createdAt, update updatedAt if needed
@@ -139,7 +168,9 @@ class HistoryService: ObservableObject {
             updatedConversation.updatedAt = Date()
         }
 
-        await saveConversationFile(updatedConversation)
+        guard await saveConversationFile(updatedConversation) else {
+            return
+        }
 
         let entry = ConversationIndexEntry(
             id: updatedConversation.id,
@@ -182,47 +213,84 @@ class HistoryService: ObservableObject {
         await addOrUpdateConversation(updated, updateTimestamp: false)
     }
     
-    private func removeConversationAssets(id: UUID) async {
-        let capturedLogger = self.logger
+    private func removeConversationAssets(id: UUID) async -> Bool {
+        var success = true
+
         if let fileURL = conversationFileURL(for: id) {
-            await Task.detached {
-                do { try FileManager.default.removeItem(at: fileURL) }
-                catch { capturedLogger.warning("Failed to remove conversation file \(id): \(error.localizedDescription)")}
-            }.value
+            do {
+                try await Task.detached {
+                    let fm = FileManager.default
+                    guard fm.fileExists(atPath: fileURL.path) else { return }
+                    try fm.removeItem(at: fileURL)
+                }.value
+            } catch {
+                logger.warning("Failed to remove conversation file \(id): \(error.localizedDescription)")
+                setLastError(operation: "Delete conversation file", underlying: error)
+                success = false
+            }
         }
+
         if let audioDir = audioFolderURL?.appendingPathComponent(id.uuidString) {
-            await Task.detached {
-                do { try FileManager.default.removeItem(at: audioDir) }
-                catch { capturedLogger.warning("Failed to remove audio directory for conversation \(id): \(error.localizedDescription)")}
-            }.value
+            do {
+                try await Task.detached {
+                    let fm = FileManager.default
+                    guard fm.fileExists(atPath: audioDir.path) else { return }
+                    try fm.removeItem(at: audioDir)
+                }.value
+            } catch {
+                logger.warning("Failed to remove audio directory for conversation \(id): \(error.localizedDescription)")
+                setLastError(operation: "Delete conversation audio", underlying: error)
+                success = false
+            }
         }
+
+        guard success else {
+            return false
+        }
+
         if let idx = indexEntries.firstIndex(where: { $0.id == id }) {
             indexEntries.remove(at: idx)
         }
+
+        return true
     }
-    
+
     func deleteConversation(id: UUID) async {
-        await removeConversationAssets(id: id)
+        lastError = nil
+        guard await removeConversationAssets(id: id) else {
+            return
+        }
         await saveIndex()
-        logger.info("Deleted conversation with id \(id).")
+        if lastError == nil {
+            logger.info("Deleted conversation with id \(id).")
+        }
     }
     
     func loadConversationDetail(id: UUID) async -> Conversation? {
+        lastError = nil
         // If set for preview, return from memory
         if let conv = previewStore[id] { return conv }
         guard let url = conversationFileURL(for: id) else { return nil }
 
-        let capturedLogger = self.logger
-        return await Task.detached {
-            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let result: Result<Conversation?, Error> = await Task.detached {
+            guard FileManager.default.fileExists(atPath: url.path) else { return .success(nil) }
             do {
                 let data = try Data(contentsOf: url)
-                return try Self.decoder.decode(Conversation.self, from: data)
+                let conversation = try Self.decoder.decode(Conversation.self, from: data)
+                return .success(conversation)
             } catch {
-                capturedLogger.error("Background error loading conversation detail \(id): \(error.localizedDescription)")
-                return nil
+                return .failure(error)
             }
         }.value
+
+        switch result {
+        case .success(let conversation):
+            return conversation
+        case .failure(let error):
+            logger.error("Background error loading conversation detail \(id): \(error.localizedDescription)")
+            setLastError(operation: "Load conversation", underlying: error)
+            return nil
+        }
     }
     
     func generateTitleIfNeeded(for conversation: Conversation) -> Conversation {

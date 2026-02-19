@@ -352,7 +352,7 @@ struct SettingsView: View {
 
     private var audioStorageSection: some View {
         Section {
-            Toggle("Auto-Delete After 7 Days", isOn: Binding(
+            Toggle("Auto-Delete Audio After 7 Days", isOn: Binding(
                 get: { audioAutoDeleteEnabled },
                 set: { newValue in
                     audioAutoDeleteEnabled = newValue

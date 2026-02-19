@@ -132,8 +132,37 @@ struct ReplicateTTSInput: Codable {
 struct ReplicateTTSResponse: Codable {
     let id: String
     let status: String
-    let output: String?
+    let outputURL: String?
     let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, output, error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        status = try container.decode(String.self, forKey: .status)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+
+        if let single = try? container.decode(String.self, forKey: .output) {
+            outputURL = single
+        } else if let array = try? container.decode([String].self, forKey: .output) {
+            outputURL = array.first
+        } else if let dict = try? container.decode([String: String].self, forKey: .output) {
+            outputURL = dict["audio"] ?? dict["url"]
+        } else {
+            outputURL = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(outputURL, forKey: .output)
+    }
 }
 
 // MARK: - Mistral Transcription API Structures
@@ -185,7 +214,7 @@ struct ClaudeEvent: Decodable {
     let delta: Delta?
 }
 
-struct XAIResponseEvent: Decodable {
+struct OpenAICompatibleResponseEvent: Decodable {
     struct ChoiceDelta: Decodable {
         let content: String?
         let reasoning_content: String?
@@ -197,6 +226,8 @@ struct XAIResponseEvent: Decodable {
 
     let choices: [Choice]?
 }
+
+typealias XAIResponseEvent = OpenAICompatibleResponseEvent
 
 enum OpenAIReasoningEffort: String, CaseIterable, Codable, Equatable {
     case minimal
@@ -253,6 +284,37 @@ enum LLMProvider: String, CaseIterable, Identifiable, Codable, Hashable {
     /// User-selectable providers (excludes internal-only providers like Replicate)
     static var userFacing: [LLMProvider] {
         [.gemini, .claude, .openai, .xai, .moonshot]
+    }
+
+    static func provider(forModelId modelId: String) -> LLMProvider? {
+        let normalized = modelId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        guard !normalized.isEmpty else { return nil }
+
+        if normalized.hasPrefix("gpt-")
+            || normalized.hasPrefix("chatgpt-")
+            || normalized.hasPrefix("codex-")
+            || normalized.hasPrefix("o1")
+            || normalized.hasPrefix("o3")
+            || normalized.hasPrefix("o4") {
+            return .openai
+        }
+        if normalized.hasPrefix("claude-") {
+            return .claude
+        }
+        if normalized.hasPrefix("gemini-") {
+            return .gemini
+        }
+        if normalized.hasPrefix("grok-") {
+            return .xai
+        }
+        if normalized.hasPrefix("kimi-") {
+            return .moonshot
+        }
+
+        return nil
     }
 }
 

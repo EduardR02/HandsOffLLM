@@ -2,56 +2,25 @@
 // Accepts multipart uploads from clients, injects app credentials, logs usage.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-type PricingEntry = { input?: number; output?: number };
-
-const PRICING: Record<string, Record<string, PricingEntry>> = {
-  mistral: {
-    "voxtral-mini": { input: 0.002, output: 0.04 },
-    "voxtral-mini-latest": { input: 0.002, output: 0.04 },
-  },
-};
-
-const MODEL_ALIASES = [
-  { regex: /^voxtral-mini(?:[-_].+)?$/i, key: "voxtral-mini" },
-  { regex: /^voxtral-mini-latest$/i, key: "voxtral-mini-latest" },
-];
+import {
+  checkUserQuota,
+  createSupabaseClients,
+  DISABLE_USAGE_TRACKING,
+  insertUsageLog,
+  validateJwt,
+} from "../_shared/auth.ts";
+import { CORS_HEADERS, handleCorsOptions } from "../_shared/cors.ts";
+import { calculateCost } from "../_shared/pricing.ts";
 
 interface UsageData {
   prompt_audio_seconds: number;
   completion_tokens: number;
 }
 
-const DISABLE_USAGE_TRACKING =
-  (Deno.env.get("DISABLE_USAGE_TRACKING") ?? "false").toLowerCase() === "true";
-
-function resolvePricing(model: string): PricingEntry {
-  const pricing = PRICING.mistral;
-  const exact = pricing[model];
-  if (exact) return exact;
-
-  for (const alias of MODEL_ALIASES) {
-    if (alias.regex.test(model)) {
-      const mapped = pricing[alias.key];
-      if (mapped) return mapped;
-    }
-  }
-
-  const fallback = pricing["voxtral-mini"];
-  return fallback ?? { input: 0, output: 0 };
-}
-
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers":
-          "authorization, x-client-info, apikey, content-type",
-      },
-    });
+const handler = async (req: Request) => {
+  const corsResponse = handleCorsOptions(req);
+  if (corsResponse) {
+    return corsResponse;
   }
 
   if (req.method !== "POST") {
@@ -59,9 +28,6 @@ serve(async (req) => {
   }
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const mistralApiKey = Deno.env.get("MISTRAL_API_KEY");
     const authHeader = req.headers.get("Authorization");
 
@@ -82,57 +48,18 @@ serve(async (req) => {
       );
     }
 
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const supabaseAdmin = (!DISABLE_USAGE_TRACKING && supabaseServiceKey)
-      ? createClient(supabaseUrl, supabaseServiceKey)
-      : null;
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabaseAuth.auth.getUser();
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    const { supabaseAuth, supabaseAdmin } = createSupabaseClients(authHeader);
+    const { user, response: authResponse } = await validateJwt(supabaseAuth);
+    if (authResponse || !user) {
+      return authResponse ?? new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    // Check quota using optimized combined query
-    if (!DISABLE_USAGE_TRACKING && supabaseAdmin) {
-      const { data: quotaData, error: quotaError } = await supabaseAdmin.rpc(
-        "check_user_quota",
-        { p_user_id: user.id },
-      );
-
-      if (quotaError) {
-        console.error("Quota check failed:", quotaError);
-        return new Response(
-          JSON.stringify({ error: "Failed to check usage quota" }),
-          {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-
-      const quota = quotaData?.[0];
-      if (quota?.quota_exceeded) {
-        return new Response(
-          JSON.stringify({
-            error: "Monthly usage limit exceeded",
-            current_usage: quota.current_usage,
-            limit: quota.monthly_limit,
-          }),
-          {
-            status: 429,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
+    const quotaResponse = await checkUserQuota(supabaseAdmin, user.id);
+    if (quotaResponse) {
+      return quotaResponse;
     }
 
     const formData = await req.formData();
@@ -189,12 +116,20 @@ serve(async (req) => {
     }
 
     if (usage && !DISABLE_USAGE_TRACKING && supabaseAdmin) {
-      const pricing = resolvePricing(model.toLowerCase());
-      const minutes = usage.prompt_audio_seconds / 60;
-      const cost = minutes * (pricing.input ?? 0) +
-        (usage.completion_tokens / 1_000_000) * (pricing.output ?? 0);
+      const cost = calculateCost(
+        "mistral",
+        model,
+        {
+          cached_input_tokens: 0,
+          input_tokens: 0,
+          reasoning_output_tokens: 0,
+          output_tokens: usage.completion_tokens,
+          prompt_seconds: usage.prompt_audio_seconds,
+        },
+        { fallbackModelKey: "voxtral-mini" },
+      );
 
-      await supabaseAdmin.from("usage_logs").insert({
+      await insertUsageLog(supabaseAdmin, {
         user_id: user.id,
         provider: "mistral",
         model,
@@ -210,7 +145,7 @@ serve(async (req) => {
       headers: {
         "Content-Type":
           mistralResponse.headers.get("Content-Type") ?? "application/json",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": CORS_HEADERS["Access-Control-Allow-Origin"],
       },
     });
   } catch (error) {
@@ -223,4 +158,8 @@ serve(async (req) => {
       },
     );
   }
-});
+};
+
+if (import.meta.main) {
+  serve(handler);
+}

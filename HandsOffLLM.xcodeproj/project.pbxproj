@@ -36,7 +36,6 @@
 		BB1744592DA5355D00738173 /* HandsOffLLM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HandsOffLLM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB1744692DA5355D00738173 /* HandsOffLLMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HandsOffLLMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB1744732DA5355D00738173 /* HandsOffLLMUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HandsOffLLMUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		BB53B9932DA6701600DECCF3 /* APIkeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIkeys.swift; sourceTree = "<group>"; };
 		BB53B9952DA6710300DECCF3 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		BB53B9972DA6759100DECCF3 /* Prompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prompts.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -104,7 +103,6 @@
 		BB1744502DA5355D00738173 = {
 			isa = PBXGroup;
 			children = (
-				BB53B9932DA6701600DECCF3 /* APIkeys.swift */,
 				BB53B9952DA6710300DECCF3 /* .gitignore */,
 				BB17445B2DA5355D00738173 /* HandsOffLLM */,
 				BB17446C2DA5355D00738173 /* HandsOffLLMTests */,

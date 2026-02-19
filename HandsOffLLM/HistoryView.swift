@@ -93,6 +93,23 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .listStyle(.insetGrouped)
+        .alert(
+            "History Error",
+            isPresented: Binding(
+                get: { historyService.lastError != nil },
+                set: { show in
+                    if !show {
+                        historyService.lastError = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                historyService.lastError = nil
+            }
+        } message: {
+            Text(historyService.lastError?.localizedDescription ?? "An unexpected history operation error occurred.")
+        }
     }
 
     private func deleteConversations(inSectionNamed sectionName: String, at offsets: IndexSet) {

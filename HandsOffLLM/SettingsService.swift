@@ -27,32 +27,22 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // --- Available Options (Hardcoded Placeholders) ---
     let availableModels: [ModelInfo] = [
         // Claude
-        ModelInfo(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", description: "Incredibly smart, creative, and capable model", provider: .claude),
-        ModelInfo(id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", description: "Highly capable, creative, and fast", provider: .claude),
-        ModelInfo(id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1", description: "Most powerful, smartest, most creative model", provider: .claude),
-        // ModelInfo(id: "claude-3-7-sonnet-latest", name: "Claude 3.7 Sonnet", description: "Smartest, most capable", provider: .claude),
-        // ModelInfo(id: "claude-3-5-sonnet-latest", name: "Claude 3.5 New Sonnet", description: "Smartest, most emotinally intelligent", provider: .claude),
-        // ModelInfo(id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku", description: "Fast, good for simple responses", provider: .claude),
+        ModelInfo(id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", description: "Incredibly smart, creative, and capable model", provider: .claude),
+        ModelInfo(id: "claude-opus-4.6", name: "Claude Opus 4.6", description: "Most powerful, smartest, most creative model", provider: .claude),
         // Gemini
-        ModelInfo(id: "gemini-2.5-flash-preview-09-2025", name: "Gemini 2.5 Flash", description: "Fast, very capable", provider: .gemini),
-        ModelInfo(id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", description: "Highly intelligent, thinks before responding", provider: .gemini),
-        ModelInfo(id: "gemini-2.0-flash", name: "Gemini 2 Flash", description: "Very fast, everyday tasks", provider: .gemini),
+        ModelInfo(id: "gemini-3-flash", name: "Gemini 3 Flash", description: "Fast, very capable", provider: .gemini),
+        ModelInfo(id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview", description: "Preview build for latest flash updates", provider: .gemini),
+        ModelInfo(id: "gemini-3-pro", name: "Gemini 3 Pro", description: "Highly intelligent, thinks before responding", provider: .gemini),
         // OpenAI models
-        ModelInfo(id: "gpt-5", name: "GPT-5", description: "Newest OpenAI flagship", provider: .openai),
-        ModelInfo(id: "gpt-5-mini", name: "GPT-5 Mini", description: "Fast GPT-5 family model", provider: .openai),
-        ModelInfo(id: "gpt-4.1", name: "GPT-4.1", description: "Smart and versatile", provider: .openai),
-        ModelInfo(id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Fast, everyday tasks", provider: .openai),
-        ModelInfo(id: "o4-mini", name: "o4 mini", description: "Thinks before responding, most capable", provider: .openai),
-        ModelInfo(id: "chatgpt-4o-latest", name: "ChatGPT 4o", description: "Default model in ChatGPT", provider: .openai),
+        ModelInfo(id: "gpt-5.2", name: "GPT-5.2", description: "Newest OpenAI flagship", provider: .openai),
+        ModelInfo(id: "gpt-5.2-mini", name: "GPT-5.2 Mini", description: "Fast GPT-5.2 family model", provider: .openai),
+        ModelInfo(id: "codex-mini-5.3", name: "Codex Mini 5.3", description: "Fast coding-focused model", provider: .openai),
         // xAI
         ModelInfo(id: "grok-4", name: "Grok 4", description: "Frontier level intelligence", provider: .xai),
         ModelInfo(id: "grok-4-fast", name: "Grok 4 Fast", description: "Ultra-fast responses with strong intelligence", provider: .xai),
         ModelInfo(id: "grok-4-fast-non-reasoning", name: "Grok 4 Fast (No Reasoning)", description: "Instant responses", provider: .xai),
         // Moonshot AI
-        ModelInfo(id: "kimi-k2-thinking", name: "Kimi K2 Thinking", description: "Advanced reasoning model", provider: .moonshot),
-        ModelInfo(id: "kimi-k2-thinking-turbo", name: "Kimi K2 Thinking Turbo", description: "Fast reasoning model", provider: .moonshot),
-        ModelInfo(id: "kimi-k2-turbo-preview", name: "Kimi K2 Turbo Preview", description: "Fast general purpose model (Recommended)", provider: .moonshot),
-        ModelInfo(id: "kimi-k2-0905-preview", name: "Kimi K2 Preview (0905)", description: "Latest preview model", provider: .moonshot),
+        ModelInfo(id: "kimi-k2.5", name: "Kimi K2.5", description: "Fast general purpose model", provider: .moonshot),
     ]
     
     let availableSystemPrompts: [PromptPreset] = [
@@ -73,9 +63,7 @@ class SettingsService: ObservableObject { // Make ObservableObject
         PromptPreset(id: "conspiracy-theorist", name: "Conspiracy Theorist", description: "Paranoid, sees connections everywhere", fullPrompt: Prompts.conspiracyTheorist),
         PromptPreset(id: "life-coach-maniac", name: "Life Coach Maniac", description: "Overly intense self-help guru", fullPrompt: Prompts.overlyEnthusiasticLifeCoach),
         PromptPreset(id: "victorian-traveler", name: "Victorian Time Traveler", description: "Proper, confused 1885 traveler", fullPrompt: Prompts.victorianTimeTraveler),
-        PromptPreset(id: "tech-bro", name: "Tech Bro", description: "Stereotypical SV founder delusion", fullPrompt: Prompts.siliconValleyTechBro),
-        // custom
-        PromptPreset(id: "remove-later", name: "Remove Later", description: "remove later", fullPrompt: Prompts.chatPrompt)
+        PromptPreset(id: "tech-bro", name: "Tech Bro", description: "Stereotypical SV founder delusion", fullPrompt: Prompts.siliconValleyTechBro)
     ]
     
     let availableTTSInstructions: [PromptPreset] = [
@@ -560,13 +548,18 @@ class SettingsService: ObservableObject { // Make ObservableObject
     private func setDefaultModelsIfNeeded() -> Bool {
         var changed = false
         for provider in LLMProvider.allCases {
-            if settings.selectedModelIdPerProvider[provider] == nil {
-                // Find the first available model for this provider
-                if let defaultModel = availableModels.first(where: { $0.provider == provider }) {
-                    settings.selectedModelIdPerProvider[provider] = defaultModel.id
-                    logger.info("Setting default model for \(provider.rawValue): \(defaultModel.name)")
-                    changed = true
-                }
+            let modelsForProvider = availableModels.filter { $0.provider == provider }
+            guard let defaultModel = modelsForProvider.first else { continue }
+
+            let selectedModelId = settings.selectedModelIdPerProvider[provider]
+            let hasValidSelection = selectedModelId
+                .map { selected in modelsForProvider.contains(where: { $0.id == selected }) }
+                ?? false
+
+            if !hasValidSelection {
+                settings.selectedModelIdPerProvider[provider] = defaultModel.id
+                logger.info("Setting default model for \(provider.rawValue): \(defaultModel.name)")
+                changed = true
             }
         }
         return changed
