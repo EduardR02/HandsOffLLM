@@ -1338,70 +1338,101 @@ extension AudioService {
             request = directRequest
         }
 
-        let (data, response): (Data, URLResponse)
-        do { (data, response) = try await urlSession.data(for: request) }
-        catch { throw LlmError.networkError(error) }
+        let maxAttempts = 3
+        var attempt = 1
+        let decoder = JSONDecoder()
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LlmError.networkError(URLError(.badServerResponse))
+        while true {
+            let (data, response): (Data, URLResponse)
+            do { (data, response) = try await urlSession.data(for: request) }
+            catch { throw LlmError.networkError(error) }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw LlmError.networkError(URLError(.badServerResponse))
+            }
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                if httpResponse.statusCode == 429, attempt < maxAttempts {
+                    let retryAfterSeconds = (try? decoder.decode(ReplicateRateLimitResponse.self, from: data).retry_after) ?? 1
+                    let sanitizedRetryAfter = max(0, retryAfterSeconds)
+
+                    if Task.isCancelled {
+                        throw CancellationError()
+                    }
+
+                    logger.warning("Replicate TTS rate limited. Retrying in \(sanitizedRetryAfter)s (attempt \(attempt)/\(maxAttempts)).")
+
+                    let maxSleepSeconds = Double(UInt64.max) / 1_000_000_000
+                    let clampedSleepSeconds = min(sanitizedRetryAfter, maxSleepSeconds)
+                    let sleepNanoseconds = UInt64(clampedSleepSeconds * 1_000_000_000)
+                    if sleepNanoseconds > 0 {
+                        try await Task.sleep(nanoseconds: sleepNanoseconds)
+                    }
+
+                    attempt += 1
+                    continue
+                }
+
+                var errorDetails = ""
+                if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
+                logger.error("🚨 Replicate TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
+                throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
+            }
+
+            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+            if !contentType.contains("application/json") {
+                let body = String(data: data, encoding: .utf8)
+                throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: body)
+            }
+
+            // Parse response - with Prefer: wait, this often completes immediately
+            let prediction = try decodeReplicatePrediction(from: data)
+
+            // Check if already completed (thanks to Prefer: wait header)
+            let audioURL: String?
+            let status = prediction.status.lowercased()
+            if isReplicateSuccessStatus(status), let output = prediction.outputURL {
+                audioURL = output
+                logger.info("Replicate TTS completed immediately (no polling needed)")
+            } else if isReplicateFailureStatus(status) {
+                throw LlmError.ttsError("Replicate prediction \(status): \(prediction.error ?? "Unknown error")")
+            } else {
+                // Still processing, fall back to polling
+                logger.info("Replicate TTS still processing, falling back to polling")
+                audioURL = try await pollReplicatePrediction(
+                    id: prediction.id,
+                    useProxy: useProxy,
+                    apiKey: useProxy ? nil : trimmedKey
+                )
+            }
+
+            guard let audioURL = audioURL else {
+                logger.warning("Replicate prediction completed but no output URL received.")
+                return nil
+            }
+
+            // Download the audio file
+            guard let url = URL(string: audioURL) else {
+                throw LlmError.invalidURL
+            }
+
+            let (audioData, audioResponse) = try await urlSession.data(from: url)
+            guard let httpAudioResponse = audioResponse as? HTTPURLResponse,
+                  (200...299).contains(httpAudioResponse.statusCode) else {
+                throw LlmError.invalidResponse(statusCode: (audioResponse as? HTTPURLResponse)?.statusCode ?? -1, body: nil)
+            }
+
+            guard !audioData.isEmpty else {
+                logger.warning("Received empty audio data from Replicate TTS API.")
+                return nil
+            }
+
+            return audioData
         }
+    }
 
-        guard (200...299).contains(httpResponse.statusCode) else {
-            var errorDetails = ""
-            if let errorString = String(data: data, encoding: .utf8) { errorDetails = errorString }
-            logger.error("🚨 Replicate TTS Error: Status \(httpResponse.statusCode). Body: \(errorDetails)")
-            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: errorDetails)
-        }
-
-        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
-        if !contentType.contains("application/json") {
-            let body = String(data: data, encoding: .utf8)
-            throw LlmError.invalidResponse(statusCode: httpResponse.statusCode, body: body)
-        }
-
-        // Parse response - with Prefer: wait, this often completes immediately
-        let prediction = try decodeReplicatePrediction(from: data)
-
-        // Check if already completed (thanks to Prefer: wait header)
-        let audioURL: String?
-        let status = prediction.status.lowercased()
-        if isReplicateSuccessStatus(status), let output = prediction.outputURL {
-            audioURL = output
-            logger.info("Replicate TTS completed immediately (no polling needed)")
-        } else if isReplicateFailureStatus(status) {
-            throw LlmError.ttsError("Replicate prediction \(status): \(prediction.error ?? "Unknown error")")
-        } else {
-            // Still processing, fall back to polling
-            logger.info("Replicate TTS still processing, falling back to polling")
-            audioURL = try await pollReplicatePrediction(
-                id: prediction.id,
-                useProxy: useProxy,
-                apiKey: useProxy ? nil : trimmedKey
-            )
-        }
-
-        guard let audioURL = audioURL else {
-            logger.warning("Replicate prediction completed but no output URL received.")
-            return nil
-        }
-
-        // Download the audio file
-        guard let url = URL(string: audioURL) else {
-            throw LlmError.invalidURL
-        }
-
-        let (audioData, audioResponse) = try await urlSession.data(from: url)
-        guard let httpAudioResponse = audioResponse as? HTTPURLResponse,
-              (200...299).contains(httpAudioResponse.statusCode) else {
-            throw LlmError.invalidResponse(statusCode: (audioResponse as? HTTPURLResponse)?.statusCode ?? -1, body: nil)
-        }
-
-        guard !audioData.isEmpty else {
-            logger.warning("Received empty audio data from Replicate TTS API.")
-            return nil
-        }
-
-        return audioData
+    private struct ReplicateRateLimitResponse: Decodable {
+        let retry_after: TimeInterval
     }
 
     private func pollReplicatePrediction(
