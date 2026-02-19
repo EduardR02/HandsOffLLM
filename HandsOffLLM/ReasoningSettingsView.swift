@@ -7,7 +7,6 @@ struct ReasoningSettingsView: View {
         ZStack {
             Theme.background.edgesIgnoringSafeArea(.all)
             Form {
-                // MARK: - Universal Reasoning Toggle
                 Section {
                     Toggle("Extended Reasoning", isOn: Binding(
                         get: { settingsService.reasoningEnabled },
@@ -15,27 +14,39 @@ struct ReasoningSettingsView: View {
                     ))
                     .tint(Theme.secondaryAccent)
                     .listRowBackground(Theme.menuAccent)
+
+                    if settingsService.reasoningEnabled {
+                        Picker("Reasoning Effort", selection: Binding(
+                            get: { settingsService.reasoningEffort },
+                            set: { settingsService.updateReasoningEffort($0) }
+                        )) {
+                            ForEach(ReasoningEffort.allCases, id: \.self) { effort in
+                                Text(effort.displayName).tag(effort)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .tint(Theme.secondaryAccent)
+                        .listRowBackground(Theme.menuAccent)
+                    }
                 } footer: {
-                    Text("Applies to Claude, Grok, and Gemini")
+                    Text("Applies to Claude, GPT-5, Grok, and Gemini")
                         .foregroundColor(Theme.secondaryText.opacity(0.6))
                 }
 
-                // MARK: - OpenAI Reasoning Effort
                 Section {
-                    Picker("GPT-5 Reasoning Effort", selection: Binding(
-                        get: { settingsService.openAIReasoningEffort },
-                        set: { settingsService.updateOpenAIReasoningEffort($0) }
-                    )) {
-                        ForEach(OpenAIReasoningEffort.allCases, id: \.self) { effort in
-                            Text(effort.displayName).tag(effort)
-                                .foregroundColor(Theme.primaryText)
-                        }
-                    }
+                    Toggle("Web Search", isOn: Binding(
+                        get: { settingsService.webSearchEnabled },
+                        set: { settingsService.updateWebSearchEnabled($0) }
+                    ))
                     .tint(Theme.secondaryAccent)
                     .listRowBackground(Theme.menuAccent)
+                } footer: {
+                    Text("Lets Claude, GPT-5, Grok, and Gemini browse the web when needed")
+                        .foregroundColor(Theme.secondaryText.opacity(0.6))
                 }
             }
             .scrollContentBackground(.hidden)
+            .foregroundColor(Theme.primaryText)
         }
         .navigationTitle("Reasoning")
         .navigationBarTitleDisplayMode(.inline)

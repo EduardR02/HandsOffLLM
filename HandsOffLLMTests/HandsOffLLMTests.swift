@@ -16,7 +16,8 @@ struct HandsOffLLMTests {
             modelId: "gpt-5.2",
             openAIKey: "openai-key",
             webSearchEnabled: true,
-            openAIReasoningEffort: .high
+            reasoningEnabled: true,
+            reasoningEffort: .high
         )
 
         let request = try OpenAIClient().makeRequest(with: context)
@@ -34,7 +35,8 @@ struct HandsOffLLMTests {
             xaiKey: "xai-key",
             moonshotKey: "moonshot-key",
             webSearchEnabled: true,
-            reasoningEnabled: true
+            reasoningEnabled: true,
+            reasoningEffort: .medium
         )
 
         let xai = XAIClient()
@@ -52,7 +54,7 @@ struct HandsOffLLMTests {
         #expect(xaiBody["max_completion_tokens"] as? Int == 4096)
         #expect(moonshotBody["max_tokens"] as? Int == 4096)
         #expect((xaiBody["search_parameters"] as? [String: String])?["mode"] == "auto")
-        #expect(xaiBody["reasoning_effort"] as? String == "high")
+        #expect(xaiBody["reasoning_effort"] as? String == "medium")
 
         let chunk = "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}"
         #expect(xai.decodeChunk(chunk) == "Hello")
@@ -86,7 +88,9 @@ struct HandsOffLLMTests {
             messages: messages,
             systemPrompt: "You are concise",
             maxTokens: 7000,
-            reasoningEnabled: true
+            webSearchEnabled: true,
+            reasoningEnabled: true,
+            reasoningEffort: .low
         )
 
         let request = try ClaudeClient().makeRequest(with: context)
@@ -94,8 +98,9 @@ struct HandsOffLLMTests {
 
         #expect(body["system"] as? String == "You are concise")
         #expect(body["temperature"] == nil)
-        #expect((body["thinking"] as? [String: Any])?["type"] as? String == "enabled")
-        #expect((body["thinking"] as? [String: Any])?["budget_tokens"] as? Int == 3000)
+        #expect((body["thinking"] as? [String: Any])?["type"] as? String == "adaptive")
+        #expect((body["output_config"] as? [String: String])?["effort"] == "low")
+        #expect((body["tools"] as? [[String: Any]])?.first?["type"] as? String == "web_search_20250305")
 
         guard let payloadMessages = body["messages"] as? [[String: Any]] else {
             Issue.record("Claude payload did not contain messages")
@@ -104,9 +109,11 @@ struct HandsOffLLMTests {
 
         let firstContent = (payloadMessages.first?["content"] as? [[String: Any]])?.first
         let lastContent = (payloadMessages.last?["content"] as? [[String: Any]])?.first
+        let firstCacheControl = firstContent?["cache_control"] as? [String: String]
+        let lastCacheControl = lastContent?["cache_control"] as? [String: String]
 
-        #expect(firstContent?["cache_control"] == nil)
-        #expect((lastContent?["cache_control"] as? [String: String])?["type"] == "ephemeral")
+        #expect(firstCacheControl == nil)
+        #expect(lastCacheControl?["type"] == "ephemeral")
     }
 
     @Test func claudeNonThinkingRequestUsesTemperatureAndNoThinkingBlock() throws {
@@ -127,14 +134,16 @@ struct HandsOffLLMTests {
 
     @Test func geminiRequestBuildsSSEURLAndPayloadShape() throws {
         let context = makeContext(
-            modelId: "gemini-3-flash",
+            modelId: "gemini-3-flash-preview",
             geminiKey: "  gemini-key  ",
             messages: [
                 ChatMessage(id: UUID(), role: "user", content: "Question"),
                 ChatMessage(id: UUID(), role: "assistant", content: "Answer")
             ],
             systemPrompt: "Stay short",
-            reasoningEnabled: true
+            webSearchEnabled: true,
+            reasoningEnabled: true,
+            reasoningEffort: .medium
         )
 
         let request = try GeminiClient().makeRequest(with: context)
@@ -144,22 +153,29 @@ struct HandsOffLLMTests {
             return
         }
 
-        #expect(url.path == "/v1beta/models/gemini-3-flash:streamGenerateContent")
+        #expect(url.path == "/v1beta/models/gemini-3-flash-preview:streamGenerateContent")
         #expect(components.queryItems?.contains(URLQueryItem(name: "alt", value: "sse")) == true)
         #expect(components.queryItems?.contains(URLQueryItem(name: "key", value: "gemini-key")) == true)
 
         let body = try requestBody(from: request)
         let contents = body["contents"] as? [[String: Any]]
         let generationConfig = body["generationConfig"] as? [String: Any]
-        let safety = body["safetySettings"] as? [[String: String]]
+        let safety = (body["safetySettings"] as? [[String: String]]) ?? []
         let systemInstruction = body["systemInstruction"] as? [String: Any]
+        let tools = body["tools"] as? [[String: Any]]
+        let firstRole = contents?.first?["role"] as? String
+        let lastRole = contents?.last?["role"] as? String
 
         #expect(contents?.count == 2)
-        #expect(contents?.first?["role"] as? String == "user")
-        #expect(contents?.last?["role"] as? String == "model")
+        #expect(firstRole == "user")
+        #expect(lastRole == "model")
         let thinkingConfig = generationConfig?["thinking_config"] as? [String: Any]
-        #expect(thinkingConfig?["thinkingLevel"] as? String == "high")
-        #expect(thinkingConfig?["include_thoughts"] as? Bool == true)
+        let thinkingLevel = thinkingConfig?["thinkingLevel"] as? String
+        let includeThoughts = thinkingConfig?["include_thoughts"] as? Bool
+        let googleSearchConfig = tools?.first?["google_search"] as? [String: Any]
+        #expect(thinkingLevel == "medium")
+        #expect(includeThoughts == true)
+        #expect(googleSearchConfig?.isEmpty == true)
         #expect((systemInstruction?["parts"] as? [[String: String]])?.first?["text"] == "Stay short")
 
         let expectedSafety = Set([
@@ -168,9 +184,10 @@ struct HandsOffLLMTests {
             "HARM_CATEGORY_SEXUALLY_EXPLICIT",
             "HARM_CATEGORY_DANGEROUS_CONTENT"
         ])
-        let categories = Set((safety ?? []).compactMap { $0["category"] })
+        let categories = Set(safety.compactMap { $0["category"] })
+        let allThresholdsNone = safety.allSatisfy { $0["threshold"] == "BLOCK_NONE" }
         #expect(categories == expectedSafety)
-        #expect((safety ?? []).allSatisfy { $0["threshold"] == "BLOCK_NONE" })
+        #expect(allThresholdsNone)
     }
 
     @Test func geminiProxyRequestOmitsKeyFromQueryString() throws {
@@ -190,49 +207,72 @@ struct HandsOffLLMTests {
         #expect(components.queryItems?.contains(where: { $0.name == "key" }) == false)
     }
 
-    @Test func geminiThinkingToggleAppliesToAllGemini3Models() throws {
-        let flashThinkingEnabled = makeContext(
-            modelId: "gemini-3-flash",
-            geminiKey: "gemini-key",
-            reasoningEnabled: true
-        )
-        let flashThinkingDisabled = makeContext(
+    @Test func geminiReasoningEffortLevelsMapToThinkingLevels() throws {
+        let flashLow = makeContext(
             modelId: "gemini-3-flash-preview",
             geminiKey: "gemini-key",
-            reasoningEnabled: false
+            reasoningEnabled: true,
+            reasoningEffort: .low
         )
-        let proContext = makeContext(
+        let flashMedium = makeContext(
+            modelId: "gemini-3-flash-preview",
+            geminiKey: "gemini-key",
+            reasoningEnabled: true,
+            reasoningEffort: .medium
+        )
+        let proHigh = makeContext(
             modelId: "gemini-3-pro",
             geminiKey: "gemini-key",
-            reasoningEnabled: true
+            reasoningEnabled: true,
+            reasoningEffort: .high
+        )
+        let disabledContext = makeContext(
+            modelId: "gemini-3-pro",
+            geminiKey: "gemini-key",
+            reasoningEnabled: false,
+            reasoningEffort: .high
         )
 
-        let flashEnabledBody = try requestBody(from: try GeminiClient().makeRequest(with: flashThinkingEnabled))
-        let flashDisabledBody = try requestBody(from: try GeminiClient().makeRequest(with: flashThinkingDisabled))
-        let proBody = try requestBody(from: try GeminiClient().makeRequest(with: proContext))
+        let flashLowBody = try requestBody(from: try GeminiClient().makeRequest(with: flashLow))
+        let flashMediumBody = try requestBody(from: try GeminiClient().makeRequest(with: flashMedium))
+        let proHighBody = try requestBody(from: try GeminiClient().makeRequest(with: proHigh))
+        let disabledBody = try requestBody(from: try GeminiClient().makeRequest(with: disabledContext))
 
-        let flashEnabledConfig = flashEnabledBody["generationConfig"] as? [String: Any]
-        let flashDisabledConfig = flashDisabledBody["generationConfig"] as? [String: Any]
-        let proConfig = proBody["generationConfig"] as? [String: Any]
+        let flashLowConfig = flashLowBody["generationConfig"] as? [String: Any]
+        let flashMediumConfig = flashMediumBody["generationConfig"] as? [String: Any]
+        let proHighConfig = proHighBody["generationConfig"] as? [String: Any]
+        let disabledConfig = disabledBody["generationConfig"] as? [String: Any]
 
-        let flashEnabledThinking = flashEnabledConfig?["thinking_config"] as? [String: Any]
-        let flashDisabledThinking = flashDisabledConfig?["thinking_config"] as? [String: Any]
-        let proThinking = proConfig?["thinking_config"] as? [String: Any]
+        let flashLowThinking = flashLowConfig?["thinking_config"] as? [String: Any]
+        let flashMediumThinking = flashMediumConfig?["thinking_config"] as? [String: Any]
+        let proHighThinking = proHighConfig?["thinking_config"] as? [String: Any]
+        let disabledThinking = disabledConfig?["thinking_config"] as? [String: Any]
 
-        #expect(flashEnabledThinking?["thinkingLevel"] as? String == "high")
-        #expect(flashDisabledThinking?["thinkingLevel"] as? String == "low")
-        #expect(proThinking?["thinkingLevel"] as? String == "high")
-        #expect(flashEnabledThinking?["include_thoughts"] as? Bool == true)
-        #expect(flashDisabledThinking?["include_thoughts"] as? Bool == true)
-        #expect(proThinking?["include_thoughts"] as? Bool == true)
+        let flashLowLevel = flashLowThinking?["thinkingLevel"] as? String
+        let flashMediumLevel = flashMediumThinking?["thinkingLevel"] as? String
+        let proHighLevel = proHighThinking?["thinkingLevel"] as? String
+        let disabledLevel = disabledThinking?["thinkingLevel"] as? String
+        let flashLowIncludesThoughts = flashLowThinking?["include_thoughts"] as? Bool
+        let flashMediumIncludesThoughts = flashMediumThinking?["include_thoughts"] as? Bool
+        let proHighIncludesThoughts = proHighThinking?["include_thoughts"] as? Bool
+
+        #expect(flashLowLevel == "low")
+        #expect(flashMediumLevel == "medium")
+        #expect(proHighLevel == "high")
+        #expect(disabledLevel == "low")
+        #expect(flashLowIncludesThoughts == true)
+        #expect(flashMediumIncludesThoughts == true)
+        #expect(proHighIncludesThoughts == true)
     }
 
     @Test func providerDetectionCoversUpdatedModelFamilies() {
         #expect(LLMProvider.provider(forModelId: "gpt-5.2") == .openai)
         #expect(LLMProvider.provider(forModelId: "gpt-5.2-mini") == .openai)
-        #expect(LLMProvider.provider(forModelId: "codex-mini-5.3") == .openai)
+        #expect(LLMProvider.provider(forModelId: "gpt-5.3-codex") == .openai)
+        #expect(LLMProvider.provider(forModelId: "codex-mini-latest") == .openai)
         #expect(LLMProvider.provider(forModelId: "claude-sonnet-4.6") == .claude)
         #expect(LLMProvider.provider(forModelId: "gemini-3-pro") == .gemini)
+        #expect(LLMProvider.provider(forModelId: "grok-4.1") == .xai)
         #expect(LLMProvider.provider(forModelId: "grok-4-fast") == .xai)
         #expect(LLMProvider.provider(forModelId: "kimi-k2.5") == .moonshot)
         #expect(LLMProvider.provider(forModelId: "unknown-model") == nil)
@@ -340,8 +380,8 @@ struct HandsOffLLMTests {
         temperature: Float = 0.8,
         maxTokens: Int = 4096,
         webSearchEnabled: Bool = false,
-        openAIReasoningEffort: OpenAIReasoningEffort? = nil,
         reasoningEnabled: Bool = false,
+        reasoningEffort: ReasoningEffort = .high,
         useProxy: Bool = false
     ) -> LLMClientContext {
         LLMClientContext(
@@ -358,7 +398,7 @@ struct HandsOffLLMTests {
             anthropicKey: anthropicKey,
             geminiKey: geminiKey,
             webSearchEnabled: webSearchEnabled,
-            openAIReasoningEffort: openAIReasoningEffort,
+            reasoningEffort: reasoningEffort,
             reasoningEnabled: reasoningEnabled,
             useProxy: useProxy
         )

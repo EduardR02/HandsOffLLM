@@ -62,7 +62,7 @@ struct VoiceInfo: Identifiable, Hashable {
 struct SettingsData: Codable {
     // Model Selections: Store the ID of the selected model for each provider
     var selectedModelIdPerProvider: [LLMProvider: String] = [:]
-    var openAIReasoningEffort: OpenAIReasoningEffort?
+    var reasoningEffort: ReasoningEffort?
     var reasoningEnabled: Bool? = nil
     
     // Preset Selections: Store the ID of the selected preset
@@ -229,15 +229,13 @@ struct OpenAICompatibleResponseEvent: Decodable {
 
 typealias XAIResponseEvent = OpenAICompatibleResponseEvent
 
-enum OpenAIReasoningEffort: String, CaseIterable, Codable, Equatable {
-    case minimal
+enum ReasoningEffort: String, CaseIterable, Codable, Equatable {
     case low
     case medium
     case high
 
     var displayName: String {
         switch self {
-        case .minimal: return "Minimal"
         case .low: return "Low"
         case .medium: return "Medium"
         case .high: return "High"

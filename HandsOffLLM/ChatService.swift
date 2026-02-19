@@ -139,7 +139,7 @@ class ChatService: ObservableObject {
                 anthropicKey: settingsService.anthropicAPIKey,
                 geminiKey: settingsService.geminiAPIKey,
                 webSearchEnabled: settingsService.webSearchEnabled,
-                openAIReasoningEffort: settingsService.openAIReasoningEffortOpt,
+                reasoningEffort: settingsService.reasoningEffort,
                 reasoningEnabled: settingsService.reasoningEnabled,
                 useProxy: useProxy
             )
@@ -561,7 +561,7 @@ struct LLMClientContext {
     let anthropicKey: String?
     let geminiKey: String?
     let webSearchEnabled: Bool
-    let openAIReasoningEffort: OpenAIReasoningEffort?
+    let reasoningEffort: ReasoningEffort
     let reasoningEnabled: Bool
     let useProxy: Bool
 }
@@ -615,9 +615,9 @@ struct OpenAIClient: LLMClient {
             body["instructions"] = sys
         }
 
-        if context.modelId.contains("gpt-5"),
-           let effort = context.openAIReasoningEffort {
-            body["reasoning"] = ["effort": effort.rawValue]
+        if context.reasoningEnabled,
+           context.modelId.contains("gpt-5") {
+            body["reasoning"] = ["effort": context.reasoningEffort.rawValue]
         }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -704,7 +704,7 @@ class OpenAICompatibleChatCompletionsClient: LLMClient {
             requestBody["search_parameters"] = ["mode": "auto"]
         }
         if supportsGrokReasoning, context.reasoningEnabled {
-            requestBody["reasoning_effort"] = "high"
+            requestBody["reasoning_effort"] = context.reasoningEffort.rawValue
         }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -783,11 +783,17 @@ struct ClaudeClient: LLMClient {
             payload["temperature"] = min(context.temperature, context.temperatureCap)
         }
         if isThinking {
-            let thinkingBudget = max(1024, context.maxTokens - 4000)
             payload["thinking"] = [
-                "type": "enabled",
-                "budget_tokens": thinkingBudget
+                "type": "adaptive"
             ]
+            payload["output_config"] = ["effort": context.reasoningEffort.rawValue]
+        }
+        if context.webSearchEnabled {
+            payload["tools"] = [[
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3
+            ]]
         }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -841,7 +847,7 @@ struct GeminiClient: LLMClient {
         ]
         let normalizedModelId = context.modelId.lowercased()
         if normalizedModelId.hasPrefix("gemini-3") {
-            let thinkingLevel = context.reasoningEnabled ? "high" : "low"
+            let thinkingLevel = context.reasoningEnabled ? context.reasoningEffort.rawValue : "low"
             generationConfig["thinking_config"] = [
                 "thinkingLevel": thinkingLevel,
                 "include_thoughts": true
@@ -856,6 +862,9 @@ struct GeminiClient: LLMClient {
 
         if let sys = context.systemPrompt, !sys.isEmpty {
             body["systemInstruction"] = ["parts": [["text": sys]]]
+        }
+        if context.webSearchEnabled {
+            body["tools"] = [["google_search": [String: Any]()]]
         }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: body)

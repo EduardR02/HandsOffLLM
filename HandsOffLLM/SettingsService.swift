@@ -27,18 +27,17 @@ class SettingsService: ObservableObject { // Make ObservableObject
     // --- Available Options (Hardcoded Placeholders) ---
     let availableModels: [ModelInfo] = [
         // Claude
-        ModelInfo(id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", description: "Incredibly smart, creative, and capable model", provider: .claude),
         ModelInfo(id: "claude-opus-4.6", name: "Claude Opus 4.6", description: "Most powerful, smartest, most creative model", provider: .claude),
+        ModelInfo(id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", description: "Incredibly smart, creative, and capable model", provider: .claude),
         // Gemini
-        ModelInfo(id: "gemini-3-flash", name: "Gemini 3 Flash", description: "Fast, very capable", provider: .gemini),
-        ModelInfo(id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview", description: "Preview build for latest flash updates", provider: .gemini),
         ModelInfo(id: "gemini-3-pro", name: "Gemini 3 Pro", description: "Highly intelligent, thinks before responding", provider: .gemini),
+        ModelInfo(id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview", description: "Preview build for latest flash updates", provider: .gemini),
         // OpenAI models
         ModelInfo(id: "gpt-5.2", name: "GPT-5.2", description: "Newest OpenAI flagship", provider: .openai),
         ModelInfo(id: "gpt-5.2-mini", name: "GPT-5.2 Mini", description: "Fast GPT-5.2 family model", provider: .openai),
-        ModelInfo(id: "codex-mini-5.3", name: "Codex Mini 5.3", description: "Fast coding-focused model", provider: .openai),
+        ModelInfo(id: "gpt-5.3-codex", name: "Codex 5.3", description: "Fast coding-focused model", provider: .openai),
         // xAI
-        ModelInfo(id: "grok-4", name: "Grok 4", description: "Frontier level intelligence", provider: .xai),
+        ModelInfo(id: "grok-4.1", name: "Grok 4.1", description: "Frontier level intelligence", provider: .xai),
         ModelInfo(id: "grok-4-fast", name: "Grok 4 Fast", description: "Ultra-fast responses with strong intelligence", provider: .xai),
         ModelInfo(id: "grok-4-fast-non-reasoning", name: "Grok 4 Fast (No Reasoning)", description: "Instant responses", provider: .xai),
         // Moonshot AI
@@ -269,16 +268,12 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.webSearchEnabled ?? false
     }
     
-    var openAIReasoningEffort: OpenAIReasoningEffort {
-        settings.openAIReasoningEffort ?? .medium
-    }
-
-    var openAIReasoningEffortOpt: OpenAIReasoningEffort? {
-        settings.openAIReasoningEffort
+    var reasoningEffort: ReasoningEffort {
+        settings.reasoningEffort ?? .high
     }
 
     var reasoningEnabled: Bool {
-        settings.reasoningEnabled ?? false
+        settings.reasoningEnabled ?? true
     }
 
     // Energy Saver Mode
@@ -408,8 +403,13 @@ class SettingsService: ObservableObject { // Make ObservableObject
         // Could potentially trigger other actions if needed
     }
 
-    func updateOpenAIReasoningEffort(_ effort: OpenAIReasoningEffort) {
-        settings.openAIReasoningEffort = effort
+    func updateReasoningEffort(_ effort: ReasoningEffort) {
+        settings.reasoningEffort = effort
+        saveSettings()
+    }
+
+    func updateWebSearchEnabled(_ enabled: Bool) {
+        settings.webSearchEnabled = enabled
         saveSettings()
     }
     
@@ -595,13 +595,19 @@ class SettingsService: ObservableObject { // Make ObservableObject
             logger.info("Setting default playback speed: \(defaultSpeed)x")
             changed = true
         }
-        if settings.openAIReasoningEffort == nil {
-            settings.openAIReasoningEffort = .medium
-            logger.info("Setting default OpenAI reasoning effort: medium")
+        if settings.reasoningEffort == nil {
+            settings.reasoningEffort = .high
+            logger.info("Setting default reasoning effort: high")
             changed = true
         }
         if settings.reasoningEnabled == nil {
-            settings.reasoningEnabled = false
+            settings.reasoningEnabled = true
+            logger.info("Setting default reasoning enabled: true")
+            changed = true
+        }
+        if settings.webSearchEnabled == nil {
+            settings.webSearchEnabled = false
+            logger.info("Setting default web search: false")
             changed = true
         }
         if settings.vadSilenceThreshold == nil {

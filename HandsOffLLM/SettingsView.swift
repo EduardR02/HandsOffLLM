@@ -317,21 +317,6 @@ struct SettingsView: View {
     private var featuresSection: some View {
         Section {
             Toggle(isOn: Binding(
-                get: { settingsService.webSearchEnabled },
-                set: { settingsService.updateAdvancedSetting(keyPath: \.webSearchEnabled, value: $0) }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Web Search")
-                        .foregroundColor(Theme.primaryText)
-                    Text("GPT · Grok")
-                        .font(.caption2)
-                        .foregroundColor(Theme.secondaryText.opacity(0.6))
-                }
-            }
-            .tint(Theme.secondaryAccent)
-            .listRowBackground(Theme.menuAccent)
-
-            Toggle(isOn: Binding(
                 get: { settingsService.energySaverEnabled },
                 set: { settingsService.updateEnergySaverEnabled($0) }
             )) {

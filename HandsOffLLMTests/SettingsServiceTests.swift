@@ -9,6 +9,9 @@ struct SettingsServiceTests {
         #expect(settings.activeSystemPrompt?.isEmpty == false)
         #expect(settings.activeTemperature == 1.0)
         #expect(settings.activeMaxTokens == 8000)
+        #expect(settings.reasoningEnabled == true)
+        #expect(settings.reasoningEffort == .high)
+        #expect(settings.webSearchEnabled == false)
 
         for provider in LLMProvider.userFacing {
             let selected = settings.activeModelId(for: provider)
@@ -80,6 +83,24 @@ struct SettingsServiceTests {
 
         #expect(settings.activeModelId(for: .openai) == expectedOpenAIDefault)
         #expect(settings.activeModelId(for: .claude) == "claude-opus-4.6")
+    }
+
+    @Test @MainActor func availableModelsReflectUpdatedIdsAndDefaultOrder() async {
+        let settings = SettingsService()
+
+        let claudeDefaults = settings.availableModels.filter { $0.provider == .claude }
+        let openAIDefaults = settings.availableModels.filter { $0.provider == .openai }
+        let geminiDefaults = settings.availableModels.filter { $0.provider == .gemini }
+        let xaiDefaults = settings.availableModels.filter { $0.provider == .xai }
+
+        #expect(claudeDefaults.first?.id == "claude-opus-4.6")
+        #expect(openAIDefaults.first?.id == "gpt-5.2")
+        #expect(geminiDefaults.first?.id == "gemini-3-pro")
+        #expect(xaiDefaults.first?.id == "grok-4.1")
+
+        #expect(openAIDefaults.contains(where: { $0.id == "gpt-5.3-codex" && $0.name == "Codex 5.3" }))
+        #expect(geminiDefaults.contains(where: { $0.id == "gemini-3-flash-preview" }))
+        #expect(geminiDefaults.contains(where: { $0.id == "gemini-3-flash" }) == false)
     }
 
     private func settingsFileURL() -> URL? {
