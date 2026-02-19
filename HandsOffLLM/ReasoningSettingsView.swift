@@ -15,7 +15,7 @@ struct ReasoningSettingsView: View {
                     .tint(Theme.secondaryAccent)
                     .listRowBackground(Theme.menuAccent)
 
-                    if settingsService.reasoningEnabled {
+                    if settingsService.reasoningEnabled && settingsService.selectedModelSupportsReasoningLevels {
                         Picker("Reasoning Effort", selection: Binding(
                             get: { settingsService.reasoningEffort },
                             set: { settingsService.updateReasoningEffort($0) }
@@ -29,7 +29,7 @@ struct ReasoningSettingsView: View {
                         .listRowBackground(Theme.menuAccent)
                     }
                 } footer: {
-                    Text("Applies to Claude, GPT-5, Grok, and Gemini")
+                    Text("Level selection is available for GPT-5, Claude Opus, and Gemini models")
                         .foregroundColor(Theme.secondaryText.opacity(0.6))
                 }
 

@@ -276,6 +276,30 @@ class SettingsService: ObservableObject { // Make ObservableObject
         settings.reasoningEnabled ?? true
     }
 
+    var selectedProvider: LLMProvider {
+        settings.selectedDefaultProvider ?? .claude
+    }
+
+    var selectedModelId: String? {
+        activeModelId(for: selectedProvider)
+    }
+
+    var selectedModelSupportsReasoningLevels: Bool {
+        guard let selectedModelId else { return false }
+        return Self.modelSupportsReasoningLevels(modelId: selectedModelId)
+    }
+
+    static func modelSupportsReasoningLevels(modelId: String) -> Bool {
+        let normalizedModelId = modelId.lowercased()
+        if normalizedModelId.hasPrefix("gpt-5") {
+            return true
+        }
+        if normalizedModelId.hasPrefix("claude-") {
+            return normalizedModelId.contains("opus-4")
+        }
+        return normalizedModelId.hasPrefix("gemini-")
+    }
+
     // Energy Saver Mode
     var energySaverEnabled: Bool {
         settings.energySaverEnabled ?? false

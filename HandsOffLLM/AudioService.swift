@@ -156,12 +156,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
 
-    private lazy var urlSession: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 120  // 2 minutes
-        config.timeoutIntervalForResource = 300 // 5 minutes
-        return URLSession(configuration: config)
-    }()
+    private let urlSession: URLSession
     
     private var routeChangeObserver: Any?
     private var isReconfiguringRoute: Bool = false
@@ -178,16 +173,29 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     private let proxyService: ProxyService
 
-    init(settingsService: SettingsService, historyService: HistoryService, authService: AuthService) {
+    init(
+        settingsService: SettingsService,
+        historyService: HistoryService,
+        authService: AuthService,
+        urlSession: URLSession? = nil
+    ) {
         self.settingsService = settingsService
         self.historyService = historyService
         self.proxyService = ProxyService(authService: authService, settingsService: settingsService)
+        self.urlSession = urlSession ?? Self.makeDefaultURLSession()
         super.init()
         Task {
             await initializeVAD()
         }
 
         applyAudioSessionSettings()
+    }
+
+    private static func makeDefaultURLSession() -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120  // 2 minutes
+        config.timeoutIntervalForResource = 300 // 5 minutes
+        return URLSession(configuration: config)
     }
 
     private func initializeVAD() async {
@@ -964,6 +972,24 @@ extension AudioService {
 // MARK: - TTS helpers
 @MainActor
 extension AudioService {
+    private func isReplicateSuccessStatus(_ status: String) -> Bool {
+        switch status {
+        case "succeeded", "successful", "completed":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isReplicateFailureStatus(_ status: String) -> Bool {
+        switch status {
+        case "failed", "canceled", "cancelled":
+            return true
+        default:
+            return false
+        }
+    }
+
     func fetchAudio(for text: String) {
         // Check which TTS provider is selected
         let ttsProvider = settingsService.selectedTTSProvider
@@ -1339,10 +1365,10 @@ extension AudioService {
         // Check if already completed (thanks to Prefer: wait header)
         let audioURL: String?
         let status = prediction.status.lowercased()
-        if status == "succeeded", let output = prediction.outputURL {
+        if isReplicateSuccessStatus(status), let output = prediction.outputURL {
             audioURL = output
             logger.info("Replicate TTS completed immediately (no polling needed)")
-        } else if status == "failed" || status == "canceled" {
+        } else if isReplicateFailureStatus(status) {
             throw LlmError.ttsError("Replicate prediction \(status): \(prediction.error ?? "Unknown error")")
         } else {
             // Still processing, fall back to polling
@@ -1423,9 +1449,11 @@ extension AudioService {
             let prediction = try decodeReplicatePrediction(from: data)
             let status = prediction.status.lowercased()
 
-            if status == "succeeded", let output = prediction.outputURL {
+            if isReplicateSuccessStatus(status), let output = prediction.outputURL {
                 return output
-            } else if status == "failed" || status == "canceled" {
+            } else if isReplicateSuccessStatus(status) {
+                throw LlmError.ttsError("Replicate prediction succeeded but returned no output URL")
+            } else if isReplicateFailureStatus(status) {
                 throw LlmError.ttsError("Replicate prediction \(status): \(prediction.error ?? "Unknown error")")
             }
 

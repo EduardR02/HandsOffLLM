@@ -29,6 +29,30 @@ struct HandsOffLLMTests {
         #expect(body["tools"] as? [[String: String]] == [["type": "web_search_preview"]])
     }
 
+    @Test func openAIReasoningEffortLevelsMapDirectlyForGPT5() throws {
+        let client = OpenAIClient()
+        let expectedEfforts: [ReasoningEffort: String] = [
+            .minimal: "minimal",
+            .low: "low",
+            .medium: "medium",
+            .high: "high",
+            .xhigh: "xhigh"
+        ]
+
+        for (effort, expected) in expectedEfforts {
+            let context = makeContext(
+                modelId: "gpt-5.2",
+                openAIKey: "openai-key",
+                reasoningEnabled: true,
+                reasoningEffort: effort
+            )
+
+            let body = try requestBody(from: try client.makeRequest(with: context))
+            let mappedEffort = (body["reasoning"] as? [String: String])?["effort"]
+            #expect(mappedEffort == expected)
+        }
+    }
+
     @Test func openAICompatibleClientsShareDecodingAndUseProviderEndpoints() throws {
         let context = makeContext(
             modelId: "grok-4-fast",
@@ -54,7 +78,7 @@ struct HandsOffLLMTests {
         #expect(xaiBody["max_completion_tokens"] as? Int == 4096)
         #expect(moonshotBody["max_tokens"] as? Int == 4096)
         #expect((xaiBody["search_parameters"] as? [String: String])?["mode"] == "auto")
-        #expect(xaiBody["reasoning_effort"] as? String == "medium")
+        #expect(xaiBody["reasoning_effort"] as? String == "high")
 
         let chunk = "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}"
         #expect(xai.decodeChunk(chunk) == "Hello")
@@ -74,6 +98,27 @@ struct HandsOffLLMTests {
 
         #expect((body["search_parameters"] as? [String: String])?["mode"] == "auto")
         #expect(body["reasoning_effort"] as? String == nil)
+    }
+
+    @Test func xaiReasoningEffortIsAlwaysHardcodedHighWhenEnabled() throws {
+        let minimalContext = makeContext(
+            modelId: "grok-4-fast",
+            xaiKey: "xai-key",
+            reasoningEnabled: true,
+            reasoningEffort: .minimal
+        )
+        let xhighContext = makeContext(
+            modelId: "grok-4-fast",
+            xaiKey: "xai-key",
+            reasoningEnabled: true,
+            reasoningEffort: .xhigh
+        )
+
+        let minimalBody = try requestBody(from: try XAIClient().makeRequest(with: minimalContext))
+        let xhighBody = try requestBody(from: try XAIClient().makeRequest(with: xhighContext))
+
+        #expect(minimalBody["reasoning_effort"] as? String == "high")
+        #expect(xhighBody["reasoning_effort"] as? String == "high")
     }
 
     @Test func claudeRequestBuildsThinkingPayloadAndMarksLastMessageEphemeral() throws {
@@ -99,7 +144,7 @@ struct HandsOffLLMTests {
         #expect(body["system"] as? String == "You are concise")
         #expect(body["temperature"] == nil)
         #expect((body["thinking"] as? [String: Any])?["type"] as? String == "adaptive")
-        #expect((body["output_config"] as? [String: String])?["effort"] == "low")
+        #expect((body["output_config"] as? [String: String])?["effort"] == "high")
         #expect((body["tools"] as? [[String: Any]])?.first?["type"] as? String == "web_search_20250305")
 
         guard let payloadMessages = body["messages"] as? [[String: Any]] else {
@@ -130,6 +175,29 @@ struct HandsOffLLMTests {
         let temperature = (body["temperature"] as? NSNumber)?.floatValue
         #expect(temperature != nil)
         #expect(abs((temperature ?? 0) - 0.8) < 0.0001)
+    }
+
+    @Test func claudeOpusReasoningEffortClampsToSupportedAdaptiveLevels() throws {
+        let minimalContext = makeContext(
+            modelId: "claude-opus-4.6",
+            anthropicKey: "anthropic-key",
+            reasoningEnabled: true,
+            reasoningEffort: .minimal
+        )
+        let xhighContext = makeContext(
+            modelId: "claude-opus-4.6",
+            anthropicKey: "anthropic-key",
+            reasoningEnabled: true,
+            reasoningEffort: .xhigh
+        )
+
+        let minimalBody = try requestBody(from: try ClaudeClient().makeRequest(with: minimalContext))
+        let xhighBody = try requestBody(from: try ClaudeClient().makeRequest(with: xhighContext))
+
+        #expect((minimalBody["thinking"] as? [String: String])?["type"] == "adaptive")
+        #expect((xhighBody["thinking"] as? [String: String])?["type"] == "adaptive")
+        #expect((minimalBody["output_config"] as? [String: String])?["effort"] == "low")
+        #expect((xhighBody["output_config"] as? [String: String])?["effort"] == "max")
     }
 
     @Test func geminiRequestBuildsSSEURLAndPayloadShape() throws {
@@ -207,24 +275,34 @@ struct HandsOffLLMTests {
         #expect(components.queryItems?.contains(where: { $0.name == "key" }) == false)
     }
 
-    @Test func geminiReasoningEffortLevelsMapToThinkingLevels() throws {
-        let flashLow = makeContext(
+    @Test func geminiFlashReasoningEffortClampsXhighToHigh() throws {
+        let flashXhigh = makeContext(
             modelId: "gemini-3-flash-preview",
             geminiKey: "gemini-key",
             reasoningEnabled: true,
-            reasoningEffort: .low
+            reasoningEffort: .xhigh
         )
-        let flashMedium = makeContext(
-            modelId: "gemini-3-flash-preview",
-            geminiKey: "gemini-key",
-            reasoningEnabled: true,
-            reasoningEffort: .medium
-        )
-        let proHigh = makeContext(
+
+        let flashXhighBody = try requestBody(from: try GeminiClient().makeRequest(with: flashXhigh))
+        let flashConfig = flashXhighBody["generationConfig"] as? [String: Any]
+        let flashThinking = flashConfig?["thinking_config"] as? [String: Any]
+
+        #expect(flashThinking?["thinkingLevel"] as? String == "high")
+        #expect(flashThinking?["include_thoughts"] as? Bool == true)
+    }
+
+    @Test func geminiProReasoningEffortClampsMinimalAndMediumToTwoLevels() throws {
+        let proMinimal = makeContext(
             modelId: "gemini-3-pro",
             geminiKey: "gemini-key",
             reasoningEnabled: true,
-            reasoningEffort: .high
+            reasoningEffort: .minimal
+        )
+        let proMedium = makeContext(
+            modelId: "gemini-3-pro",
+            geminiKey: "gemini-key",
+            reasoningEnabled: true,
+            reasoningEffort: .medium
         )
         let disabledContext = makeContext(
             modelId: "gemini-3-pro",
@@ -233,36 +311,29 @@ struct HandsOffLLMTests {
             reasoningEffort: .high
         )
 
-        let flashLowBody = try requestBody(from: try GeminiClient().makeRequest(with: flashLow))
-        let flashMediumBody = try requestBody(from: try GeminiClient().makeRequest(with: flashMedium))
-        let proHighBody = try requestBody(from: try GeminiClient().makeRequest(with: proHigh))
+        let proMinimalBody = try requestBody(from: try GeminiClient().makeRequest(with: proMinimal))
+        let proMediumBody = try requestBody(from: try GeminiClient().makeRequest(with: proMedium))
         let disabledBody = try requestBody(from: try GeminiClient().makeRequest(with: disabledContext))
 
-        let flashLowConfig = flashLowBody["generationConfig"] as? [String: Any]
-        let flashMediumConfig = flashMediumBody["generationConfig"] as? [String: Any]
-        let proHighConfig = proHighBody["generationConfig"] as? [String: Any]
+        let proMinimalConfig = proMinimalBody["generationConfig"] as? [String: Any]
+        let proMediumConfig = proMediumBody["generationConfig"] as? [String: Any]
         let disabledConfig = disabledBody["generationConfig"] as? [String: Any]
 
-        let flashLowThinking = flashLowConfig?["thinking_config"] as? [String: Any]
-        let flashMediumThinking = flashMediumConfig?["thinking_config"] as? [String: Any]
-        let proHighThinking = proHighConfig?["thinking_config"] as? [String: Any]
+        let proMinimalThinking = proMinimalConfig?["thinking_config"] as? [String: Any]
+        let proMediumThinking = proMediumConfig?["thinking_config"] as? [String: Any]
         let disabledThinking = disabledConfig?["thinking_config"] as? [String: Any]
 
-        let flashLowLevel = flashLowThinking?["thinkingLevel"] as? String
-        let flashMediumLevel = flashMediumThinking?["thinkingLevel"] as? String
-        let proHighLevel = proHighThinking?["thinkingLevel"] as? String
+        let proMinimalLevel = proMinimalThinking?["thinkingLevel"] as? String
+        let proMediumLevel = proMediumThinking?["thinkingLevel"] as? String
         let disabledLevel = disabledThinking?["thinkingLevel"] as? String
-        let flashLowIncludesThoughts = flashLowThinking?["include_thoughts"] as? Bool
-        let flashMediumIncludesThoughts = flashMediumThinking?["include_thoughts"] as? Bool
-        let proHighIncludesThoughts = proHighThinking?["include_thoughts"] as? Bool
+        let proMinimalIncludesThoughts = proMinimalThinking?["include_thoughts"] as? Bool
+        let proMediumIncludesThoughts = proMediumThinking?["include_thoughts"] as? Bool
 
-        #expect(flashLowLevel == "low")
-        #expect(flashMediumLevel == "medium")
-        #expect(proHighLevel == "high")
+        #expect(proMinimalLevel == "low")
+        #expect(proMediumLevel == "high")
         #expect(disabledLevel == "low")
-        #expect(flashLowIncludesThoughts == true)
-        #expect(flashMediumIncludesThoughts == true)
-        #expect(proHighIncludesThoughts == true)
+        #expect(proMinimalIncludesThoughts == true)
+        #expect(proMediumIncludesThoughts == true)
     }
 
     @Test func providerDetectionCoversUpdatedModelFamilies() {
@@ -298,11 +369,19 @@ struct HandsOffLLMTests {
         let dictionary = """
         {"id":"pred_3","status":"succeeded","output":{"audio":"https://example.com/3.wav"}}
         """.data(using: .utf8)!
+        let mixedDictionary = """
+        {"id":"pred_4","status":"succeeded","output":{"audio":"https://example.com/4.wav","duration":1.75}}
+        """.data(using: .utf8)!
+        let nestedArrayObject = """
+        {"id":"pred_5","status":"succeeded","output":[{"metadata":"ignored","url":"https://example.com/5.wav"}]}
+        """.data(using: .utf8)!
 
         let decoder = JSONDecoder()
         #expect(try decoder.decode(ReplicateTTSResponse.self, from: single).outputURL == "https://example.com/1.wav")
         #expect(try decoder.decode(ReplicateTTSResponse.self, from: array).outputURL == "https://example.com/2.wav")
         #expect(try decoder.decode(ReplicateTTSResponse.self, from: dictionary).outputURL == "https://example.com/3.wav")
+        #expect(try decoder.decode(ReplicateTTSResponse.self, from: mixedDictionary).outputURL == "https://example.com/4.wav")
+        #expect(try decoder.decode(ReplicateTTSResponse.self, from: nestedArrayObject).outputURL == "https://example.com/5.wav")
     }
 
     @Test func llmClientFactoryRejectsReplicateProvider() {

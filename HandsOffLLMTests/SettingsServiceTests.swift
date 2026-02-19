@@ -103,6 +103,33 @@ struct SettingsServiceTests {
         #expect(geminiDefaults.contains(where: { $0.id == "gemini-3-flash" }) == false)
     }
 
+    @Test @MainActor func reasoningLevelSupportReflectsSelectedModel() async {
+        let settings = SettingsService()
+
+        settings.updateDefaultProvider(provider: .openai)
+        settings.updateSelectedModel(provider: .openai, modelId: "gpt-5.2")
+        #expect(settings.selectedModelSupportsReasoningLevels == true)
+
+        settings.updateDefaultProvider(provider: .claude)
+        settings.updateSelectedModel(provider: .claude, modelId: "claude-sonnet-4.6")
+        #expect(settings.selectedModelSupportsReasoningLevels == false)
+
+        settings.updateSelectedModel(provider: .claude, modelId: "claude-opus-4.6")
+        #expect(settings.selectedModelSupportsReasoningLevels == true)
+
+        settings.updateDefaultProvider(provider: .gemini)
+        settings.updateSelectedModel(provider: .gemini, modelId: "gemini-3-pro")
+        #expect(settings.selectedModelSupportsReasoningLevels == true)
+
+        settings.updateDefaultProvider(provider: .xai)
+        settings.updateSelectedModel(provider: .xai, modelId: "grok-4-fast")
+        #expect(settings.selectedModelSupportsReasoningLevels == false)
+
+        settings.updateDefaultProvider(provider: .moonshot)
+        settings.updateSelectedModel(provider: .moonshot, modelId: "kimi-k2.5")
+        #expect(settings.selectedModelSupportsReasoningLevels == false)
+    }
+
     private func settingsFileURL() -> URL? {
         FileManager.default
             .urls(for: .documentDirectory, in: .userDomainMask)

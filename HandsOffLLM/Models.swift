@@ -143,14 +143,16 @@ struct ReplicateTTSResponse: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         status = try container.decode(String.self, forKey: .status)
-        error = try container.decodeIfPresent(String.self, forKey: .error)
+        if let errorString = try? container.decode(String.self, forKey: .error) {
+            error = errorString
+        } else if let errorValue = try? container.decode(ReplicateJSONValue.self, forKey: .error) {
+            error = errorValue.bestEffortDescription
+        } else {
+            error = nil
+        }
 
-        if let single = try? container.decode(String.self, forKey: .output) {
-            outputURL = single
-        } else if let array = try? container.decode([String].self, forKey: .output) {
-            outputURL = array.first
-        } else if let dict = try? container.decode([String: String].self, forKey: .output) {
-            outputURL = dict["audio"] ?? dict["url"]
+        if let output = try? container.decode(ReplicateJSONValue.self, forKey: .output) {
+            outputURL = output.firstURLString
         } else {
             outputURL = nil
         }
@@ -162,6 +164,96 @@ struct ReplicateTTSResponse: Codable {
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(error, forKey: .error)
         try container.encodeIfPresent(outputURL, forKey: .output)
+    }
+}
+
+private enum ReplicateJSONValue: Decodable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case array([ReplicateJSONValue])
+    case object([String: ReplicateJSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let string = try? container.decode(String.self) {
+            self = .string(string)
+        } else if let number = try? container.decode(Double.self) {
+            self = .number(number)
+        } else if let bool = try? container.decode(Bool.self) {
+            self = .bool(bool)
+        } else if let array = try? container.decode([ReplicateJSONValue].self) {
+            self = .array(array)
+        } else if let object = try? container.decode([String: ReplicateJSONValue].self) {
+            self = .object(object)
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported Replicate JSON value")
+        }
+    }
+
+    var firstURLString: String? {
+        switch self {
+        case .string(let value):
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if trimmed.hasPrefix("https://") || trimmed.hasPrefix("http://") || trimmed.hasPrefix("data:audio") {
+                return trimmed
+            }
+            return nil
+        case .array(let values):
+            for value in values {
+                if let url = value.firstURLString {
+                    return url
+                }
+            }
+            return nil
+        case .object(let values):
+            let preferredKeys = ["audio", "audio_url", "url", "uri", "file", "src"]
+            for key in preferredKeys {
+                if let url = values[key]?.firstURLString {
+                    return url
+                }
+            }
+            for value in values.values {
+                if let url = value.firstURLString {
+                    return url
+                }
+            }
+            return nil
+        case .number, .bool, .null:
+            return nil
+        }
+    }
+
+    var bestEffortDescription: String {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            return String(value)
+        case .bool(let value):
+            return String(value)
+        case .array(let values):
+            let rendered = values.map { $0.bestEffortDescription }.joined(separator: ", ")
+            return "[\(rendered)]"
+        case .object(let values):
+            if let message = values["message"]?.bestEffortDescription {
+                return message
+            }
+            if let detail = values["detail"]?.bestEffortDescription {
+                return detail
+            }
+            let rendered = values
+                .map { "\($0.key): \($0.value.bestEffortDescription)" }
+                .sorted()
+                .joined(separator: ", ")
+            return "{\(rendered)}"
+        case .null:
+            return "null"
+        }
     }
 }
 
@@ -230,15 +322,19 @@ struct OpenAICompatibleResponseEvent: Decodable {
 typealias XAIResponseEvent = OpenAICompatibleResponseEvent
 
 enum ReasoningEffort: String, CaseIterable, Codable, Equatable {
+    case minimal
     case low
     case medium
     case high
+    case xhigh
 
     var displayName: String {
         switch self {
+        case .minimal: return "Minimal"
         case .low: return "Low"
         case .medium: return "Medium"
         case .high: return "High"
+        case .xhigh: return "Max"
         }
     }
 }

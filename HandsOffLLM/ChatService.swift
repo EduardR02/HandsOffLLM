@@ -704,7 +704,7 @@ class OpenAICompatibleChatCompletionsClient: LLMClient {
             requestBody["search_parameters"] = ["mode": "auto"]
         }
         if supportsGrokReasoning, context.reasoningEnabled {
-            requestBody["reasoning_effort"] = context.reasoningEffort.rawValue
+            requestBody["reasoning_effort"] = "high"
         }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -766,7 +766,10 @@ struct ClaudeClient: LLMClient {
             messagesPayload.append(last)
         }
 
-        let canThink = context.modelId.contains("sonnet-4") || context.modelId.contains("opus-4")
+        let normalizedModelId = context.modelId.lowercased()
+        let isOpus4Model = normalizedModelId.contains("opus-4")
+        let isSonnet4Model = normalizedModelId.contains("sonnet-4")
+        let canThink = isSonnet4Model || isOpus4Model
         let isThinking = canThink && context.reasoningEnabled
 
         var payload: [String: Any] = [
@@ -786,7 +789,8 @@ struct ClaudeClient: LLMClient {
             payload["thinking"] = [
                 "type": "adaptive"
             ]
-            payload["output_config"] = ["effort": context.reasoningEffort.rawValue]
+            let effort = Self.clampedEffort(for: context.reasoningEffort, isOpus4Model: isOpus4Model)
+            payload["output_config"] = ["effort": effort]
         }
         if context.webSearchEnabled {
             payload["tools"] = [[
@@ -798,6 +802,23 @@ struct ClaudeClient: LLMClient {
 
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         return req
+    }
+
+    private static func clampedEffort(for effort: ReasoningEffort, isOpus4Model: Bool) -> String {
+        guard isOpus4Model else {
+            return "high"
+        }
+
+        switch effort {
+        case .minimal, .low:
+            return "low"
+        case .medium:
+            return "medium"
+        case .high:
+            return "high"
+        case .xhigh:
+            return "max"
+        }
     }
 
     func decodeChunk(_ raw: String) -> String? {
@@ -847,7 +868,9 @@ struct GeminiClient: LLMClient {
         ]
         let normalizedModelId = context.modelId.lowercased()
         if normalizedModelId.hasPrefix("gemini-3") {
-            let thinkingLevel = context.reasoningEnabled ? context.reasoningEffort.rawValue : "low"
+            let thinkingLevel = context.reasoningEnabled
+                ? Self.clampedThinkingLevel(for: context.reasoningEffort, modelId: normalizedModelId)
+                : "low"
             generationConfig["thinking_config"] = [
                 "thinkingLevel": thinkingLevel,
                 "include_thoughts": true
@@ -877,6 +900,28 @@ struct GeminiClient: LLMClient {
               let text = response.candidates?.first?.content?.parts?.first?.text
         else { return nil }
         return text
+    }
+
+    private static func clampedThinkingLevel(for effort: ReasoningEffort, modelId: String) -> String {
+        if modelId.contains("flash") {
+            switch effort {
+            case .minimal:
+                return "minimal"
+            case .low:
+                return "low"
+            case .medium:
+                return "medium"
+            case .high, .xhigh:
+                return "high"
+            }
+        }
+
+        switch effort {
+        case .minimal, .low:
+            return "low"
+        case .medium, .high, .xhigh:
+            return "high"
+        }
     }
 
     private static func safetySettings() -> [[String: String]] {
