@@ -128,7 +128,7 @@ struct HandsOffLLMTests {
             ChatMessage(id: UUID(), role: "user", content: "please help")
         ]
         let context = makeContext(
-            modelId: "claude-sonnet-4.6",
+            modelId: "claude-sonnet-4-6",
             anthropicKey: "anthropic-key",
             messages: messages,
             systemPrompt: "You are concise",
@@ -163,7 +163,7 @@ struct HandsOffLLMTests {
 
     @Test func claudeNonThinkingRequestUsesTemperatureAndNoThinkingBlock() throws {
         let context = makeContext(
-            modelId: "claude-sonnet-4.6",
+            modelId: "claude-sonnet-4-6",
             anthropicKey: "anthropic-key",
             systemPrompt: nil,
             reasoningEnabled: false
@@ -179,13 +179,13 @@ struct HandsOffLLMTests {
 
     @Test func claudeOpusReasoningEffortClampsToSupportedAdaptiveLevels() throws {
         let minimalContext = makeContext(
-            modelId: "claude-opus-4.6",
+            modelId: "claude-opus-4-6",
             anthropicKey: "anthropic-key",
             reasoningEnabled: true,
             reasoningEffort: .minimal
         )
         let xhighContext = makeContext(
-            modelId: "claude-opus-4.6",
+            modelId: "claude-opus-4-6",
             anthropicKey: "anthropic-key",
             reasoningEnabled: true,
             reasoningEffort: .xhigh
@@ -341,7 +341,7 @@ struct HandsOffLLMTests {
         #expect(LLMProvider.provider(forModelId: "gpt-5.2-mini") == .openai)
         #expect(LLMProvider.provider(forModelId: "gpt-5.3-codex") == .openai)
         #expect(LLMProvider.provider(forModelId: "codex-mini-latest") == .openai)
-        #expect(LLMProvider.provider(forModelId: "claude-sonnet-4.6") == .claude)
+        #expect(LLMProvider.provider(forModelId: "claude-sonnet-4-6") == .claude)
         #expect(LLMProvider.provider(forModelId: "gemini-3-pro") == .gemini)
         #expect(LLMProvider.provider(forModelId: "grok-4.1") == .xai)
         #expect(LLMProvider.provider(forModelId: "grok-4-fast") == .xai)

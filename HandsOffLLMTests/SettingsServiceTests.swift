@@ -73,7 +73,7 @@ struct SettingsServiceTests {
         var staleSettings = SettingsData()
         staleSettings.selectedModelIdPerProvider = [
             .openai: "retired-openai-model",
-            .claude: "claude-opus-4.6"
+            .claude: "claude-opus-4-6"
         ]
         let encoded = try JSONEncoder().encode(staleSettings)
         try encoded.write(to: settingsURL, options: .atomicWrite)
@@ -82,7 +82,7 @@ struct SettingsServiceTests {
         let expectedOpenAIDefault = settings.availableModels.first(where: { $0.provider == .openai })?.id
 
         #expect(settings.activeModelId(for: .openai) == expectedOpenAIDefault)
-        #expect(settings.activeModelId(for: .claude) == "claude-opus-4.6")
+        #expect(settings.activeModelId(for: .claude) == "claude-opus-4-6")
     }
 
     @Test @MainActor func availableModelsReflectUpdatedIdsAndDefaultOrder() async {
@@ -93,7 +93,7 @@ struct SettingsServiceTests {
         let geminiDefaults = settings.availableModels.filter { $0.provider == .gemini }
         let xaiDefaults = settings.availableModels.filter { $0.provider == .xai }
 
-        #expect(claudeDefaults.first?.id == "claude-opus-4.6")
+        #expect(claudeDefaults.first?.id == "claude-opus-4-6")
         #expect(openAIDefaults.first?.id == "gpt-5.2")
         #expect(geminiDefaults.first?.id == "gemini-3-pro")
         #expect(xaiDefaults.first?.id == "grok-4.1")
@@ -111,10 +111,10 @@ struct SettingsServiceTests {
         #expect(settings.selectedModelSupportsReasoningLevels == true)
 
         settings.updateDefaultProvider(provider: .claude)
-        settings.updateSelectedModel(provider: .claude, modelId: "claude-sonnet-4.6")
+        settings.updateSelectedModel(provider: .claude, modelId: "claude-sonnet-4-6")
         #expect(settings.selectedModelSupportsReasoningLevels == false)
 
-        settings.updateSelectedModel(provider: .claude, modelId: "claude-opus-4.6")
+        settings.updateSelectedModel(provider: .claude, modelId: "claude-opus-4-6")
         #expect(settings.selectedModelSupportsReasoningLevels == true)
 
         settings.updateDefaultProvider(provider: .gemini)
