@@ -157,7 +157,9 @@ struct HandsOffLLMTests {
         #expect(contents?.count == 2)
         #expect(contents?.first?["role"] as? String == "user")
         #expect(contents?.last?["role"] as? String == "model")
-        #expect((generationConfig?["thinking_config"] as? [String: Int])?["thinkingBudget"] == 8192)
+        let thinkingConfig = generationConfig?["thinking_config"] as? [String: Any]
+        #expect(thinkingConfig?["thinkingLevel"] as? String == "high")
+        #expect(thinkingConfig?["include_thoughts"] as? Bool == true)
         #expect((systemInstruction?["parts"] as? [[String: String]])?.first?["text"] == "Stay short")
 
         let expectedSafety = Set([
@@ -188,7 +190,7 @@ struct HandsOffLLMTests {
         #expect(components.queryItems?.contains(where: { $0.name == "key" }) == false)
     }
 
-    @Test func geminiThinkingToggleAppliesToFlashModelsOnly() throws {
+    @Test func geminiThinkingToggleAppliesToAllGemini3Models() throws {
         let flashThinkingEnabled = makeContext(
             modelId: "gemini-3-flash",
             geminiKey: "gemini-key",
@@ -213,9 +215,16 @@ struct HandsOffLLMTests {
         let flashDisabledConfig = flashDisabledBody["generationConfig"] as? [String: Any]
         let proConfig = proBody["generationConfig"] as? [String: Any]
 
-        #expect((flashEnabledConfig?["thinking_config"] as? [String: Any])?["thinkingBudget"] as? Int == 8192)
-        #expect((flashDisabledConfig?["thinking_config"] as? [String: Any])?["thinkingBudget"] as? Int == 0)
-        #expect(proConfig?["thinking_config"] as? [String: Any] == nil)
+        let flashEnabledThinking = flashEnabledConfig?["thinking_config"] as? [String: Any]
+        let flashDisabledThinking = flashDisabledConfig?["thinking_config"] as? [String: Any]
+        let proThinking = proConfig?["thinking_config"] as? [String: Any]
+
+        #expect(flashEnabledThinking?["thinkingLevel"] as? String == "high")
+        #expect(flashDisabledThinking?["thinkingLevel"] as? String == "low")
+        #expect(proThinking?["thinkingLevel"] as? String == "high")
+        #expect(flashEnabledThinking?["include_thoughts"] as? Bool == true)
+        #expect(flashDisabledThinking?["include_thoughts"] as? Bool == true)
+        #expect(proThinking?["include_thoughts"] as? Bool == true)
     }
 
     @Test func providerDetectionCoversUpdatedModelFamilies() {
@@ -229,6 +238,14 @@ struct HandsOffLLMTests {
         #expect(LLMProvider.provider(forModelId: "unknown-model") == nil)
         #expect(LLMProvider.provider(forModelId: "") == nil)
         #expect(LLMProvider.provider(forModelId: "   ") == nil)
+    }
+
+    @MainActor @Test func providerTokenCapsMatchUpdatedLimits() {
+        #expect(SettingsService.maxTokensOpenAI == 100000)
+        #expect(SettingsService.maxTokensAnthropic == 64000)
+        #expect(SettingsService.maxTokensGemini == 65536)
+        #expect(SettingsService.maxTokensXAI == 131072)
+        #expect(SettingsService.maxTokensMoonshot == 262144)
     }
 
     @Test func replicatePredictionResponseDecodesOutputShapes() throws {

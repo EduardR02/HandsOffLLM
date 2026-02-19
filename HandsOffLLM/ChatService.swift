@@ -839,10 +839,13 @@ struct GeminiClient: LLMClient {
             "maxOutputTokens": min(context.maxTokens, context.tokenCap),
             "responseMimeType": "text/plain"
         ]
-        // Gemini 3 Flash models support extended thinking
-        if context.modelId.contains("3-flash") {
-            let thinkingBudget = context.reasoningEnabled ? 8192 : 0
-            generationConfig["thinking_config"] = ["thinkingBudget": thinkingBudget]
+        let normalizedModelId = context.modelId.lowercased()
+        if normalizedModelId.hasPrefix("gemini-3") {
+            let thinkingLevel = context.reasoningEnabled ? "high" : "low"
+            generationConfig["thinking_config"] = [
+                "thinkingLevel": thinkingLevel,
+                "include_thoughts": true
+            ]
         }
 
         var body: [String: Any] = [

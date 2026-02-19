@@ -111,7 +111,7 @@ class AudioService: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private let baseMinChunkLength: Int = 60
     private let ttsChunkGrowthFactor: Double = 2.25
-    private static let mistralModel = "voxtral-mini-latest"
+    private static let mistralModel = "voxtral-mini-2602"
 
     private var ttsSessionId: UUID = UUID()
 

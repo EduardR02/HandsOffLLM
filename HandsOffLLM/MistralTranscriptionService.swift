@@ -14,7 +14,7 @@ final class MistralTranscriptionService: @unchecked Sendable {
         self.apiKey = apiKey
     }
 
-    func transcribeAudio(data: Data, filename: String, contentType: String, model: String = "voxtral-mini-latest") async throws -> String {
+    func transcribeAudio(data: Data, filename: String, contentType: String, model: String = "voxtral-mini-2602") async throws -> String {
         guard let url = URL(string: "https://api.mistral.ai/v1/audio/transcriptions") else {
             throw LlmError.invalidURL
         }

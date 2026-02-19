@@ -296,15 +296,15 @@ class SettingsService: ObservableObject { // Make ObservableObject
     
     // Max/min caps from API definitions
     static let maxTempOpenAI: Float = 2.0
-    static let maxTokensOpenAI: Int = 16384
+    static let maxTokensOpenAI: Int = 100000
     static let maxTempAnthropic: Float = 1.0
-    static let maxTokensAnthropic: Int = 32000
+    static let maxTokensAnthropic: Int = 64000
     static let maxTempGemini: Float = 2.0
-    static let maxTokensGemini: Int = 8192
+    static let maxTokensGemini: Int = 65536
     static let maxTempXAI: Float = 2.0
     static let maxTokensXAI: Int = 131072
     static let maxTempMoonshot: Float = 1.0
-    static let maxTokensMoonshot: Int = 131072
+    static let maxTokensMoonshot: Int = 262144
 
     // MARK: - Personalization getters
     var userProfilePrompt: String {

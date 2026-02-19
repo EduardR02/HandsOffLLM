@@ -101,7 +101,7 @@ class ProxyService {
     /// Creates a proxied transcription request (for audio file uploads)
     func makeProxiedTranscriptionRequest(
         audioData: Data,
-        model: String = "voxtral-mini-latest",
+        model: String = "voxtral-mini-2602",
         filename: String,
         contentType: String
     ) async throws -> URLRequest {

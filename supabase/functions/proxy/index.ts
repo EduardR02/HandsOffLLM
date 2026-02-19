@@ -138,7 +138,7 @@ const handler = async (req: Request) => {
 
       const filename = bodyData.filename || 'audio.wav'
       const contentType = bodyData.content_type || 'audio/wav'
-      const model = bodyData.model || 'voxtral-mini-latest'
+      const model = bodyData.model || 'voxtral-mini-2602'
 
       // Use FormData for proper multipart/form-data encoding
       const formData = new FormData()

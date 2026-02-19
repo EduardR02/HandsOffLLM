@@ -72,7 +72,7 @@ const handler = async (req: Request) => {
       });
     }
 
-    const model = (formData.get("model") as string | null) ?? "voxtral-mini-latest";
+    const model = (formData.get("model") as string | null) ?? "voxtral-mini-2602";
 
     const forwardForm = new FormData();
     forwardForm.append("file", file, file.name);
