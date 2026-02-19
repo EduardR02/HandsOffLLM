@@ -41,30 +41,54 @@ struct UsageDashboardView: View {
                                 Spacer()
                             }
 
-                            // Usage Amount
-                            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                                Text("$\(monthlyUsage, specifier: "%.2f")")
-                                    .font(.system(size: 36, weight: .bold, design: .rounded))
-                                    .foregroundColor(usageColor)
-                                Text("/ $\(monthlyLimit, specifier: "%.2f")")
-                                    .font(.title3)
-                                    .foregroundColor(Theme.secondaryText.opacity(0.7))
-                                Spacer()
-                            }
+                            // Usage Ring
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 18)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Theme.overlayMask.opacity(0.55),
+                                                Theme.overlayMask.opacity(0.2)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
 
-                            // Progress Bar
-                            GeometryReader { geometry in
-                                ZStack(alignment: .leading) {
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Theme.overlayMask.opacity(0.3))
-                                        .frame(height: 8)
+                                Circle()
+                                    .fill(usageColor.opacity(0.14))
+                                    .frame(width: 168, height: 168)
+                                    .blur(radius: 18)
 
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(usageColor)
-                                        .frame(width: geometry.size.width * CGFloat(min(monthlyUsage / monthlyLimit, 1.0)), height: 8)
+                                ZStack {
+                                    Circle()
+                                        .stroke(Theme.overlayMask.opacity(0.65), lineWidth: 14)
+
+                                    Circle()
+                                        .trim(from: 0, to: clampedUsageRatio)
+                                        .stroke(
+                                            AngularGradient(
+                                                colors: [usageColor.opacity(0.45), usageColor, usageColor.opacity(0.8)],
+                                                center: .center
+                                            ),
+                                            style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
+                                        )
+                                        .rotationEffect(.degrees(-90))
+
+                                    VStack(spacing: 4) {
+                                        Text(usagePercentText)
+                                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                                            .foregroundColor(Theme.primaryText)
+                                            .multilineTextAlignment(.center)
+                                        Text("This month")
+                                            .font(.caption)
+                                            .foregroundColor(Theme.secondaryText.opacity(0.85))
+                                    }
                                 }
+                                .frame(width: 168, height: 168)
                             }
-                            .frame(height: 8)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 220)
 
                             // Warning Messages
                             if monthlyUsage >= monthlyLimit {
@@ -123,7 +147,7 @@ struct UsageDashboardView: View {
                                                         .foregroundColor(Theme.secondaryText.opacity(0.7))
                                                 }
                                                 Spacer()
-                                                Text("$\(usage.totalCost, specifier: "%.4f")")
+                                                Text(providerShareText(for: usage))
                                                     .font(.system(.body, design: .rounded))
                                                     .fontWeight(.semibold)
                                                     .foregroundColor(Theme.secondaryAccent)
@@ -179,6 +203,29 @@ struct UsageDashboardView: View {
         } else {
             return Theme.secondaryAccent
         }
+    }
+
+    private var usageRatio: Double {
+        guard monthlyLimit > 0 else { return 0 }
+        return max(monthlyUsage / monthlyLimit, 0)
+    }
+
+    private var clampedUsageRatio: Double {
+        min(usageRatio, 1.0)
+    }
+
+    private var usagePercentText: String {
+        "\(Int((usageRatio * 100).rounded()))% used"
+    }
+
+    private var totalProviderCost: Double {
+        providerBreakdown.reduce(0) { $0 + $1.totalCost }
+    }
+
+    private func providerShareText(for usage: ProviderUsage) -> String {
+        guard totalProviderCost > 0 else { return "0%" }
+        let share = Int(((usage.totalCost / totalProviderCost) * 100).rounded())
+        return "\(share)%"
     }
 
     func fetchUsage() async {
