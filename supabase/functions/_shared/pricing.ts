@@ -87,7 +87,7 @@ export function resolveModelPricing(
   model: string,
   options?: { fallbackModelKey?: string }
 ): PricingEntry | null {
-  const providerPricing = PRICING[provider]
+  const providerPricing = PRICING[provider] as Record<string, PricingEntry> | undefined
   if (!providerPricing) {
     return null
   }
