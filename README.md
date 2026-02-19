@@ -36,18 +36,22 @@ Swipe left (or tap the menu icon) to access settings, history, provider switchin
 
 ## Setup
 
-This is a personal project that I build onto my phone with Xcode. No App Store distribution (yet — no dev account).
+This is a personal project that I build onto my phone with Xcode. No App Store distribution yet.
 
 To run it yourself:
 
 1. Clone the repo
 2. Open `HandsOffLLM.xcodeproj` in Xcode
-3. You'll need API keys for the providers you want to use (configure in Settings), or set up the Supabase backend for proxied access
-4. Build and run on a physical iOS device (microphone access doesn't work in the simulator)
+3. Add your own API keys in Settings for the providers you want to use
+4. Build and run (works on device and simulator)
 
-### Supabase backend (optional)
+### Supabase backend
 
-The app can either call LLM APIs directly with your own keys, or route through a Supabase Edge Function proxy that handles auth, usage tracking, and billing. The proxy lives in `supabase/functions/`.
+By default, all API calls route through a Supabase Edge Function proxy. This keeps API keys server-side and handles auth and usage tracking. The proxy lives in `supabase/functions/`.
+
+You can also bring your own API keys — toggle this per provider in Settings and requests go direct, bypassing the proxy entirely.
+
+> **Note:** There's no payment system yet, so the hosted proxy isn't open for public use. If you want to run this, you'll need to either supply your own API keys or deploy your own Supabase instance.
 
 ## Tech
 
